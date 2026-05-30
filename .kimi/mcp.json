@@ -1,0 +1,99 @@
+{
+  "mcpServers": {
+    "sequential-thinking": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-sequential-thinking@2025.12.18"
+      ],
+      "env": {
+        "npm_config_loglevel": "error",
+        "NODE_NO_WARNINGS": "1"
+      },
+      "startup_timeout_sec": 15
+    },
+    "memory": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-memory@2026.1.26"
+      ],
+      "env": {
+        "npm_config_loglevel": "error",
+        "NODE_NO_WARNINGS": "1"
+      },
+      "startup_timeout_sec": 15
+    },
+    "context7": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@upstash/context7-mcp@2.2.5"
+      ],
+      "env": {
+        "npm_config_loglevel": "error",
+        "NODE_NO_WARNINGS": "1"
+      },
+      "startup_timeout_sec": 15
+    },
+    "fetch": {
+      "command": "uvx",
+      "args": [
+        "mcp-server-fetch"
+      ],
+      "startup_timeout_sec": 15
+    },
+    "puppeteer": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-puppeteer@2025.5.12"
+      ],
+      "env": {
+        "npm_config_loglevel": "error",
+        "NODE_NO_WARNINGS": "1"
+      },
+      "startup_timeout_sec": 20
+    },
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@0.0.75"
+      ],
+      "env": {
+        "npm_config_loglevel": "error",
+        "NODE_NO_WARNINGS": "1"
+      },
+      "startup_timeout_sec": 20
+    },
+    "github": {
+      "url": "https://api.githubcopilot.com/mcp/"
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem@2026.1.14",
+        "/home/lsk/projects/wikiAI"
+      ],
+      "env": {
+        "npm_config_loglevel": "error",
+        "NODE_NO_WARNINGS": "1"
+      },
+      "startup_timeout_sec": 10
+    },
+    "filesystem-readonly": {
+      "command": "omk",
+      "args": [
+        "mcp",
+        "serve",
+        "filesystem-readonly"
+      ],
+      "env": {
+        "OMK_MCP_MODE": "readonly"
+      },
+      "startup_timeout_sec": 10
+    }
+  }
+}

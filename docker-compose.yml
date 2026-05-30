@@ -1,0 +1,91 @@
+version: "3.8"
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__SERVICE__GRPC_PORT=6334
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  gateway:
+    build:
+      context: ./packages/gateway
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      - NODE_ENV=production
+      - GATEWAY_PORT=3000
+      - REDIS_URL=redis://host.docker.internal:16379/0
+      - LITELLM_BASE_URL=http://host.docker.internal:4000/v1
+      - LITELLM_API_KEY=sk-dev-litellm-master-key
+      - LITELLM_MODEL=hosted_vllm/facebook/opt-125m
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_COLLECTION=wiki_chunks
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+      - MW_BASE_URL=http://host.docker.internal:8082
+      - MW_API_PATH=/api.php
+      - USER_GROUPS_CACHE_TTL=300
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  syncer:
+    build:
+      context: ./packages/syncer
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:3001:3001"
+    environment:
+      - NODE_ENV=production
+      - SYNCER_PORT=3001
+      - MW_BASE_URL=http://host.docker.internal:8082
+      - MW_API_PATH=/api.php
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_COLLECTION=wiki_chunks
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+      - CHUNK_SIZE=512
+      - CHUNK_OVERLAP=50
+      - NAMESPACE_ACL={"0":["*"]}
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  qdrant_storage:
+  ollama_data:

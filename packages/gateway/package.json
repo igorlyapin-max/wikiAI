@@ -1,0 +1,39 @@
+{
+  "name": "@wiki-ai/gateway",
+  "version": "0.1.0",
+  "description": "AI Search & Chat Gateway for MediaWiki",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js",
+    "lint": "eslint src --ext .ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^9.3.1",
+    "@fastify/cors": "^9.0.1",
+    "@fastify/env": "^4.3.0",
+    "@fastify/rate-limit": "^9.1.0",
+    "@fastify/sensible": "^5.5.0",
+    "@qdrant/js-client-rest": "^1.12.0",
+    "fastify": "^4.28.1",
+    "ioredis": "^5.4.1",
+    "undici": "^6.19.8",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@vitest/coverage-v8": "^4.1.7",
+    "eslint": "^8.57.0",
+    "tsx": "^4.15.0",
+    "typescript": "^5.4.5",
+    "vitest": "^4.1.7"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

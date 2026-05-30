@@ -1,0 +1,8 @@
+node_modules
+npm-debug.log
+dist
+coverage
+.env.test
+vitest.config.ts
+src/**/*.test.ts
+src/**/*.spec.ts

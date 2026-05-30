@@ -1,0 +1,65 @@
+# >>> omk managed hooks — do not edit manually
+[[hooks]]
+event = "SessionStart"
+command = "/home/lsk/projects/ubuntu/.omk/hooks/session-context.sh"
+timeout = 5
+
+[[hooks]]
+event = "UserPromptSubmit"
+command = "/home/lsk/projects/ubuntu/.omk/hooks/awesome-agent-skills-router.sh"
+timeout = 5
+
+[[hooks]]
+event = "PreCompact"
+command = "/home/lsk/projects/ubuntu/.omk/hooks/precompact-checkpoint.sh"
+timeout = 5
+
+[[hooks]]
+event = "SubagentStop"
+command = "/home/lsk/projects/ubuntu/.omk/hooks/subagent-stop-audit.sh"
+timeout = 5
+
+[[hooks]]
+event = "SubagentStop"
+command = "/home/lsk/projects/ubuntu/.omk/hooks/branch-diff-snapshot.sh"
+timeout = 10
+
+[[hooks]]
+event = "PreToolUse"
+matcher = "Shell"
+command = "/home/lsk/projects/ubuntu/.omk/hooks/pre-shell-guard.sh"
+timeout = 5
+
+[[hooks]]
+event = "PreToolUse"
+matcher = "Shell"
+command = "/home/lsk/projects/ubuntu/.omk/hooks/worktree-create-guard.sh"
+timeout = 5
+
+[[hooks]]
+event = "PreToolUse"
+matcher = "WriteFile|StrReplaceFile"
+command = "/home/lsk/projects/ubuntu/.omk/hooks/protect-secrets.sh"
+timeout = 5
+
+[[hooks]]
+event = "PostToolUse"
+matcher = "WriteFile|StrReplaceFile"
+command = "/home/lsk/projects/ubuntu/.omk/hooks/post-format.sh"
+timeout = 20
+
+[[hooks]]
+event = "Stop"
+command = "/home/lsk/projects/ubuntu/.omk/hooks/stop-verify.sh"
+timeout = 30
+
+[[hooks]]
+event = "Stop"
+command = "/home/lsk/projects/ubuntu/.omk/hooks/release-check-before-stop.sh"
+timeout = 10
+
+[[hooks]]
+event = "Stop"
+command = "/home/lsk/projects/ubuntu/.omk/hooks/npm-audit-summary.sh"
+timeout = 60
+# >>> end omk managed hooks

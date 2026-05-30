@@ -1,0 +1,292 @@
+{
+  "mcpServers": {
+    "sequential-thinking": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-sequential-thinking@2025.12.18"
+      ],
+      "env": {
+        "npm_config_loglevel": "error",
+        "NPM_CONFIG_LOGLEVEL": "error",
+        "npm_config_progress": "false",
+        "NPM_CONFIG_PROGRESS": "false",
+        "npm_config_audit": "false",
+        "NPM_CONFIG_AUDIT": "false",
+        "npm_config_fund": "false",
+        "NPM_CONFIG_FUND": "false",
+        "npm_config_prefer_offline": "true",
+        "NPM_CONFIG_PREFER_OFFLINE": "true",
+        "npm_config_fetch_retries": "0",
+        "NPM_CONFIG_FETCH_RETRIES": "0",
+        "npm_config_fetch_retry_mintimeout": "1000",
+        "NPM_CONFIG_FETCH_RETRY_MINTIMEOUT": "1000",
+        "npm_config_fetch_retry_maxtimeout": "1000",
+        "NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT": "1000",
+        "npm_config_maxsockets": "3",
+        "NPM_CONFIG_MAXSOCKETS": "3",
+        "npm_config_update_notifier": "false",
+        "NPM_CONFIG_UPDATE_NOTIFIER": "false",
+        "NO_UPDATE_NOTIFIER": "1",
+        "NODE_NO_WARNINGS": "1",
+        "UV_NO_PROGRESS": "1",
+        "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+        "PIP_NO_INPUT": "1",
+        "PIP_NO_PYTHON_VERSION_WARNING": "1",
+        "PIP_PROGRESS_BAR": "off"
+      },
+      "startup_timeout_sec": 15
+    },
+    "memory": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-memory@2026.1.26"
+      ],
+      "env": {
+        "npm_config_loglevel": "error",
+        "NPM_CONFIG_LOGLEVEL": "error",
+        "npm_config_progress": "false",
+        "NPM_CONFIG_PROGRESS": "false",
+        "npm_config_audit": "false",
+        "NPM_CONFIG_AUDIT": "false",
+        "npm_config_fund": "false",
+        "NPM_CONFIG_FUND": "false",
+        "npm_config_prefer_offline": "true",
+        "NPM_CONFIG_PREFER_OFFLINE": "true",
+        "npm_config_fetch_retries": "0",
+        "NPM_CONFIG_FETCH_RETRIES": "0",
+        "npm_config_fetch_retry_mintimeout": "1000",
+        "NPM_CONFIG_FETCH_RETRY_MINTIMEOUT": "1000",
+        "npm_config_fetch_retry_maxtimeout": "1000",
+        "NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT": "1000",
+        "npm_config_maxsockets": "3",
+        "NPM_CONFIG_MAXSOCKETS": "3",
+        "npm_config_update_notifier": "false",
+        "NPM_CONFIG_UPDATE_NOTIFIER": "false",
+        "NO_UPDATE_NOTIFIER": "1",
+        "NODE_NO_WARNINGS": "1",
+        "UV_NO_PROGRESS": "1",
+        "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+        "PIP_NO_INPUT": "1",
+        "PIP_NO_PYTHON_VERSION_WARNING": "1",
+        "PIP_PROGRESS_BAR": "off"
+      },
+      "startup_timeout_sec": 15
+    },
+    "context7": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@upstash/context7-mcp@2.2.5"
+      ],
+      "env": {
+        "npm_config_loglevel": "error",
+        "NPM_CONFIG_LOGLEVEL": "error",
+        "npm_config_progress": "false",
+        "NPM_CONFIG_PROGRESS": "false",
+        "npm_config_audit": "false",
+        "NPM_CONFIG_AUDIT": "false",
+        "npm_config_fund": "false",
+        "NPM_CONFIG_FUND": "false",
+        "npm_config_prefer_offline": "true",
+        "NPM_CONFIG_PREFER_OFFLINE": "true",
+        "npm_config_fetch_retries": "0",
+        "NPM_CONFIG_FETCH_RETRIES": "0",
+        "npm_config_fetch_retry_mintimeout": "1000",
+        "NPM_CONFIG_FETCH_RETRY_MINTIMEOUT": "1000",
+        "npm_config_fetch_retry_maxtimeout": "1000",
+        "NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT": "1000",
+        "npm_config_maxsockets": "3",
+        "NPM_CONFIG_MAXSOCKETS": "3",
+        "npm_config_update_notifier": "false",
+        "NPM_CONFIG_UPDATE_NOTIFIER": "false",
+        "NO_UPDATE_NOTIFIER": "1",
+        "NODE_NO_WARNINGS": "1",
+        "UV_NO_PROGRESS": "1",
+        "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+        "PIP_NO_INPUT": "1",
+        "PIP_NO_PYTHON_VERSION_WARNING": "1",
+        "PIP_PROGRESS_BAR": "off"
+      },
+      "startup_timeout_sec": 15
+    },
+    "fetch": {
+      "command": "uvx",
+      "args": [
+        "mcp-server-fetch"
+      ],
+      "startup_timeout_sec": 15,
+      "env": {
+        "npm_config_loglevel": "error",
+        "NPM_CONFIG_LOGLEVEL": "error",
+        "npm_config_progress": "false",
+        "NPM_CONFIG_PROGRESS": "false",
+        "npm_config_audit": "false",
+        "NPM_CONFIG_AUDIT": "false",
+        "npm_config_fund": "false",
+        "NPM_CONFIG_FUND": "false",
+        "npm_config_prefer_offline": "true",
+        "NPM_CONFIG_PREFER_OFFLINE": "true",
+        "npm_config_fetch_retries": "0",
+        "NPM_CONFIG_FETCH_RETRIES": "0",
+        "npm_config_fetch_retry_mintimeout": "1000",
+        "NPM_CONFIG_FETCH_RETRY_MINTIMEOUT": "1000",
+        "npm_config_fetch_retry_maxtimeout": "1000",
+        "NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT": "1000",
+        "npm_config_maxsockets": "3",
+        "NPM_CONFIG_MAXSOCKETS": "3",
+        "npm_config_update_notifier": "false",
+        "NPM_CONFIG_UPDATE_NOTIFIER": "false",
+        "NO_UPDATE_NOTIFIER": "1",
+        "NODE_NO_WARNINGS": "1",
+        "UV_NO_PROGRESS": "1",
+        "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+        "PIP_NO_INPUT": "1",
+        "PIP_NO_PYTHON_VERSION_WARNING": "1",
+        "PIP_PROGRESS_BAR": "off"
+      }
+    },
+    "puppeteer": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-puppeteer@2025.5.12"
+      ],
+      "env": {
+        "npm_config_loglevel": "error",
+        "NPM_CONFIG_LOGLEVEL": "error",
+        "npm_config_progress": "false",
+        "NPM_CONFIG_PROGRESS": "false",
+        "npm_config_audit": "false",
+        "NPM_CONFIG_AUDIT": "false",
+        "npm_config_fund": "false",
+        "NPM_CONFIG_FUND": "false",
+        "npm_config_prefer_offline": "true",
+        "NPM_CONFIG_PREFER_OFFLINE": "true",
+        "npm_config_fetch_retries": "0",
+        "NPM_CONFIG_FETCH_RETRIES": "0",
+        "npm_config_fetch_retry_mintimeout": "1000",
+        "NPM_CONFIG_FETCH_RETRY_MINTIMEOUT": "1000",
+        "npm_config_fetch_retry_maxtimeout": "1000",
+        "NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT": "1000",
+        "npm_config_maxsockets": "3",
+        "NPM_CONFIG_MAXSOCKETS": "3",
+        "npm_config_update_notifier": "false",
+        "NPM_CONFIG_UPDATE_NOTIFIER": "false",
+        "NO_UPDATE_NOTIFIER": "1",
+        "NODE_NO_WARNINGS": "1",
+        "UV_NO_PROGRESS": "1",
+        "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+        "PIP_NO_INPUT": "1",
+        "PIP_NO_PYTHON_VERSION_WARNING": "1",
+        "PIP_PROGRESS_BAR": "off"
+      },
+      "startup_timeout_sec": 20
+    },
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@0.0.75"
+      ],
+      "env": {
+        "npm_config_loglevel": "error",
+        "NPM_CONFIG_LOGLEVEL": "error",
+        "npm_config_progress": "false",
+        "NPM_CONFIG_PROGRESS": "false",
+        "npm_config_audit": "false",
+        "NPM_CONFIG_AUDIT": "false",
+        "npm_config_fund": "false",
+        "NPM_CONFIG_FUND": "false",
+        "npm_config_prefer_offline": "true",
+        "NPM_CONFIG_PREFER_OFFLINE": "true",
+        "npm_config_fetch_retries": "0",
+        "NPM_CONFIG_FETCH_RETRIES": "0",
+        "npm_config_fetch_retry_mintimeout": "1000",
+        "NPM_CONFIG_FETCH_RETRY_MINTIMEOUT": "1000",
+        "npm_config_fetch_retry_maxtimeout": "1000",
+        "NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT": "1000",
+        "npm_config_maxsockets": "3",
+        "NPM_CONFIG_MAXSOCKETS": "3",
+        "npm_config_update_notifier": "false",
+        "NPM_CONFIG_UPDATE_NOTIFIER": "false",
+        "NO_UPDATE_NOTIFIER": "1",
+        "NODE_NO_WARNINGS": "1",
+        "UV_NO_PROGRESS": "1",
+        "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+        "PIP_NO_INPUT": "1",
+        "PIP_NO_PYTHON_VERSION_WARNING": "1",
+        "PIP_PROGRESS_BAR": "off"
+      },
+      "startup_timeout_sec": 20
+    },
+    "github": {
+      "url": "https://api.githubcopilot.com/mcp/"
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem@2026.1.14",
+        "/home/lsk/projects/wikiAI"
+      ],
+      "env": {
+        "npm_config_loglevel": "error",
+        "NPM_CONFIG_LOGLEVEL": "error",
+        "npm_config_progress": "false",
+        "NPM_CONFIG_PROGRESS": "false",
+        "npm_config_audit": "false",
+        "NPM_CONFIG_AUDIT": "false",
+        "npm_config_fund": "false",
+        "NPM_CONFIG_FUND": "false",
+        "npm_config_prefer_offline": "true",
+        "NPM_CONFIG_PREFER_OFFLINE": "true",
+        "npm_config_fetch_retries": "0",
+        "NPM_CONFIG_FETCH_RETRIES": "0",
+        "npm_config_fetch_retry_mintimeout": "1000",
+        "NPM_CONFIG_FETCH_RETRY_MINTIMEOUT": "1000",
+        "npm_config_fetch_retry_maxtimeout": "1000",
+        "NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT": "1000",
+        "npm_config_maxsockets": "3",
+        "NPM_CONFIG_MAXSOCKETS": "3",
+        "npm_config_update_notifier": "false",
+        "NPM_CONFIG_UPDATE_NOTIFIER": "false",
+        "NO_UPDATE_NOTIFIER": "1",
+        "NODE_NO_WARNINGS": "1",
+        "UV_NO_PROGRESS": "1",
+        "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+        "PIP_NO_INPUT": "1",
+        "PIP_NO_PYTHON_VERSION_WARNING": "1",
+        "PIP_PROGRESS_BAR": "off"
+      },
+      "startup_timeout_sec": 10
+    },
+    "filesystem-readonly": {
+      "command": "omk",
+      "args": [
+        "mcp",
+        "serve",
+        "filesystem-readonly"
+      ],
+      "env": {
+        "OMK_MCP_MODE": "readonly"
+      },
+      "startup_timeout_sec": 10
+    },
+    "omk-project": {
+      "command": "/home/lsk/.nvm/versions/node/v25.9.0/bin/node",
+      "args": [
+        "/home/lsk/.nvm/versions/node/v25.9.0/lib/node_modules/@oh-my-kimi/cli/dist/cli.js",
+        "mcp",
+        "serve",
+        "omk-project"
+      ],
+      "env": {
+        "OMK_PROJECT_ROOT": "/home/lsk/projects/wikiAI",
+        "npm_config_loglevel": "error",
+        "NODE_NO_WARNINGS": "1"
+      }
+    }
+  }
+}

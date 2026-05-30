@@ -1,0 +1,30 @@
+{
+  "name": "@wiki-ai/syncer",
+  "version": "0.1.0",
+  "description": "Wiki content indexer for RAG",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js",
+    "reindex": "tsx src/cli/reindex.ts",
+    "typecheck": "tsc --noEmit",
+    "backup": "tsx src/cli/backup.ts",
+    "restore": "tsx src/cli/restore.ts"
+  },
+  "dependencies": {
+    "@qdrant/js-client-rest": "^1.12.0",
+    "fastify": "^4.28.1",
+    "pdf-parse": "^2.4.5",
+    "tesseract.js": "^7.0.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "tsx": "^4.15.0",
+    "typescript": "^5.4.5"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

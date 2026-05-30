@@ -1,0 +1,72 @@
+{
+  "name": "AIAssistant",
+  "version": "0.1.0",
+  "author": [
+    "[Wiki AI Team]"
+  ],
+  "url": "https://github.com/...",
+  "descriptionmsg": "aiassistant-desc",
+  "license-name": "MIT",
+  "type": "other",
+  "requires": {
+    "MediaWiki": ">= 1.39.0"
+  },
+  "AutoloadNamespaces": {
+    "MediaWiki\\Extension\\AIAssistant\\": "src/"
+  },
+  "Hooks": {
+    "PageSaveComplete": "hook",
+    "PageDeleteComplete": "hook",
+    "PageMoveComplete": "hook",
+    "ArticleProtectComplete": "hook"
+  },
+  "HookHandlers": {
+    "hook": {
+      "class": "MediaWiki\\Extension\\AIAssistant\\Hooks"
+    }
+  },
+  "SpecialPages": {
+    "AIAssistant": {
+      "class": "MediaWiki\\Extension\\AIAssistant\\SpecialAIAssistant",
+      "services": []
+    },
+    "AIAdmin": {
+      "class": "MediaWiki\\Extension\\AIAssistant\\SpecialAIAdmin",
+      "services": []
+    }
+  },
+  "ExtensionMessagesFiles": {
+    "AIAssistantAlias": "AIAssistant.alias.php"
+  },
+  "MessagesDirs": {
+    "AIAssistant": [
+      "i18n"
+    ]
+  },
+  "ResourceModules": {
+    "ext.aiassistant": {
+      "scripts": [
+        "resources/ai-assistant/dist/index.js"
+      ],
+      "targets": [
+        "desktop",
+        "mobile"
+      ]
+    }
+  },
+  "ResourceFileModulePaths": {
+    "localBasePath": "",
+    "remoteExtPath": "AIAssistant"
+  },
+  "config": {
+    "AIAssistantGatewayUrl": {
+      "value": "http://localhost:3000",
+      "description": "Base URL of the AI Gateway"
+    },
+    "AIAssistantSyncerUrl": {
+      "value": "http://localhost:3001",
+      "description": "Base URL of the Syncer webhook endpoint"
+    }
+  },
+  "manifest_version": 2
+}

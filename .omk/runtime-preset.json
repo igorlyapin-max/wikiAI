@@ -1,0 +1,42 @@
+{
+  "id": "omk-parallel-orchestrator",
+  "name": "OMK Parallel Orchestrator",
+  "description": "Maximum parallelism preset for orchestrating multiple subagents with full MCP, skills, and hooks access.",
+  "skills": [
+    "omk-repo-explorer",
+    "omk-context-broker",
+    "omk-industrial-control-loop",
+    "omk-plan-first",
+    "omk-quality-gate",
+    "omk-code-review",
+    "omk-test-debug-loop",
+    "omk-python-typing",
+    "omk-task-router",
+    "multica",
+    "agentmemory"
+  ],
+  "hooks": [
+    "pre-shell-guard.sh",
+    "protect-secrets.sh",
+    "stop-verify.sh",
+    "subagent-stop-audit.sh",
+    "post-format.sh"
+  ],
+  "mcpServers": [
+    "omk-project",
+    "context7",
+    "github",
+    "fetch",
+    "railway-unofficial",
+    "supabase",
+    "firecrawl",
+    "puppeteer",
+    "playwright",
+    "pdf",
+    "memory",
+    "sequential-thinking",
+    "filesystem-readonly",
+    "git"
+  ],
+  "purpose": "Maximum parallelism orchestration with all available MCP servers, skills, and hooks enabled for multi-agent coordination."
+}
