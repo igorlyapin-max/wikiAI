@@ -1,17 +1,29 @@
-import { FastifyInstance } from 'fastify';
-import { mwAuthMiddleware, AuthenticatedRequest } from '../middleware/auth.js';
-import { getEmbedding } from '../services/embedding.js';
-import { searchChunks } from '../services/qdrant.js';
-import { userCanRead } from '../services/mediawiki.js';
-import { getRuntimeConfig } from '../services/config.js';
+import { FastifyInstance, FastifyRequest } from 'fastify';
+import { mwOptionalAuthMiddleware, AuthenticatedRequest } from '../middleware/auth.js';
+import { type WikiPageUrlOptions } from '../services/mediawiki-url.js';
+import { executeRuntimeSearch } from '../services/runtime-search.js';
+import { RuntimeHttpError } from '../services/runtime-errors.js';
+import { principalFromMwUser } from '../services/principal-auth.js';
 import { SearchRequest } from '../types/index.js';
+
+function readHeader(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function wikiUrlOptionsFromRequest(request: FastifyRequest): WikiPageUrlOptions {
+  return {
+    requestOrigin: readHeader(request.headers.origin),
+    requestHost: readHeader(request.headers.host),
+    requestProtocol: readHeader(request.headers['x-forwarded-proto']),
+  };
+}
 
 export async function searchRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Body: SearchRequest }>(
     '/api/search',
     {
       preHandler: [
-        mwAuthMiddleware,
+        mwOptionalAuthMiddleware,
         app.rateLimit({ max: 30, timeWindow: '1 minute', keyGenerator: (req) => req.ip }),
       ],
     },
@@ -25,33 +37,21 @@ export async function searchRoutes(app: FastifyInstance): Promise<void> {
         return;
       }
 
-      const runtime = await getRuntimeConfig();
-      const embedding = await getEmbedding(query);
-      const rawChunks = await searchChunks(embedding, mwUser.groups, topK ?? runtime.topK);
-
-      const results: typeof rawChunks = [];
-      for (const chunk of rawChunks) {
-        if (chunk.allowedGroups.includes('*')) {
-          results.push(chunk);
-          continue;
+      try {
+        reply.send(await executeRuntimeSearch({
+          query,
+          topK,
+          principal: principalFromMwUser(mwUser, cookie),
+          wikiUrlOptions: wikiUrlOptionsFromRequest(request),
+          aclMode: 'mediawiki_check',
+        }));
+      } catch (err) {
+        if (err instanceof RuntimeHttpError) {
+          reply.status(err.statusCode).send(err.payload);
+          return;
         }
-        const hasGroup = chunk.allowedGroups.some((g) => mwUser.groups.includes(g));
-        if (!hasGroup) continue;
-        if (chunk.namespace !== 0 || chunk.allowedGroups.length > 1) {
-          const canRead = await userCanRead(cookie, chunk.title);
-          if (canRead) results.push(chunk);
-        } else {
-          results.push(chunk);
-        }
-        if (results.length >= (topK ?? runtime.topK)) break;
+        throw err;
       }
-
-      reply.send({
-        query,
-        user: mwUser.username,
-        groups: mwUser.groups,
-        results,
-      });
     }
   );
 }

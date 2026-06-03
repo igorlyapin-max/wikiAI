@@ -10,6 +10,8 @@
     "lint": "eslint src --ext .ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:integration:local": "node scripts/integration-local.mjs",
+    "test:smoke:llm": "node scripts/smoke-litellm.mjs",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
   },
@@ -27,6 +29,8 @@
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
     "@vitest/coverage-v8": "^4.1.7",
     "eslint": "^8.57.0",
     "tsx": "^4.15.0",
@@ -34,6 +38,6 @@
     "vitest": "^4.1.7"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=24.0.0"
   }
 }

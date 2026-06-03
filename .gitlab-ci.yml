@@ -1,0 +1,149 @@
+stages:
+  - validate
+  - test
+  - typecheck
+  - build
+  - docker
+  - security
+
+variables:
+  NPM_CONFIG_FUND: "false"
+  NPM_CONFIG_AUDIT: "false"
+
+.gateway_node:
+  image: node:24
+  cache:
+    key:
+      files:
+        - packages/gateway/package-lock.json
+    paths:
+      - packages/gateway/.npm/
+  before_script:
+    - cd packages/gateway
+    - npm ci --cache .npm --prefer-offline
+
+.syncer_node:
+  image: node:20
+  cache:
+    key:
+      files:
+        - packages/syncer/package-lock.json
+    paths:
+      - packages/syncer/.npm/
+  before_script:
+    - cd packages/syncer
+    - npm ci --cache .npm --prefer-offline
+
+validate:repo:
+  image: node:24
+  stage: validate
+  script:
+    - |
+      if [ -n "${CI_MERGE_REQUEST_DIFF_BASE_SHA:-}" ]; then
+        git diff --check "$CI_MERGE_REQUEST_DIFF_BASE_SHA" "$CI_COMMIT_SHA"
+      elif [ -n "${CI_COMMIT_BEFORE_SHA:-}" ] && [ "$CI_COMMIT_BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+        git diff --check "$CI_COMMIT_BEFORE_SHA" "$CI_COMMIT_SHA"
+      else
+        git diff-tree --check --no-commit-id --root -r "$CI_COMMIT_SHA"
+      fi
+    - node -e "const fs=require('node:fs'); for (const file of ['packages/mw-extension/i18n/ru.json','packages/mw-extension/i18n/en.json']) JSON.parse(fs.readFileSync(file,'utf8')); console.log('i18n json ok')"
+    - for file in scripts/*.mjs; do node --check "$file"; done
+    - node --test scripts/*.test.mjs
+
+gateway:lint:
+  extends: .gateway_node
+  stage: validate
+  script:
+    - npm run lint
+
+gateway:test:
+  extends: .gateway_node
+  stage: test
+  script:
+    - npm test
+
+syncer:test:
+  extends: .syncer_node
+  stage: test
+  script:
+    - npm test
+
+gateway:typecheck:
+  extends: .gateway_node
+  stage: typecheck
+  script:
+    - npm run typecheck
+
+syncer:typecheck:
+  extends: .syncer_node
+  stage: typecheck
+  script:
+    - npm run typecheck
+
+gateway:build:
+  extends: .gateway_node
+  stage: build
+  script:
+    - npm run build
+
+syncer:build:
+  extends: .syncer_node
+  stage: build
+  script:
+    - npm run build
+
+mw-extension:package:
+  image: node:24
+  stage: build
+  script:
+    - node scripts/package-mw-extension.mjs
+  artifacts:
+    paths:
+      - dist/wiki-ai-aiassistant-extension-*.tar.gz
+    expire_in: 14 days
+
+docker:build:
+  image: docker:27
+  stage: docker
+  services:
+    - docker:27-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  script:
+    - docker build -t "wiki-ai-gateway-ci:${CI_COMMIT_SHORT_SHA}" packages/gateway
+    - docker build -t "wiki-ai-syncer-ci:${CI_COMMIT_SHORT_SHA}" packages/syncer
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH'
+
+security:secret-scan:
+  image: node:24
+  stage: security
+  script:
+    - node scripts/secret-scan.mjs
+
+security:npm-audit:
+  image: node:24
+  stage: security
+  allow_failure: true
+  script:
+    - npm --prefix packages/gateway ci --cache packages/gateway/.npm --prefer-offline
+    - npm --prefix packages/gateway audit --audit-level=high --omit=dev
+    - npm --prefix packages/syncer ci --cache packages/syncer/.npm --prefer-offline
+    - npm --prefix packages/syncer audit --audit-level=high --omit=dev
+
+live:gateway-integration:
+  extends: .gateway_node
+  stage: test
+  when: manual
+  allow_failure: true
+  script:
+    - npm run test:integration:local
+
+live:llm-smoke:
+  extends: .gateway_node
+  stage: test
+  when: manual
+  allow_failure: true
+  script:
+    - npm run test:smoke:llm

@@ -1,0 +1,16 @@
+{
+  "name": "@wiki-ai/mcp-adapter",
+  "version": "0.1.0",
+  "description": "MCP adapter for WikiAI Gateway external API",
+  "type": "module",
+  "bin": {
+    "wikiai-mcp": "./src/server.mjs"
+  },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "check": "node --check src/server.mjs"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

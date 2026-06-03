@@ -44,3 +44,5 @@ Thumbs.db
 # Docker volumes
 qdrant_storage/
 ollama_data/
+state/
+*/state/

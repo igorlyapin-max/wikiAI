@@ -24,6 +24,21 @@ export async function cacheUserGroups(sessionId: string, groups: string[], ttl: 
   await redis.setex(key, ttl, JSON.stringify(groups));
 }
 
+export async function clearUserGroupCache(): Promise<number> {
+  let cursor = '0';
+  let deleted = 0;
+
+  do {
+    const [nextCursor, keys] = await redis.scan(cursor, 'MATCH', 'mw:groups:*', 'COUNT', 100);
+    cursor = nextCursor;
+    if (keys.length > 0) {
+      deleted += await redis.del(...keys);
+    }
+  } while (cursor !== '0');
+
+  return deleted;
+}
+
 export async function getChatHistory(sessionId: string, conversationId: string): Promise<{ role: string; content: string }[]> {
   const key = `chat:${sessionId}:${conversationId}`;
   const cached = await redis.get(key);

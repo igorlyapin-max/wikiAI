@@ -1,6 +1,14 @@
 import { config } from '../config.js';
+import { fetchGatewayEmbedding } from './gateway.js';
 
 export async function getEmbedding(text: string): Promise<number[]> {
+  try {
+    const gatewayEmbedding = await fetchGatewayEmbedding(text);
+    return gatewayEmbedding.vector;
+  } catch (err) {
+    console.warn('Gateway embedding unavailable, falling back to Syncer env embedding:', err);
+  }
+
   const url = `${config.ollamaBaseUrl}/api/embeddings`;
   const res = await fetch(url, {
     method: 'POST',

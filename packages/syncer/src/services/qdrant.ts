@@ -1,6 +1,8 @@
 import { QdrantClient } from '@qdrant/js-client-rest';
 import { config } from '../config.js';
 import { getEmbedding } from './embedding.js';
+import { SearchIndexNotificationResult, syncSearchIndexPage } from './gateway.js';
+import type { SemanticFacts } from './mediawiki.js';
 
 export const qdrant = new QdrantClient({ url: config.qdrantUrl });
 
@@ -13,6 +15,16 @@ export interface ChunkPayload {
   chunk_index: number;
   total_chunks: number;
   last_modified: string;
+  semantic_facts?: SemanticFacts;
+  ai_summary?: string;
+  ai_keywords?: string[];
+  ai_enrichment_model?: string;
+}
+
+export interface PageLlmEnrichment {
+  summary: string;
+  keywords: string[];
+  model?: string;
 }
 
 export async function upsertChunks(
@@ -21,8 +33,10 @@ export async function upsertChunks(
   namespace: number,
   chunks: Array<{ text: string; index: number; total: number }>,
   allowedGroups: string[],
-  lastModified: string
-): Promise<void> {
+  lastModified: string,
+  semanticFacts: SemanticFacts = {},
+  llmEnrichment?: PageLlmEnrichment
+): Promise<SearchIndexNotificationResult | undefined> {
   await qdrant.delete(config.qdrantCollection, {
     filter: { must: [{ key: 'page_id', match: { value: pageId } }] },
   });
@@ -37,6 +51,12 @@ export async function upsertChunks(
         page_id: pageId, title, namespace, text: chunk.text,
         allowed_groups: allowedGroups, chunk_index: chunk.index,
         total_chunks: chunk.total, last_modified: lastModified,
+        ...(Object.keys(semanticFacts).length > 0 ? { semantic_facts: semanticFacts } : {}),
+        ...(llmEnrichment ? {
+          ai_summary: llmEnrichment.summary,
+          ai_keywords: llmEnrichment.keywords,
+          ai_enrichment_model: llmEnrichment.model,
+        } : {}),
       } as unknown as Record<string, unknown>,
     });
   }
@@ -44,6 +64,22 @@ export async function upsertChunks(
   if (points.length > 0) {
     await qdrant.upsert(config.qdrantCollection, { points });
   }
+
+  return syncSearchIndexPage({
+    pageId,
+    title,
+    namespace,
+    allowedGroups,
+    lastModified,
+    replacePage: true,
+    chunks: chunks.map((chunk) => ({
+      id: pageId * 10000 + chunk.index,
+      text: chunk.text,
+      chunkIndex: chunk.index,
+      totalChunks: chunk.total,
+      sourceType: 'page',
+    })),
+  });
 }
 
 export async function upsertAttachmentChunks(
@@ -55,7 +91,7 @@ export async function upsertAttachmentChunks(
   allowedGroups: string[],
   lastModified: string,
   metadata: Record<string, unknown>
-): Promise<void> {
+): Promise<SearchIndexNotificationResult | undefined> {
   const points = [];
   for (let i = 0; i < textChunks.length; i++) {
     const chunk = textChunks[i];
@@ -83,4 +119,43 @@ export async function upsertAttachmentChunks(
   if (points.length > 0) {
     await qdrant.upsert(config.qdrantCollection, { points });
   }
+
+  return syncSearchIndexPage({
+    pageId,
+    title: pageTitle,
+    namespace: 6,
+    allowedGroups,
+    lastModified,
+    replacePage: false,
+    chunks: textChunks.map((chunk, index) => ({
+      id: pageId * 100000 + 50000 + index,
+      text: chunk,
+      chunkIndex: index,
+      totalChunks: textChunks.length,
+      sourceType: 'attachment',
+      attachmentFilename: filename,
+    })),
+  });
+}
+
+export async function upsertAttachmentMetadata(
+  pageId: number,
+  pageTitle: string,
+  filename: string,
+  mimeType: string,
+  metadataText: string,
+  allowedGroups: string[],
+  lastModified: string,
+  metadata: Record<string, unknown>
+): Promise<void> {
+  await upsertAttachmentChunks(
+    pageId,
+    pageTitle,
+    filename,
+    mimeType,
+    [metadataText],
+    allowedGroups,
+    lastModified,
+    { ...metadata, mode: metadata.mode ?? 'metadata' }
+  );
 }

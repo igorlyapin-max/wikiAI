@@ -17,7 +17,10 @@ class SpecialAIAssistant extends SpecialPage
     $this->getOutput()->addModules('ext.aiassistant');
 
     $config = $this->getConfig();
-    $gatewayUrl = $config->get('AIAssistantGatewayUrl');
+    $gatewayUrl = GatewayUrlHelper::forBrowser(
+      (string)$config->get('AIAssistantGatewayUrl'),
+      (string)$config->get('AIAssistantGatewayPublicUrl')
+    );
 
     $this->getOutput()->addHTML(sprintf(
       '<div id="ai-assistant-root" data-gateway-url="%s"></div>',

@@ -18,7 +18,8 @@
     "PageSaveComplete": "hook",
     "PageDeleteComplete": "hook",
     "PageMoveComplete": "hook",
-    "ArticleProtectComplete": "hook"
+    "ArticleProtectComplete": "hook",
+    "getUserPermissionsErrors": "hook"
   },
   "HookHandlers": {
     "hook": {
@@ -60,13 +61,32 @@
   },
   "config": {
     "AIAssistantGatewayUrl": {
-      "value": "http://localhost:3000",
-      "description": "Base URL of the AI Gateway"
+      "value": "",
+      "description": "Internal or direct base URL of the AI Gateway. Leave empty for same-origin reverse proxy /api routes."
+    },
+    "AIAssistantGatewayPublicUrl": {
+      "value": "",
+      "description": "Optional browser-facing base URL of the AI Gateway. When empty, Docker-local hosts such as gateway or host.docker.internal are converted to the current wiki hostname."
     },
     "AIAssistantSyncerUrl": {
       "value": "http://localhost:3001",
       "description": "Base URL of the Syncer webhook endpoint"
+    },
+    "AIAssistantPageAclRules": {
+      "value": [],
+      "description": "Optional test-stand page-level read ACL rules. Each rule supports title or prefix and groups."
     }
   },
-  "manifest_version": 2
+  "manifest_version": 2,
+  "GroupPermissions": {
+    "sysop": {
+      "aiadmin": true
+    },
+    "aiadmin": {
+      "aiadmin": true
+    }
+  },
+  "AvailableRights": [
+    "aiadmin"
+  ]
 }

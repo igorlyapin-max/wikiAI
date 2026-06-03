@@ -1,0 +1,13 @@
+process.env.REDIS_URL ??= 'redis://localhost:16379/1';
+process.env.DATABASE_URL ??= 'sqlite://:memory:';
+process.env.QDRANT_URL ??= 'http://localhost:6333';
+process.env.QDRANT_COLLECTION ??= 'test_chunks';
+process.env.OLLAMA_BASE_URL ??= 'http://localhost:11434';
+process.env.OLLAMA_EMBEDDING_MODEL ??= 'nomic-embed-text';
+process.env.MW_BASE_URL ??= 'http://localhost:8082';
+process.env.MW_API_PATH ??= '/api.php';
+process.env.GATEWAY_BASE_URL ??= 'http://localhost:3000';
+process.env.SYNCER_PORT ??= '3001';
+process.env.CHUNK_SIZE ??= '512';
+process.env.CHUNK_OVERLAP ??= '50';
+process.env.NAMESPACE_ACL ??= '{"0":["*"]}';

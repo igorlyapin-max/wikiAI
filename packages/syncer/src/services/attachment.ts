@@ -1,51 +1,52 @@
-import { config } from '../config.js';
+import { DocumentProcessingConfig, getMimeProcessingRule, MimeProcessingRule } from './document-policy.js';
 
 export interface AttachmentResult {
   text: string;
   metadata: Record<string, unknown>;
 }
 
-// MIME type → processor config
-const mimeConfig: Record<string, { extract: boolean; ocr: boolean }> = {
-  'application/pdf': { extract: true, ocr: false },
-  'image/png': { extract: false, ocr: true },
-  'image/jpeg': { extract: false, ocr: true },
-  'image/jpg': { extract: false, ocr: true },
-  'image/webp': { extract: false, ocr: true },
-  'text/plain': { extract: true, ocr: false },
-};
-
-export function getMimeConfig(mimeType: string): { extract: boolean; ocr: boolean } {
-  return mimeConfig[mimeType] ?? { extract: false, ocr: false };
+export function getMetadataText(filename: string, mimeType: string, metadata: Record<string, unknown>): string {
+  const size = typeof metadata.size === 'number' ? `, ${metadata.size} bytes` : '';
+  return `Attachment metadata: ${filename} (${mimeType}${size})`;
 }
 
 export async function processAttachment(
   buffer: Buffer,
   mimeType: string,
-  filename: string
+  filename: string,
+  policy: DocumentProcessingConfig
 ): Promise<AttachmentResult> {
-  const cfg = getMimeConfig(mimeType);
+  const rule = getMimeProcessingRule(mimeType, policy);
   const metadata: Record<string, unknown> = {
     filename,
     mimeType,
     size: buffer.length,
+    mode: rule.mode,
   };
 
-  if (mimeType === 'application/pdf' && cfg.extract) {
+  if (rule.maxBytes !== undefined && buffer.length > rule.maxBytes) {
+    return { text: '', metadata: { ...metadata, error: 'max_bytes_exceeded' } };
+  }
+
+  if (mimeType === 'application/pdf' && rule.mode === 'text') {
+    let parser: { getText: () => Promise<{ text?: string; total?: number }>; destroy: () => Promise<void> } | null = null;
     try {
-      const pdfParseMod = await import("pdf-parse");
-      const data = await (pdfParseMod as any).default?.(buffer) ?? await (pdfParseMod as any)(buffer);
-      return { text: data.text ?? '', metadata: { ...metadata, pages: data.numpages } };
+      const { PDFParse } = await import('pdf-parse');
+      parser = new PDFParse({ data: buffer });
+      const data = await parser.getText();
+      return { text: data.text ?? '', metadata: { ...metadata, pages: data.total } };
     } catch (err) {
       console.error('PDF parse error:', (err as Error).message);
       return { text: '', metadata: { ...metadata, error: 'pdf_parse_failed' } };
+    } finally {
+      await parser?.destroy().catch(() => undefined);
     }
   }
 
-  if (cfg.ocr && mimeType.startsWith('image/')) {
+  if (rule.mode === 'ocr' && mimeType.startsWith('image/')) {
     try {
       const { createWorker } = await import('tesseract.js');
-      const worker = await createWorker('eng+rus');
+      const worker = await createWorker(rule.ocrLanguages ?? 'eng+rus');
       const {
         data: { text },
       } = await worker.recognize(buffer);
@@ -57,10 +58,10 @@ export async function processAttachment(
     }
   }
 
-  if (mimeType === 'text/plain' && cfg.extract) {
+  if (mimeType === 'text/plain' && rule.mode === 'text') {
     return { text: buffer.toString('utf-8'), metadata };
   }
 
   // Default: metadata only
-  return { text: '', metadata: { ...metadata, mode: 'metadata_only' } };
+  return { text: '', metadata };
 }

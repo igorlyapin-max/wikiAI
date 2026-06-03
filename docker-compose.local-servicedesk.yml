@@ -1,0 +1,28 @@
+services:
+  gateway:
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - LITELLM_BASE_URL=http://litellm:4000/v1
+      - MW_BASE_URL=http://mediawiki
+      - MW_PUBLIC_BASE_URL=${MW_PUBLIC_BASE_URL:-http://127.0.0.1:8082}
+    networks:
+      - default
+      - servicedesk_agents
+      - mediawiki
+
+  syncer:
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - MW_BASE_URL=http://mediawiki
+    networks:
+      - default
+      - servicedesk_agents
+      - mediawiki
+
+networks:
+  servicedesk_agents:
+    external: true
+    name: servicedesk-agents_default
+  mediawiki:
+    external: true
+    name: mediawiki_default

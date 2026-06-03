@@ -1,4 +1,4 @@
-import { config } from '../config.js';
+import { buildServiceUrl, getEffectiveLlmConfig } from './admin-platform-config.js';
 
 export interface ChatCompletionChunk {
   id: string;
@@ -20,8 +20,9 @@ export async function* streamChatCompletion(
   model?: string,
   timeoutMs?: number
 ): AsyncGenerator<ChatCompletionChunk, void, unknown> {
-  const url = `${config.litellmBaseUrl}/chat/completions`;
-  const effectiveTimeout = timeoutMs ?? 30000;
+  const effectiveConfig = await getEffectiveLlmConfig();
+  const url = buildServiceUrl(effectiveConfig.baseUrl, 'chat/completions');
+  const effectiveTimeout = timeoutMs ?? effectiveConfig.timeoutMs;
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), effectiveTimeout);
@@ -31,14 +32,14 @@ export async function* streamChatCompletion(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${config.litellmApiKey}`,
+        Authorization: `Bearer ${effectiveConfig.apiKey}`,
       },
       body: JSON.stringify({
-        model: model ?? config.litellmModel,
+        model: model ?? effectiveConfig.model,
         messages,
         stream: true,
-        temperature: 0.3,
-        max_tokens: 1024,
+        temperature: effectiveConfig.temperature,
+        max_tokens: effectiveConfig.maxTokens,
       }),
       signal: controller.signal,
     });
@@ -115,8 +116,9 @@ export async function callLiteLLM(
   model?: string,
   timeoutMs?: number
 ): Promise<ChatCompletionResponse> {
-  const url = `${config.litellmBaseUrl}/chat/completions`;
-  const effectiveTimeout = timeoutMs ?? 30000;
+  const effectiveConfig = await getEffectiveLlmConfig();
+  const url = buildServiceUrl(effectiveConfig.baseUrl, 'chat/completions');
+  const effectiveTimeout = timeoutMs ?? effectiveConfig.timeoutMs;
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), effectiveTimeout);
@@ -126,14 +128,14 @@ export async function callLiteLLM(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${config.litellmApiKey}`,
+        Authorization: `Bearer ${effectiveConfig.apiKey}`,
       },
       body: JSON.stringify({
-        model: model ?? config.litellmModel,
+        model: model ?? effectiveConfig.model,
         messages,
         stream: false,
-        temperature: 0.3,
-        max_tokens: 1024,
+        temperature: effectiveConfig.temperature,
+        max_tokens: effectiveConfig.maxTokens,
       }),
       signal: controller.signal,
     });

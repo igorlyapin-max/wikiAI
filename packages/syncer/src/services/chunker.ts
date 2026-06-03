@@ -6,27 +6,50 @@ export interface Chunk {
   total: number;
 }
 
-export function splitText(text: string): Chunk[] {
-  const separators = ['\n## ', '\n### ', '\n\n', '\n', '. ', ' '];
+export interface ChunkingOptions {
+  chunkSize?: number;
+  chunkOverlap?: number;
+  chunkSeparators?: string[];
+}
+
+function getChunkSize(value: number | undefined): number {
+  if (!Number.isInteger(value) || value === undefined) return config.chunkSize;
+  return Math.max(128, Math.min(value, 4096));
+}
+
+function getChunkOverlap(value: number | undefined, chunkSize: number): number {
+  if (!Number.isInteger(value) || value === undefined) return Math.min(config.chunkOverlap, chunkSize - 1);
+  return Math.max(0, Math.min(value, chunkSize - 1));
+}
+
+function getChunkSeparators(value: string[] | undefined): string[] {
+  if (!value || value.length === 0) return ['\n## ', '\n### ', '\n\n', '\n', '. ', ' '];
+  return value.filter((separator) => separator.length > 0).slice(0, 16);
+}
+
+export function splitText(text: string, options: ChunkingOptions = {}): Chunk[] {
+  const chunkSize = getChunkSize(options.chunkSize);
+  const chunkOverlap = getChunkOverlap(options.chunkOverlap, chunkSize);
+  const separators = getChunkSeparators(options.chunkSeparators);
   const chunks: Chunk[] = [];
   let remaining = text.trim();
   let index = 0;
 
   while (remaining.length > 0) {
     let chunk: string;
-    if (remaining.length <= config.chunkSize) {
+    if (remaining.length <= chunkSize) {
       chunk = remaining;
       remaining = '';
     } else {
-      chunk = remaining.slice(0, config.chunkSize);
+      chunk = remaining.slice(0, chunkSize);
       for (const sep of separators) {
         const breakPos = chunk.lastIndexOf(sep);
-        if (breakPos > config.chunkSize * 0.5) {
+        if (breakPos > chunkSize * 0.5) {
           chunk = remaining.slice(0, breakPos + sep.length);
           break;
         }
       }
-      remaining = remaining.slice(chunk.length - config.chunkOverlap);
+      remaining = remaining.slice(chunk.length - chunkOverlap);
     }
     chunks.push({ text: chunk.trim(), index, total: 0 });
     index++;

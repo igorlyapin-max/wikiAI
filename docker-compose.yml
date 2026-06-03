@@ -12,7 +12,7 @@ services:
       - QDRANT__SERVICE__HTTP_PORT=6333
       - QDRANT__SERVICE__GRPC_PORT=6334
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      test: ["CMD", "bash", "-lc", ": >/dev/tcp/127.0.0.1/6333"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -32,6 +32,27 @@ services:
       retries: 5
       start_period: 60s
 
+  colbert:
+    build:
+      context: ./packages/colbert-service
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:8083:8080"
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+      - COLBERT_MODEL=${COLBERT_MODEL:-antoinelouis/colbert-xm}
+      - COLBERT_COLLECTION=${COLBERT_COLLECTION:-wiki_colbert_chunks}
+      - COLBERT_DEVICE=${COLBERT_DEVICE:-cpu}
+      - COLBERT_MAX_TOKENS=${COLBERT_MAX_TOKENS:-180}
+      - HF_HOME=/models/huggingface
+      - HF_HUB_DISABLE_XET=1
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    volumes:
+      - colbert_models:/models
+    restart: unless-stopped
+
   gateway:
     build:
       context: ./packages/gateway
@@ -42,19 +63,29 @@ services:
       - NODE_ENV=production
       - GATEWAY_PORT=3000
       - REDIS_URL=redis://host.docker.internal:16379/0
+      - DATABASE_URL=sqlite:///app/state/wiki-ai.sqlite
       - LITELLM_BASE_URL=http://host.docker.internal:4000/v1
-      - LITELLM_API_KEY=sk-dev-litellm-master-key
-      - LITELLM_MODEL=hosted_vllm/facebook/opt-125m
+      - LITELLM_API_KEY=${LITELLM_API_KEY:?Set LITELLM_API_KEY in your environment}
+      - LITELLM_MODEL=${LITELLM_MODEL:-corp-openai-gpt-4.1-mini}
       - QDRANT_URL=http://qdrant:6333
       - QDRANT_COLLECTION=wiki_chunks
+      - SYNCER_BASE_URL=http://syncer:3001
+      - SYNCER_ADMIN_TOKEN=${SYNCER_ADMIN_TOKEN:-}
       - OLLAMA_BASE_URL=http://ollama:11434
       - OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+      - COLBERT_BASE_URL=${COLBERT_BASE_URL:-http://colbert:8080}
+      - COLBERT_MODEL=${COLBERT_MODEL:-antoinelouis/colbert-xm}
+      - COLBERT_COLLECTION=${COLBERT_COLLECTION:-wiki_colbert_chunks}
       - MW_BASE_URL=http://host.docker.internal:8082
+      - MW_PUBLIC_BASE_URL=${MW_PUBLIC_BASE_URL:-http://127.0.0.1:8082}
       - MW_API_PATH=/api.php
       - USER_GROUPS_CACHE_TTL=300
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://127.0.0.1:8082,http://localhost:8082}
     depends_on:
       qdrant:
         condition: service_healthy
+    volumes:
+      - ./state:/app/state
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -68,20 +99,49 @@ services:
     environment:
       - NODE_ENV=production
       - SYNCER_PORT=3001
+      - SYNCER_ADMIN_TOKEN=${SYNCER_ADMIN_TOKEN:-}
       - MW_BASE_URL=http://host.docker.internal:8082
       - MW_API_PATH=/api.php
+      - MW_SERVICE_USERNAME=${MW_SERVICE_USERNAME:-}
+      - MW_SERVICE_PASSWORD=${MW_SERVICE_PASSWORD:-}
+      - MW_SERVICE_PASSWORD_SECRET=${MW_SERVICE_PASSWORD_SECRET:-}
+      - MW_SYNC_COOKIE=${MW_SYNC_COOKIE:-}
+      - SECRETS_PROVIDER=${SECRETS_PROVIDER:-None}
+      - PAMURL=${PAMURL:-}
+      - PAMTOKEN=${PAMTOKEN:-}
+      - PAMTOKENFILE=${PAMTOKENFILE:-}
+      - PAMUSERNAME=${PAMUSERNAME:-}
+      - PAMPASSWORD=${PAMPASSWORD:-}
+      - PAMDEFAULTACCOUNTPATH=${PAMDEFAULTACCOUNTPATH:-}
+      - PAMPASSWORDENDPOINTPATH=${PAMPASSWORDENDPOINTPATH:-/sc_aapm_ui/rest/aapm/password}
+      - PAMRESPONSETYPE=${PAMRESPONSETYPE:-json}
+      - PAMVALUEJSONPATH=${PAMVALUEJSONPATH:-password}
+      - PAM_SEND_APPLICATION_CREDENTIALS_IN_QUERY=${PAM_SEND_APPLICATION_CREDENTIALS_IN_QUERY:-false}
+      - PAMPASSWORDEXPIRATIONINMINUTE=${PAMPASSWORDEXPIRATIONINMINUTE:-}
+      - PAMPASSWORDCHANGEREQUIRED=${PAMPASSWORDCHANGEREQUIRED:-}
+      - PAMCOMMENT=${PAMCOMMENT:-wikiai {service} {secretId}}
+      - PAMTENANTID=${PAMTENANTID:-}
+      - PAMPIN=${PAMPIN:-}
+      - PAMTIMEOUTMS=${PAMTIMEOUTMS:-10000}
+      - REDIS_URL=redis://host.docker.internal:16379/0
+      - DATABASE_URL=sqlite:///app/state/wiki-ai.sqlite
       - QDRANT_URL=http://qdrant:6333
       - QDRANT_COLLECTION=wiki_chunks
+      - GATEWAY_BASE_URL=http://gateway:3000
       - OLLAMA_BASE_URL=http://ollama:11434
       - OLLAMA_EMBEDDING_MODEL=nomic-embed-text
       - CHUNK_SIZE=512
       - CHUNK_OVERLAP=50
-      - NAMESPACE_ACL={"0":["*"]}
+      - NAMESPACE_ACL={"0":["*"],"3000":["*"],"3010":["ai-hr","ai-exec"],"3020":["ai-finance","ai-exec"],"3030":["ai-it","ai-exec"],"3040":["sysop","aiadmin","ai-exec"]}
+      - SMW_SYNC_ENABLED=${SMW_SYNC_ENABLED:-true}
+      - SMW_SYNC_PROPERTIES=${SMW_SYNC_PROPERTIES:-Департамент,Отдел,Тип документа,Владелец процесса,Статус документа,Система,Процесс,Дата действия,Критичность}
     depends_on:
       qdrant:
         condition: service_healthy
       ollama:
         condition: service_healthy
+    volumes:
+      - ./state:/app/state
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -89,3 +149,4 @@ services:
 volumes:
   qdrant_storage:
   ollama_data:
+  colbert_models:
