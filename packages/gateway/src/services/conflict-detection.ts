@@ -5,6 +5,7 @@ import {
   getConflictDetectionConfig,
 } from './admin-platform-config.js';
 import { callLiteLLM } from './litellm.js';
+import { logOperationalError } from './logging.js';
 import { SearchChunk, SemanticFacts } from '../types/index.js';
 
 export interface ConflictDetectionSourceResult {
@@ -315,7 +316,7 @@ export async function detectConflictsForChat(
     if (!result.checked || (!result.hasConflict && !result.lowTrust)) return null;
     return result;
   } catch (err) {
-    console.error('Conflict detection error:', err);
+    logOperationalError('conflict_detection.error', err);
     return null;
   }
 }

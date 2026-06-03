@@ -1,4 +1,4 @@
-export const CORPORATE_GROUPS = ['ai-hr', 'ai-finance', 'ai-it', 'ai-exec'];
+export const CORPORATE_GROUPS = ['ai-hr', 'ai-finance', 'ai-it', 'ai-exec', 'sysop', 'aiadmin'];
 
 export const CORPORATE_USERS = [
   {

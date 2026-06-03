@@ -1,4 +1,5 @@
 import { DocumentProcessingConfig, getMimeProcessingRule, MimeProcessingRule } from './document-policy.js';
+import { logOperationalError } from './logging.js';
 
 export interface AttachmentResult {
   text: string;
@@ -36,7 +37,7 @@ export async function processAttachment(
       const data = await parser.getText();
       return { text: data.text ?? '', metadata: { ...metadata, pages: data.total } };
     } catch (err) {
-      console.error('PDF parse error:', (err as Error).message);
+      logOperationalError('attachment.pdf_parse_error', err, { filename, mimeType });
       return { text: '', metadata: { ...metadata, error: 'pdf_parse_failed' } };
     } finally {
       await parser?.destroy().catch(() => undefined);
@@ -53,7 +54,7 @@ export async function processAttachment(
       await worker.terminate();
       return { text: text ?? '', metadata };
     } catch (err) {
-      console.error('OCR error:', (err as Error).message);
+      logOperationalError('attachment.ocr_error', err, { filename, mimeType });
       return { text: '', metadata: { ...metadata, error: 'ocr_failed' } };
     }
   }

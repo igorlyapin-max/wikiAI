@@ -6,6 +6,7 @@ import { ensureCollection } from './services/qdrant.js';
 import { redis } from './services/redis.js';
 import { startIndexingProfileScheduler, stopIndexingProfileScheduler } from './services/indexing-profile-scheduler.js';
 import { startTrustRecalculationScheduler, stopTrustRecalculationScheduler } from './services/trust-recalculation-scheduler.js';
+import { createFastifyLoggerOptions, diagnosticStartupFields } from './services/logging.js';
 import { healthRoutes } from './routes/health.js';
 import { searchRoutes } from './routes/search.js';
 import { chatRoutes } from './routes/chat.js';
@@ -14,18 +15,24 @@ import { externalRoutes } from './routes/external.js';
 
 export function buildGatewayApp(): FastifyInstance {
   const app = Fastify({
-    logger: config.nodeEnv === 'development',
+    logger: createFastifyLoggerOptions(),
   });
 
   app.addHook('onReady', async () => {
     await ensureCollection();
     startIndexingProfileScheduler();
     startTrustRecalculationScheduler();
-    console.log('Gateway ready, Qdrant collection ensured');
+    app.log.info(
+      {
+        event: 'gateway.ready',
+        ...(config.debugDiagnosticsEnabled ? diagnosticStartupFields() : {}),
+      },
+      'Gateway ready, Qdrant collection ensured'
+    );
   });
 
   app.addHook('onClose', async () => {
-    console.log('Gateway shutting down');
+    app.log.info({ event: 'gateway.shutdown' }, 'Gateway shutting down');
     stopIndexingProfileScheduler();
     stopTrustRecalculationScheduler();
     await redis.quit();

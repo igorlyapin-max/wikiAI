@@ -32,6 +32,12 @@ export interface AppConfig {
   oidcSubjectClaim: string;
   oidcUsernameClaim: string;
   oidcGroupsClaim: string;
+  debugDiagnosticsEnabled: boolean;
+  debugDiagnosticsLevel: 'Basic' | 'Verbose';
+  logSinks: Array<'stdout' | 'syslog'>;
+  logSyslogHost: string;
+  logSyslogPort: number;
+  healthCheckTimeoutMs: number;
 }
 
 export interface MWUserInfo {

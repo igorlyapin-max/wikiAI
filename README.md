@@ -43,7 +43,8 @@ wikiAI/
 
 ```bash
 cp .env.example .env
-# Отредактируй .env — укажи URL существующих внешних сервисов
+# Отредактируй .env — укажи URL существующих внешних сервисов,
+# LITELLM_API_KEY и SYNCER_ADMIN_TOKEN для docker-compose/production
 
 docker-compose up -d
 ```
@@ -232,6 +233,7 @@ node scripts/verify-corporate-acl-live.mjs
 - проверка whitespace diff, i18n JSON и `scripts/*.mjs`;
 - Gateway lint/test/typecheck/build;
 - Syncer test/typecheck/build;
+- MCP adapter syntax check;
 - Docker build Gateway и Syncer без push;
 - блокирующий secret scan;
 - `npm audit --audit-level=high --omit=dev` как временно `allow_failure`,
@@ -240,8 +242,9 @@ node scripts/verify-corporate-acl-live.mjs
 Live-проверки, которые могут требовать стенд или платный LLM/LiteLLM endpoint,
 оформлены manual jobs и не стартуют автоматически.
 
-Для `docker compose up` теперь нужно явно передать `LITELLM_API_KEY` через
-окружение или `.env`; дефолтные `changeme-*` значения не используются.
+Для `docker compose up` теперь нужно явно передать `LITELLM_API_KEY` и
+`SYNCER_ADMIN_TOKEN` через окружение или `.env`; дефолтные `changeme-*`
+значения не используются.
 
 ## Semantic MediaWiki / VEForAll rollout
 
@@ -337,7 +340,9 @@ Syncer reindex с `SMW_SYNC_ENABLED=true`.
 
 | Сервис | Endpoint | Описание |
 |--------|----------|----------|
-| Gateway | `GET /health` | Статус всех сервисов |
+| Gateway | `GET /live` | Liveness процесса |
+| Gateway | `GET /ready` | Readiness зависимостей |
+| Gateway | `GET /health` | Совместимый alias readiness |
 | Gateway | `POST /api/search` | AI-поиск с проверкой прав чтения |
 | Gateway | `POST /api/chat` | Чат-ассистент (SSE) |
 | Gateway | `GET /api/v1/capabilities` | Возможности внешнего REST API/MCP |
@@ -350,7 +355,9 @@ Syncer reindex с `SMW_SYNC_ENABLED=true`.
 | Gateway | `GET /api/admin/semantic/search?property=Департамент&value=ИТ%20департамент` | Диагностический поиск по SMW-свойствам без LLM |
 | Gateway | `POST /api/admin/reindex` | Запуск Syncer reindex из админки без OpenAI |
 | Gateway | `GET /api/admin/reindex/status` | Статус последнего Syncer reindex job |
-| Syncer | `POST /admin/reindex` | Внутренний запуск reindex job; защищается `SYNCER_ADMIN_TOKEN`, если задан |
+| Syncer | `GET /live` | Liveness процесса |
+| Syncer | `GET /ready` | Readiness зависимостей |
+| Syncer | `POST /admin/reindex` | Внутренний запуск reindex job; в production требует `SYNCER_ADMIN_TOKEN` |
 | Syncer | `GET /admin/reindex/status` | Внутренний статус reindex job |
 | Syncer | `POST /webhook/page` | Webhook от MediaWiki |
 

@@ -6,7 +6,10 @@ async function start(): Promise<void> {
 
   try {
     await app.listen({ port: config.gatewayPort, host: '0.0.0.0' });
-    console.log(`Gateway listening on http://0.0.0.0:${config.gatewayPort}`);
+    app.log.info(
+      { event: 'gateway.listen', port: config.gatewayPort, host: '0.0.0.0' },
+      `Gateway listening on http://0.0.0.0:${config.gatewayPort}`
+    );
   } catch (err) {
     app.log.error(err);
     process.exit(1);

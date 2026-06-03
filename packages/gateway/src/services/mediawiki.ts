@@ -1,5 +1,6 @@
 import { MWUserInfo } from '../types/index.js';
 import { config } from '../config.js';
+import { logOperationalError } from './logging.js';
 
 export interface WikiCategory {
   name: string;
@@ -123,7 +124,7 @@ async function fetchMediaWikiJson<T>(
     if (!res.ok) return null;
     return await res.json() as T;
   } catch (err) {
-    console.error(errorLabel, err);
+    logOperationalError('mediawiki.fetch_json_error', err, { errorLabel });
     return null;
   }
 }
@@ -347,7 +348,7 @@ export async function fetchUserInfo(sessionCookie: string): Promise<MWUserInfo |
         : undefined,
     };
   } catch (err) {
-    console.error('MW API error:', err);
+    logOperationalError('mediawiki.userinfo_error', err);
     return null;
   }
 }
@@ -386,7 +387,7 @@ async function userCanReadWithAuth(input: {
     const page = Object.values(pages)[0] as { readable?: string };
     return page?.readable === '';
   } catch (err) {
-    console.error('MW userCan error:', err);
+    logOperationalError('mediawiki.user_can_read_error', err);
     return false;
   }
 }

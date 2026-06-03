@@ -7,7 +7,7 @@ import {
 } from './ai-admin-docs-fixtures.mjs';
 
 test('AI admin documentation fixture has the expected managed pages', () => {
-  assert.equal(AI_ADMIN_DOC_PAGES.length, 17);
+  assert.equal(AI_ADMIN_DOC_PAGES.length, 18);
 
   const titles = AI_ADMIN_DOC_PAGES.map((page) => page.title);
   assert.equal(new Set(titles).size, titles.length);

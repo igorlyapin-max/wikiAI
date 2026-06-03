@@ -1,5 +1,6 @@
 import { config } from '../config.js';
 import { getSecretStatus, resolveSecretValue } from './secrets.js';
+import { logOperationalError } from './logging.js';
 
 export interface MWPage {
   pageid: number;
@@ -289,7 +290,7 @@ export async function fetchPageContent(title: string): Promise<MWPage | null> {
 
     return { pageid: page.pageid, ns: page.ns, title: page.title, content, lastModified };
   } catch (err) {
-    console.error('Fetch page error:', err);
+    logOperationalError('mediawiki.fetch_page_error', err, { title });
     return null;
   }
 }
@@ -367,7 +368,7 @@ export async function fetchSemanticFacts(
     const firstResult = Object.values(results)[0] as any;
     return normalizeSemanticPrintouts(firstResult?.printouts ?? {});
   } catch (err) {
-    console.error('Fetch semantic facts error:', err);
+    logOperationalError('mediawiki.fetch_semantic_facts_error', err, { title });
     return {};
   }
 }
@@ -417,7 +418,7 @@ export async function fetchPageCategories(title: string): Promise<string[]> {
       .map((category: { title?: unknown }) => typeof category.title === 'string' ? category.title : undefined)
       .filter((category: string | undefined): category is string => Boolean(category));
   } catch (err) {
-    console.error('Fetch page categories error:', err);
+    logOperationalError('mediawiki.fetch_page_categories_error', err, { title });
     return [];
   }
 }
@@ -443,7 +444,7 @@ export async function fetchPageFiles(title: string): Promise<string[]> {
     const images: string[] = record.parse?.images ?? [];
     return images.filter((name: string) => !name.startsWith('Page_'));
   } catch (err) {
-    console.error('Fetch page files error:', err);
+    logOperationalError('mediawiki.fetch_page_files_error', err, { title });
     return [];
   }
 }
@@ -476,7 +477,7 @@ export async function fetchFileInfo(filename: string): Promise<MWFile | null> {
       size: info.size,
     };
   } catch (err) {
-    console.error('Fetch file info error:', err);
+    logOperationalError('mediawiki.fetch_file_info_error', err, { filename });
     return null;
   }
 }
@@ -492,7 +493,7 @@ export async function downloadFile(url: string): Promise<Buffer | null> {
     const arrayBuffer = await res.arrayBuffer();
     return Buffer.from(arrayBuffer);
   } catch (err) {
-    console.error('Download file error:', err);
+    logOperationalError('mediawiki.download_file_error', err);
     return null;
   }
 }

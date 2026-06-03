@@ -1,6 +1,7 @@
 import { QdrantClient, type Schemas } from '@qdrant/js-client-rest';
 import { config } from '../config.js';
 import { SearchChunk, SemanticFacts } from '../types/index.js';
+import { logOperationalEvent } from './logging.js';
 
 export const qdrant = new QdrantClient({ url: config.qdrantUrl });
 export const QDRANT_VECTOR_SIZE = 768;
@@ -68,7 +69,7 @@ export async function ensurePayloadIndexes(): Promise<void> {
   }
 
   if (createdIndexes.length > 0) {
-    console.log(`Ensured Qdrant payload indexes: ${createdIndexes.join(', ')}`);
+    logOperationalEvent('info', 'qdrant.payload_indexes_ensured', { createdIndexes });
   }
 }
 
@@ -84,7 +85,7 @@ export async function ensureCollection(): Promise<void> {
       },
     });
 
-    console.log(`Created Qdrant collection: ${config.qdrantCollection}`);
+    logOperationalEvent('info', 'qdrant.collection_created', { collection: config.qdrantCollection });
   }
 
   await ensurePayloadIndexes();

@@ -27,6 +27,7 @@ import {
 } from './colbert-reranker.js';
 import { principalSessionHash } from './principal-auth.js';
 import { RuntimeHttpError } from './runtime-errors.js';
+import { logOperationalError } from './logging.js';
 import { AuthenticatedPrincipal, SearchChunk } from '../types/index.js';
 
 type RetrievalHistoryMessage = { role: string; content: string };
@@ -198,7 +199,7 @@ export async function prepareRuntimeChat(input: RuntimeChatInput): Promise<Prepa
         message: err.message,
       });
     }
-    console.error('Chat SQL history write error:', err);
+    logOperationalError('chat.sql_user_history_write_error', err);
   }
 
   const ragConfig = await getRagAdminConfig();
@@ -279,7 +280,7 @@ export async function completeRuntimeChat(prepared: PreparedRuntimeChat): Promis
         content,
         sources: prepared.sources,
       }, prepared.retention).catch((err: unknown) => {
-        console.error('Chat SQL assistant history write error:', err);
+        logOperationalError('chat.sql_assistant_history_write_error', err);
       });
     }
     return {
@@ -289,7 +290,7 @@ export async function completeRuntimeChat(prepared: PreparedRuntimeChat): Promis
       conflict: prepared.conflict ?? undefined,
     };
   } catch (err) {
-    console.error('Chat non-streaming error:', err);
+    logOperationalError('chat.non_streaming_error', err);
     return {
       llmAvailable: false,
       conversationId: prepared.conversationId,
@@ -330,7 +331,7 @@ export async function streamRuntimeChat(
     }
     writeEvent('[DONE]');
   } catch (err) {
-    console.error('Chat stream error:', err);
+    logOperationalError('chat.stream_error', err);
     const errorMsg = 'AI model temporarily unavailable. Here are the found documents:';
     writeEvent({ type: 'token', content: errorMsg });
     writeEvent({ type: 'token', content: '\n\n' });
@@ -360,7 +361,7 @@ export async function streamRuntimeChat(
         content: fullResponse,
         sources: prepared.sources,
       }, prepared.retention).catch((err: unknown) => {
-        console.error('Chat SQL stream history write error:', err);
+        logOperationalError('chat.sql_stream_history_write_error', err);
       });
     }
   }

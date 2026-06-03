@@ -22,8 +22,23 @@ import { getWebhookTitle, normalizeEvent, WebhookBody } from './services/webhook
 import { getReindexJobStatus, startReindexJob } from './services/reindex-job.js';
 import { ReindexOptions } from './services/reindex.js';
 import { applySemanticAutofillPatch } from './services/semantic-autofill.js';
+import { qdrant } from './services/qdrant.js';
+import {
+  createFastifyLoggerOptions,
+  diagnosticStartupFields,
+} from './services/logging.js';
 
-const app = Fastify({ logger: true });
+const app = Fastify({ logger: createFastifyLoggerOptions() });
+
+app.addHook('onReady', async () => {
+  app.log.info(
+    {
+      event: 'syncer.ready',
+      ...(config.debugDiagnosticsEnabled ? diagnosticStartupFields() : {}),
+    },
+    'Syncer ready'
+  );
+});
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -101,8 +116,87 @@ function parseReindexOptions(body: unknown): ReindexOptions {
 }
 
 function hasAdminAccess(headers: Record<string, unknown>): boolean {
-  if (!config.syncerAdminToken) return true;
+  if (!config.syncerAdminToken) return config.allowUnprotectedSyncerAdmin;
   return headers['x-wikiai-admin-token'] === config.syncerAdminToken;
+}
+
+interface HealthCheck {
+  status: string;
+  latencyMs: number;
+  error?: string;
+}
+
+interface HealthStatus {
+  status: 'healthy' | 'degraded';
+  checks: Record<string, HealthCheck>;
+}
+
+function buildServiceUrl(baseUrl: string, path: string): string {
+  const normalizedBase = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
+  return new URL(path.replace(/^\/+/, ''), normalizedBase).toString();
+}
+
+async function withTimeout<T>(operation: Promise<T>, label: string): Promise<T> {
+  let timeout: NodeJS.Timeout | undefined;
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => reject(new Error(`${label} timed out after ${config.healthCheckTimeoutMs}ms`)), config.healthCheckTimeoutMs);
+  });
+
+  try {
+    return await Promise.race([operation, timeoutPromise]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit = {}): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), config.healthCheckTimeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function runCheck(name: string, operation: () => Promise<void>): Promise<HealthCheck> {
+  const start = Date.now();
+  try {
+    await withTimeout(operation(), name);
+    return { status: 'ok', latencyMs: Date.now() - start };
+  } catch (err) {
+    return { status: 'error', latencyMs: Date.now() - start, error: err instanceof Error ? err.message : 'Unknown error' };
+  }
+}
+
+async function getReadinessStatus(): Promise<HealthStatus> {
+  const checks: Record<string, HealthCheck> = {};
+
+  checks.qdrant = await runCheck('qdrant', async () => {
+    await qdrant.getCollections();
+  });
+
+  checks.gateway = await runCheck('gateway', async () => {
+    const res = await fetchWithTimeout(buildServiceUrl(config.gatewayBaseUrl, '/live'));
+    if (!res.ok) throw new Error(`Gateway liveness failed with HTTP ${res.status}`);
+  });
+
+  checks.mediawiki = await runCheck('mediawiki', async () => {
+    const url = new URL(config.mwApiPath, config.mwBaseUrl);
+    url.searchParams.set('action', 'query');
+    url.searchParams.set('meta', 'siteinfo');
+    url.searchParams.set('format', 'json');
+    const res = await fetchWithTimeout(url.toString(), {
+      headers: { 'User-Agent': 'WikiAI-Syncer/0.1' },
+    });
+    if (!res.ok) throw new Error(`MediaWiki API failed with HTTP ${res.status}`);
+  });
+
+  const allOk = Object.values(checks).every((check) => check.status === 'ok');
+  return {
+    status: allOk ? 'healthy' : 'degraded',
+    checks,
+  };
 }
 
 function isWikiAiServiceEdit(body: WebhookBody): boolean {
@@ -124,11 +218,10 @@ app.post('/webhook/page', async (request, reply) => {
     return;
   }
 
-  console.log('Webhook received:', event, title);
+  request.log.info({ event: 'syncer.webhook_received', webhookEvent: event, title }, 'Webhook received');
 
   if (event === 'delete') {
     // Delete all chunks for page
-    const { qdrant } = await import('./services/qdrant.js');
     await qdrant.delete(config.qdrantCollection, {
       filter: { must: [{ key: 'page_id', match: { value: body.page_id } }] },
     });
@@ -288,12 +381,25 @@ app.post('/admin/mediawiki-service-auth/test', async (request, reply) => {
   reply.send(await testMediaWikiServiceLogin());
 });
 
-app.get('/health', async () => ({ status: 'ok' }));
+app.get('/live', async () => ({ status: 'ok', service: 'syncer' }));
+
+app.get('/ready', async (_request, reply) => {
+  const health = await getReadinessStatus();
+  reply.status(health.status === 'healthy' ? 200 : 503).send(health);
+});
+
+app.get('/health', async (_request, reply) => {
+  const health = await getReadinessStatus();
+  reply.status(health.status === 'healthy' ? 200 : 503).send(health);
+});
 
 async function start(): Promise<void> {
   try {
     await app.listen({ port: config.syncerPort, host: '0.0.0.0' });
-    console.log(`Syncer listening on http://0.0.0.0:${config.syncerPort}`);
+    app.log.info(
+      { event: 'syncer.listen', port: config.syncerPort, host: '0.0.0.0' },
+      `Syncer listening on http://0.0.0.0:${config.syncerPort}`
+    );
   } catch (err) {
     app.log.error(err);
     process.exit(1);

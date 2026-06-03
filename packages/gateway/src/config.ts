@@ -33,6 +33,23 @@ function envExternalAclMode(value: string | undefined): AppConfig['externalAclMo
   return value === 'groups_only' ? 'groups_only' : 'mediawiki_check';
 }
 
+export function parseDiagnosticLevel(value: string | undefined): AppConfig['debugDiagnosticsLevel'] {
+  return value?.trim().toLowerCase() === 'verbose' ? 'Verbose' : 'Basic';
+}
+
+export function parseLogSinks(value: string | undefined): AppConfig['logSinks'] {
+  const rawSinks = value
+    ? value
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean)
+    : ['stdout', 'syslog'];
+  const sinks = rawSinks
+    .map((sink) => sink.toLowerCase())
+    .filter((sink): sink is 'stdout' | 'syslog' => sink === 'stdout' || sink === 'syslog');
+  return sinks.length > 0 ? Array.from(new Set(sinks)) : ['stdout'];
+}
+
 export function parseCorsOrigins(value: string | undefined, nodeEnv: string): string[] {
   const explicitOrigins = value
     ?.split(',')
@@ -101,4 +118,10 @@ export const config: AppConfig = {
   oidcSubjectClaim: process.env.OIDC_SUBJECT_CLAIM ?? 'sub',
   oidcUsernameClaim: process.env.OIDC_USERNAME_CLAIM ?? 'preferred_username',
   oidcGroupsClaim: process.env.OIDC_GROUPS_CLAIM ?? 'groups',
+  debugDiagnosticsEnabled: envBoolean('DEBUG_DIAGNOSTICS_ENABLED', false),
+  debugDiagnosticsLevel: parseDiagnosticLevel(process.env.DEBUG_DIAGNOSTICS_LEVEL),
+  logSinks: parseLogSinks(process.env.LOG_SINKS),
+  logSyslogHost: env('LOG_SYSLOG_HOST', '127.0.0.1'),
+  logSyslogPort: envInt('LOG_SYSLOG_PORT', 514),
+  healthCheckTimeoutMs: envInt('HEALTH_CHECK_TIMEOUT_MS', 2000),
 };

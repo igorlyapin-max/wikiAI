@@ -4,6 +4,7 @@ import {
   IndexingProfile,
 } from './admin-platform-config.js';
 import { startSyncerReindex } from './syncer-admin.js';
+import { logOperationalError } from './logging.js';
 
 const SCHEDULER_TICK_MS = 60_000;
 const DEFAULT_INTERVAL_MINUTES = 1440;
@@ -147,8 +148,7 @@ export function startIndexingProfileScheduler(
   if (schedulerTimer) return;
   schedulerTimer = setInterval(() => {
     void runOnce().catch((err: unknown) => {
-      const message = err instanceof Error ? err.message : 'Unknown scheduler tick error';
-      console.error(`Indexing profile scheduler tick failed: ${message}`);
+      logOperationalError('indexing_profile_scheduler.tick_failed', err);
     });
   }, SCHEDULER_TICK_MS);
 }

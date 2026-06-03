@@ -70,7 +70,7 @@ services:
       - QDRANT_URL=http://qdrant:6333
       - QDRANT_COLLECTION=wiki_chunks
       - SYNCER_BASE_URL=http://syncer:3001
-      - SYNCER_ADMIN_TOKEN=${SYNCER_ADMIN_TOKEN:-}
+      - SYNCER_ADMIN_TOKEN=${SYNCER_ADMIN_TOKEN:?Set SYNCER_ADMIN_TOKEN in your environment}
       - OLLAMA_BASE_URL=http://ollama:11434
       - OLLAMA_EMBEDDING_MODEL=nomic-embed-text
       - COLBERT_BASE_URL=${COLBERT_BASE_URL:-http://colbert:8080}
@@ -81,6 +81,12 @@ services:
       - MW_API_PATH=/api.php
       - USER_GROUPS_CACHE_TTL=300
       - CORS_ORIGINS=${CORS_ORIGINS:-http://127.0.0.1:8082,http://localhost:8082}
+      - DEBUG_DIAGNOSTICS_ENABLED=${DEBUG_DIAGNOSTICS_ENABLED:-false}
+      - DEBUG_DIAGNOSTICS_LEVEL=${DEBUG_DIAGNOSTICS_LEVEL:-Basic}
+      - LOG_SINKS=${LOG_SINKS:-stdout,syslog}
+      - LOG_SYSLOG_HOST=${LOG_SYSLOG_HOST:-host.docker.internal}
+      - LOG_SYSLOG_PORT=${LOG_SYSLOG_PORT:-514}
+      - HEALTH_CHECK_TIMEOUT_MS=${HEALTH_CHECK_TIMEOUT_MS:-2000}
     depends_on:
       qdrant:
         condition: service_healthy
@@ -99,7 +105,8 @@ services:
     environment:
       - NODE_ENV=production
       - SYNCER_PORT=3001
-      - SYNCER_ADMIN_TOKEN=${SYNCER_ADMIN_TOKEN:-}
+      - SYNCER_ADMIN_TOKEN=${SYNCER_ADMIN_TOKEN:?Set SYNCER_ADMIN_TOKEN in your environment}
+      - ALLOW_UNPROTECTED_SYNCER_ADMIN=false
       - MW_BASE_URL=http://host.docker.internal:8082
       - MW_API_PATH=/api.php
       - MW_SERVICE_USERNAME=${MW_SERVICE_USERNAME:-}
@@ -135,6 +142,12 @@ services:
       - NAMESPACE_ACL={"0":["*"],"3000":["*"],"3010":["ai-hr","ai-exec"],"3020":["ai-finance","ai-exec"],"3030":["ai-it","ai-exec"],"3040":["sysop","aiadmin","ai-exec"]}
       - SMW_SYNC_ENABLED=${SMW_SYNC_ENABLED:-true}
       - SMW_SYNC_PROPERTIES=${SMW_SYNC_PROPERTIES:-Департамент,Отдел,Тип документа,Владелец процесса,Статус документа,Система,Процесс,Дата действия,Критичность}
+      - DEBUG_DIAGNOSTICS_ENABLED=${DEBUG_DIAGNOSTICS_ENABLED:-false}
+      - DEBUG_DIAGNOSTICS_LEVEL=${DEBUG_DIAGNOSTICS_LEVEL:-Basic}
+      - LOG_SINKS=${LOG_SINKS:-stdout,syslog}
+      - LOG_SYSLOG_HOST=${LOG_SYSLOG_HOST:-host.docker.internal}
+      - LOG_SYSLOG_PORT=${LOG_SYSLOG_PORT:-514}
+      - HEALTH_CHECK_TIMEOUT_MS=${HEALTH_CHECK_TIMEOUT_MS:-2000}
     depends_on:
       qdrant:
         condition: service_healthy

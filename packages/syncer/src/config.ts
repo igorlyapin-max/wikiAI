@@ -7,7 +7,7 @@ function env(name: string, defaultValue?: string): string {
 function envBool(name: string, defaultValue: boolean): boolean {
   const value = process.env[name];
   if (value === undefined) return defaultValue;
-  return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
+  return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase());
 }
 
 function optionalEnvBool(defaultValue: boolean, ...names: string[]): boolean {
@@ -35,7 +35,83 @@ function optionalEnv(...names: string[]): string | undefined {
   return undefined;
 }
 
-export const config = {
+export type DiagnosticLevel = 'Basic' | 'Verbose';
+export type LogSink = 'stdout' | 'syslog';
+
+export interface SyncerConfig {
+  mwBaseUrl: string;
+  mwApiPath: string;
+  mwSyncCookie?: string;
+  mwServiceUsername?: string;
+  mwServicePassword?: string;
+  mwServicePasswordSecret?: string;
+  secretsProvider: string;
+  pamBaseUrl?: string;
+  pamToken?: string;
+  pamTokenFile?: string;
+  pamUsername?: string;
+  pamPassword?: string;
+  pamDefaultAccountPath?: string;
+  pamPasswordEndpointPath: string;
+  pamSendApplicationCredentialsInQuery: boolean;
+  pamResponseType: string;
+  pamValueJsonPath: string;
+  pamPasswordExpirationInMinute?: string;
+  pamPasswordChangeRequired?: string;
+  pamComment: string;
+  pamTenantId?: string;
+  pamPin?: string;
+  pamTimeoutMs: number;
+  ollamaBaseUrl: string;
+  ollamaEmbeddingModel: string;
+  qdrantUrl: string;
+  qdrantCollection: string;
+  redisUrl: string;
+  databaseUrl: string;
+  gatewayBaseUrl: string;
+  syncerPort: number;
+  syncerAdminToken?: string;
+  allowUnprotectedSyncerAdmin: boolean;
+  chunkSize: number;
+  chunkOverlap: number;
+  namespaceAcl: Record<string, string[]>;
+  smwSyncEnabled: boolean;
+  smwSyncProperties: string[];
+  nodeEnv: string;
+  debugDiagnosticsEnabled: boolean;
+  debugDiagnosticsLevel: DiagnosticLevel;
+  logSinks: LogSink[];
+  logSyslogHost: string;
+  logSyslogPort: number;
+  healthCheckTimeoutMs: number;
+}
+
+export function parseDiagnosticLevel(value: string | undefined): DiagnosticLevel {
+  return value?.trim().toLowerCase() === 'verbose' ? 'Verbose' : 'Basic';
+}
+
+export function parseLogSinks(value: string | undefined): LogSink[] {
+  const rawSinks = value
+    ? value
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean)
+    : ['stdout', 'syslog'];
+  const sinks = rawSinks
+    .map((sink) => sink.toLowerCase())
+    .filter((sink): sink is LogSink => sink === 'stdout' || sink === 'syslog');
+  return sinks.length > 0 ? Array.from(new Set(sinks)) : ['stdout'];
+}
+
+const nodeEnv = env('NODE_ENV', 'development');
+const syncerAdminToken = optionalEnv('SYNCER_ADMIN_TOKEN');
+const allowUnprotectedSyncerAdmin = envBool('ALLOW_UNPROTECTED_SYNCER_ADMIN', nodeEnv !== 'production');
+
+if (nodeEnv === 'production' && !syncerAdminToken) {
+  throw new Error('SYNCER_ADMIN_TOKEN is required when NODE_ENV=production');
+}
+
+export const config: SyncerConfig = {
   mwBaseUrl: env('MW_BASE_URL', 'http://localhost:8082'),
   mwApiPath: env('MW_API_PATH', '/api.php'),
   mwSyncCookie: process.env.MW_SYNC_COOKIE,
@@ -79,7 +155,8 @@ export const config = {
   databaseUrl: env('DATABASE_URL', 'sqlite://./state/wiki-ai.sqlite'),
   gatewayBaseUrl: env('GATEWAY_BASE_URL', 'http://localhost:3000'),
   syncerPort: parseInt(env('SYNCER_PORT', '3001'), 10),
-  syncerAdminToken: process.env.SYNCER_ADMIN_TOKEN,
+  syncerAdminToken,
+  allowUnprotectedSyncerAdmin,
   chunkSize: parseInt(env('CHUNK_SIZE', '512'), 10),
   chunkOverlap: parseInt(env('CHUNK_OVERLAP', '50'), 10),
   // Namespace ID → allowed_groups mapping
@@ -96,4 +173,11 @@ export const config = {
     'Дата действия',
     'Критичность',
   ]),
+  nodeEnv,
+  debugDiagnosticsEnabled: envBool('DEBUG_DIAGNOSTICS_ENABLED', false),
+  debugDiagnosticsLevel: parseDiagnosticLevel(process.env.DEBUG_DIAGNOSTICS_LEVEL),
+  logSinks: parseLogSinks(process.env.LOG_SINKS),
+  logSyslogHost: env('LOG_SYSLOG_HOST', '127.0.0.1'),
+  logSyslogPort: parseInt(env('LOG_SYSLOG_PORT', '514'), 10),
+  healthCheckTimeoutMs: parseInt(env('HEALTH_CHECK_TIMEOUT_MS', '2000'), 10),
 };

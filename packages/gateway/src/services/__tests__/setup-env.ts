@@ -13,3 +13,4 @@ process.env.MW_API_PATH ??= '/api.php';
 process.env.GATEWAY_PORT ??= '3000';
 process.env.NODE_ENV ??= 'test';
 process.env.USER_GROUPS_CACHE_TTL ??= '60';
+process.env.LOG_SINKS ??= 'stdout';

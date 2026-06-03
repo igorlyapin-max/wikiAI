@@ -9,9 +9,14 @@ import {
 } from '../indexing-profile-scheduler.js';
 
 const startSyncerReindex = vi.hoisted(() => vi.fn());
+const logOperationalError = vi.hoisted(() => vi.fn());
 
 vi.mock('../syncer-admin.js', () => ({
   startSyncerReindex,
+}));
+
+vi.mock('../logging.js', () => ({
+  logOperationalError,
 }));
 
 describe('indexing profile scheduler', () => {
@@ -19,6 +24,7 @@ describe('indexing profile scheduler', () => {
     resetAdminStoreForTests();
     resetIndexingProfileSchedulerForTests();
     startSyncerReindex.mockReset();
+    logOperationalError.mockReset();
   });
 
   it('starts due scheduled profiles by profileId only', async () => {
@@ -68,9 +74,9 @@ describe('indexing profile scheduler', () => {
   });
 
   it('logs scheduler tick failures instead of creating an unhandled rejection', async () => {
+    const error = new Error('admin store unavailable');
     const runOnce = vi.fn<() => Promise<void>>()
-      .mockRejectedValueOnce(new Error('admin store unavailable'));
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      .mockRejectedValueOnce(error);
     vi.useFakeTimers();
 
     try {
@@ -79,13 +85,10 @@ describe('indexing profile scheduler', () => {
       await vi.advanceTimersByTimeAsync(60_000);
 
       expect(runOnce).toHaveBeenCalledTimes(1);
-      expect(consoleError).toHaveBeenCalledWith(
-        'Indexing profile scheduler tick failed: admin store unavailable'
-      );
+      expect(logOperationalError).toHaveBeenCalledWith('indexing_profile_scheduler.tick_failed', error);
     } finally {
       resetIndexingProfileSchedulerForTests();
       vi.useRealTimers();
-      consoleError.mockRestore();
     }
   });
 });

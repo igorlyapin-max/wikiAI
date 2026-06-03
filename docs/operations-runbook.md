@@ -5,13 +5,15 @@
 Gateway:
 
 ```bash
-curl -s http://127.0.0.1:3000/health
+curl -s http://127.0.0.1:3000/live
+curl -s http://127.0.0.1:3000/ready
 ```
 
 Syncer:
 
 ```bash
-curl -s http://127.0.0.1:3001/health
+curl -s http://127.0.0.1:3001/live
+curl -s http://127.0.0.1:3001/ready
 ```
 
 MediaWiki:
@@ -25,6 +27,19 @@ Qdrant:
 ```bash
 curl -s http://127.0.0.1:6333/healthz
 ```
+
+## Diagnostic Logging
+
+Gateway и Syncer поддерживают debug/diagnostic startup без изменения кода:
+
+```bash
+DEBUG_DIAGNOSTICS_ENABLED=true DEBUG_DIAGNOSTICS_LEVEL=Basic LOG_SINKS=stdout,syslog \
+docker compose up -d gateway syncer
+```
+
+`Verbose` включайте только временно. Structured logs пишутся в `stdout`/`stderr`
+и, при `LOG_SINKS=syslog`, дублируются в `LOG_SYSLOG_HOST:LOG_SYSLOG_PORT`.
+Секреты, cookies, tokens и passwords маскируются.
 
 ## Extension Artifact Checks
 

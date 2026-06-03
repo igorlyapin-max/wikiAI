@@ -1,5 +1,6 @@
 import Redis from 'ioredis';
 import { config } from '../config.js';
+import { logOperationalError } from './logging.js';
 
 export const redis = new Redis(config.redisUrl, {
   retryStrategy: (times) => {
@@ -10,7 +11,7 @@ export const redis = new Redis(config.redisUrl, {
 });
 
 redis.on('error', (err) => {
-  console.error('Redis connection error:', err.message);
+  logOperationalError('redis.connection_error', err);
 });
 
 export async function getCachedUserGroups(sessionId: string): Promise<string[] | null> {

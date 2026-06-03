@@ -59,17 +59,53 @@ MediaWiki; для заказчика сборка должна быть част
 - `OPENAI_MODEL` - upstream OpenAI model для LiteLLM route, default `gpt-4.1-mini`.
 - `SYNCER_BASE_URL`
 - `SYNCER_ADMIN_TOKEN`
+- `ALLOW_UNPROTECTED_SYNCER_ADMIN` - local/dev escape hatch only. In
+  `NODE_ENV=production`, Syncer requires `SYNCER_ADMIN_TOKEN` and fails startup
+  when the token is empty.
 - `GATEWAY_BASE_URL` - URL Gateway из Syncer для webhook trust recalculation.
 - `CHUNK_SIZE`
 - `CHUNK_OVERLAP`
 - `SMW_SYNC_ENABLED`
 - `SMW_SYNC_PROPERTIES`
+- `DEBUG_DIAGNOSTICS_ENABLED` - enables diagnostic startup/runtime events
+  without changing code. Default `false`.
+- `DEBUG_DIAGNOSTICS_LEVEL` - `Basic` or temporary `Verbose`; verbose output is
+  redacted and should not stay enabled after incident diagnostics.
+- `LOG_SINKS` - comma-separated structured log sinks. Runtime default is
+  `stdout,syslog`.
+- `LOG_SYSLOG_HOST`, `LOG_SYSLOG_PORT` - best-effort UDP syslog endpoint for the
+  operational log sink.
+- `HEALTH_CHECK_TIMEOUT_MS` - readiness dependency timeout.
 
 `LITELLM_API_KEY`, `MW_ADMIN_PASSWORD`, `MW_SEED_PASSWORD`,
 `MW_SERVICE_PASSWORD`, `MW_SYNC_COOKIE` и
 `SYNCER_ADMIN_TOKEN`, `OPENAI_API_KEY` не должны иметь `changeme-*` дефолтов в compose или CI.
 Перед запуском стенда задавайте их через защищенные переменные окружения,
 секрет-хранилище или локальный `.env`, который не коммитится.
+
+### Diagnostics, Logs, And Health
+
+Gateway и Syncer пишут runtime события через structured logging pipeline.
+Обычные события идут в `stdout`, ошибки в `stderr`, а `LOG_SINKS=syslog`
+дублирует JSON-события в UDP syslog/collector/sidecar endpoint. Поля с
+`password`, `secret`, `token`, `apiKey`, `authorization` и `cookie`
+маскируются.
+
+Health endpoints:
+
+- `GET /live` - process liveness без проверки зависимостей.
+- `GET /ready` - readiness с bounded checks зависимостей.
+- `GET /health` - backward-compatible readiness alias.
+
+Для временной диагностики:
+
+```env
+DEBUG_DIAGNOSTICS_ENABLED=true
+DEBUG_DIAGNOSTICS_LEVEL=Basic
+```
+
+`Verbose` используйте только на время расследования и возвращайте обратно в
+`Basic`/disabled после сбора evidence.
 
 ### Container Network URLs
 
