@@ -221,6 +221,28 @@ describe('gateway notifications', () => {
     );
   });
 
+  it('rejects empty Gateway embedding config responses', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({}),
+    })));
+
+    await expect(fetchEffectiveEmbeddingConfig()).rejects.toThrow('Gateway embedding config response is empty');
+  });
+
+  it('surfaces Gateway embedding vector errors with response body', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: false,
+      status: 502,
+      text: async () => 'embedding unavailable',
+    })));
+
+    await expect(fetchGatewayEmbedding('Page text')).rejects.toThrow(
+      'Gateway embedding error 502: embedding unavailable'
+    );
+  });
+
   it('requests LLM enrichment from Gateway for reindex', async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
@@ -259,5 +281,18 @@ describe('gateway notifications', () => {
         }),
       })
     );
+  });
+
+  it('rejects malformed Gateway LLM enrichment responses', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ values: { keywords: ['vpn'] } }),
+    })));
+
+    await expect(enrichPageForReindex({
+      title: 'CorpIT:VPN',
+      text: 'VPN page body',
+    })).rejects.toThrow('Gateway LLM enrichment response is empty');
   });
 });

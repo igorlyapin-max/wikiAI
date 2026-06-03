@@ -140,4 +140,41 @@ describe('MediaWiki service authentication', () => {
       },
     });
   });
+
+  it('returns a safe error result when service credentials are missing', async () => {
+    config.mwServiceUsername = undefined;
+    config.mwServicePassword = undefined;
+    config.mwServicePasswordSecret = undefined;
+    config.mwSyncCookie = undefined;
+
+    await expect(testMediaWikiServiceLogin()).resolves.toMatchObject({
+      status: 'error',
+      auth: {
+        configured: false,
+        source: 'none',
+      },
+      error: 'MediaWiki service credentials are not configured',
+    });
+  });
+
+  it('invalidates service sessions and reports login token failures without exposing passwords', async () => {
+    config.mwServiceUsername = 'WikiAISync';
+    config.mwServicePassword = 'top-secret-password';
+    config.mwServicePasswordSecret = undefined;
+    config.mwSyncCookie = undefined;
+
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ query: { tokens: {} } }), { status: 200 })));
+
+    const result = await testMediaWikiServiceLogin();
+
+    expect(result).toMatchObject({
+      status: 'error',
+      auth: {
+        source: 'service_credentials',
+        passwordConfigured: true,
+      },
+      error: 'MediaWiki login token was not returned',
+    });
+    expect(JSON.stringify(result)).not.toContain('top-secret-password');
+  });
 });

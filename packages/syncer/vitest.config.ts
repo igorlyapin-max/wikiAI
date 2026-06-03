@@ -6,5 +6,9 @@ export default defineConfig({
     environment: 'node',
     exclude: ['node_modules/**', 'dist/**', 'backups/**'],
     setupFiles: ['./src/services/__tests__/setup-env.ts'],
+    coverage: {
+      reporter: ['text', 'json', 'html'],
+      exclude: ['node_modules/', 'dist/', 'backups/', '**/*.test.ts'],
+    },
   },
 });

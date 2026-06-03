@@ -9,6 +9,7 @@
     "start": "node dist/server.js",
     "reindex": "tsx src/cli/reindex.ts",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
     "backup": "tsx src/cli/backup.ts",
     "restore": "tsx src/cli/restore.ts"
@@ -23,6 +24,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
+    "@vitest/coverage-v8": "^4.1.7",
     "tsx": "^4.15.0",
     "typescript": "^5.4.5",
     "vitest": "^4.1.7"

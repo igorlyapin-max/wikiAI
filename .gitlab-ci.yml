@@ -63,12 +63,14 @@ gateway:test:
   stage: test
   script:
     - npm test
+    - npm run test:coverage
 
 syncer:test:
   extends: .syncer_node
   stage: test
   script:
     - npm test
+    - npm run test:coverage
 
 gateway:typecheck:
   extends: .gateway_node

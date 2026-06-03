@@ -218,6 +218,41 @@ describe('runReindex', () => {
     expect(upsertChunks).not.toHaveBeenCalled();
   });
 
+  it('estimates OpenAI-compatible embedding calls during dry-run without writing chunks', async () => {
+    fetchEffectiveEmbeddingConfig.mockResolvedValueOnce({
+      provider: 'openai_compatible',
+      baseUrl: 'http://litellm:4000/v1',
+      model: 'text-embedding-3-small',
+      dimensions: 768,
+      apiKeyConfigured: true,
+    });
+    fetchAllPages.mockResolvedValueOnce([
+      { pageid: 10, ns: 0, title: 'Paid Estimate Page' },
+    ]);
+    fetchPageContent.mockResolvedValueOnce({
+      pageid: 10,
+      ns: 0,
+      title: 'Paid Estimate Page',
+      content: 'Paid estimate body',
+    });
+
+    const summary = await runReindex({
+      maxPages: 1,
+      semanticFactsEnabled: false,
+      dryRun: true,
+    });
+
+    expect(summary).toMatchObject({
+      dryRun: true,
+      processed: 1,
+      totalChunks: 1,
+      embeddingCalls: 0,
+      llmEnrichmentCalls: 0,
+      estimatedPaidCalls: 1,
+    });
+    expect(upsertChunks).not.toHaveBeenCalled();
+  });
+
   it('adds optional LLM enrichment to indexed text and payload', async () => {
     fetchEffectiveEmbeddingConfig.mockResolvedValueOnce({
       provider: 'openai_compatible',
