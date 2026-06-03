@@ -1,0 +1,302 @@
+openapi: 3.0.3
+info:
+  title: WikiAI Gateway API
+  version: 0.1.0
+  description: Public, admin, health, and external API contract for WikiAI Gateway.
+servers:
+  - url: http://127.0.0.1:3000
+paths:
+  /live:
+    get:
+      summary: Process liveness.
+      responses:
+        "200":
+          description: Gateway process is alive.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LiveStatus"
+  /ready:
+    get:
+      summary: Dependency readiness.
+      responses:
+        "200":
+          description: Gateway dependencies are ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+        "503":
+          description: One or more dependencies are degraded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+  /health:
+    get:
+      summary: Backward-compatible readiness alias.
+      responses:
+        "200":
+          description: Gateway dependencies are ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+        "503":
+          description: One or more dependencies are degraded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+  /metrics:
+    get:
+      summary: Prometheus-compatible process and request metrics.
+      responses:
+        "200":
+          description: Text metrics.
+          content:
+            text/plain:
+              schema:
+                type: string
+  /api/search:
+    post:
+      summary: Search allowed MediaWiki content.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SearchRequest"
+      responses:
+        "200":
+          description: Search response with sources and diagnostics.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /api/chat:
+    post:
+      summary: Chat over allowed MediaWiki content.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatRequest"
+      responses:
+        "200":
+          description: Chat response or SSE stream depending on request.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /api/v1/capabilities:
+    get:
+      summary: External API and MCP capabilities.
+      responses:
+        "200":
+          description: External API capabilities.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Capabilities"
+  /api/v1/search:
+    post:
+      summary: Stable external search API.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SearchRequest"
+      responses:
+        "200":
+          description: External search response.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/chat:
+    post:
+      summary: Stable external chat API.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatRequest"
+      responses:
+        "200":
+          description: External chat response.
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/admin/reindex:
+    post:
+      summary: Start Syncer reindex from the admin plane.
+      security:
+        - mediaWikiSession: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReindexRequest"
+      responses:
+        "202":
+          description: Reindex job accepted.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/admin/reindex/status:
+    get:
+      summary: Return latest Syncer reindex status.
+      security:
+        - mediaWikiSession: []
+      responses:
+        "200":
+          description: Reindex status.
+components:
+  securitySchemes:
+    mediaWikiSession:
+      type: apiKey
+      in: cookie
+      name: mediawiki_session
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  responses:
+    BadRequest:
+      description: Invalid request.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Unauthorized:
+      description: Authentication is missing or invalid.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Forbidden:
+      description: Caller is not allowed to use the endpoint.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+  schemas:
+    LiveStatus:
+      type: object
+      required: [status, service]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        service:
+          type: string
+          enum: [gateway]
+    HealthCheck:
+      type: object
+      required: [status, latencyMs]
+      properties:
+        status:
+          type: string
+        latencyMs:
+          type: integer
+          minimum: 0
+        error:
+          type: string
+    HealthStatus:
+      type: object
+      required: [status, checks]
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded]
+        checks:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/HealthCheck"
+    SearchRequest:
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: string
+          minLength: 1
+        topK:
+          type: integer
+          minimum: 1
+    SearchChunk:
+      type: object
+      required: [title, text, score]
+      properties:
+        title:
+          type: string
+        pageUrl:
+          type: string
+        text:
+          type: string
+        score:
+          type: number
+        trust:
+          type: object
+          additionalProperties: true
+    SearchResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/SearchChunk"
+        chunks:
+          type: array
+          items:
+            $ref: "#/components/schemas/SearchChunk"
+        diagnostics:
+          type: object
+          additionalProperties: true
+    ChatRequest:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+          minLength: 1
+        conversationId:
+          type: string
+        stream:
+          type: boolean
+    Capabilities:
+      type: object
+      required: [searchEnabled, mcpEnabled, anonymousSearchAllowed, aclMode]
+      properties:
+        searchEnabled:
+          type: boolean
+        mcpEnabled:
+          type: boolean
+        anonymousSearchAllowed:
+          type: boolean
+        aclMode:
+          type: string
+          enum: [mediawiki_check, groups_only]
+    ReindexRequest:
+      type: object
+      properties:
+        profileId:
+          type: string
+        maxPages:
+          type: integer
+          minimum: 1
+        dryRun:
+          type: boolean
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string

@@ -236,8 +236,7 @@ node scripts/verify-corporate-acl-live.mjs
 - MCP adapter syntax check;
 - Docker build Gateway и Syncer без push;
 - блокирующий secret scan;
-- `npm audit --audit-level=high --omit=dev` как временно `allow_failure`,
-  пока не закрыт текущий dependency baseline.
+- блокирующий `npm audit --audit-level=high --omit=dev` для Gateway и Syncer.
 
 Live-проверки, которые могут требовать стенд или платный LLM/LiteLLM endpoint,
 оформлены manual jobs и не стартуют автоматически.
@@ -343,6 +342,7 @@ Syncer reindex с `SMW_SYNC_ENABLED=true`.
 | Gateway | `GET /live` | Liveness процесса |
 | Gateway | `GET /ready` | Readiness зависимостей |
 | Gateway | `GET /health` | Совместимый alias readiness |
+| Gateway | `GET /metrics` | Prometheus-compatible runtime metrics |
 | Gateway | `POST /api/search` | AI-поиск с проверкой прав чтения |
 | Gateway | `POST /api/chat` | Чат-ассистент (SSE) |
 | Gateway | `GET /api/v1/capabilities` | Возможности внешнего REST API/MCP |
@@ -357,6 +357,8 @@ Syncer reindex с `SMW_SYNC_ENABLED=true`.
 | Gateway | `GET /api/admin/reindex/status` | Статус последнего Syncer reindex job |
 | Syncer | `GET /live` | Liveness процесса |
 | Syncer | `GET /ready` | Readiness зависимостей |
+| Syncer | `GET /health` | Совместимый alias readiness |
+| Syncer | `GET /metrics` | Prometheus-compatible runtime metrics |
 | Syncer | `POST /admin/reindex` | Внутренний запуск reindex job; в production требует `SYNCER_ADMIN_TOKEN` |
 | Syncer | `GET /admin/reindex/status` | Внутренний статус reindex job |
 | Syncer | `POST /webhook/page` | Webhook от MediaWiki |

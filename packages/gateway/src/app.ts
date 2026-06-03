@@ -7,6 +7,7 @@ import { redis } from './services/redis.js';
 import { startIndexingProfileScheduler, stopIndexingProfileScheduler } from './services/indexing-profile-scheduler.js';
 import { startTrustRecalculationScheduler, stopTrustRecalculationScheduler } from './services/trust-recalculation-scheduler.js';
 import { createFastifyLoggerOptions, diagnosticStartupFields } from './services/logging.js';
+import { registerMetrics } from './services/metrics.js';
 import { healthRoutes } from './routes/health.js';
 import { searchRoutes } from './routes/search.js';
 import { chatRoutes } from './routes/chat.js';
@@ -17,6 +18,8 @@ export function buildGatewayApp(): FastifyInstance {
   const app = Fastify({
     logger: createFastifyLoggerOptions(),
   });
+
+  registerMetrics(app, 'gateway');
 
   app.addHook('onReady', async () => {
     await ensureCollection();

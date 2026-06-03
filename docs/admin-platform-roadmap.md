@@ -219,7 +219,10 @@ Existing endpoints remain compatible:
 - [x] Оставить live-интеграции и LiteLLM/OpenAI smoke только manual/opt-in, чтобы не тратить платный API автоматически.
 - [x] Убрать небезопасные `changeme-*` runtime defaults из compose/env examples.
 - [x] Запускать сервисы в Docker images под non-root пользователем.
-- [ ] Закрыть текущий `npm audit` baseline Fastify/fast-uri через отдельный major-upgrade Fastify и проверку совместимости plugins/API.
+- [x] Закрыть текущий `npm audit` baseline Fastify/fast-uri через major-upgrade Fastify и проверку совместимости plugins/API.
+
+Статус: Gateway и Syncer переведены на Fastify 5 line, plugin major versions
+обновлены, `security:npm-audit` больше не `allow_failure`.
 
 ## Acceptance Strategy
 

@@ -27,8 +27,11 @@ import {
   createFastifyLoggerOptions,
   diagnosticStartupFields,
 } from './services/logging.js';
+import { registerMetrics } from './services/metrics.js';
 
 const app = Fastify({ logger: createFastifyLoggerOptions() });
+
+registerMetrics(app, 'syncer');
 
 app.addHook('onReady', async () => {
   app.log.info(

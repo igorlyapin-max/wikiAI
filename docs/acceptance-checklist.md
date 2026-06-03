@@ -7,6 +7,8 @@
 - [ ] Обычный пользователь получает отказ.
 - [ ] Видны статусы Gateway, Syncer, Redis, Qdrant, LiteLLM/Ollama.
 - [ ] Gateway health не degraded по Redis/LiteLLM; если сервисы в других compose-проектах, используется сетевой override или routable service URL.
+- [ ] Gateway `/metrics` отдает Prometheus text format и доступен только из внутреннего monitoring path.
+- [ ] Syncer `/metrics` отдает Prometheus text format и доступен только из внутреннего monitoring path.
 - [ ] Browser preflight `OPTIONS /api/search` от MediaWiki origin получает CORS response, если UI ходит на Gateway напрямую.
 - [ ] Перед поставкой/сборкой MediaWiki extension выполнен `npm --prefix packages/mw-extension/resources/ai-assistant run build`, и `resources/ai-assistant/dist/index.js` содержит актуальные UI-формулировки.
 - [ ] Secrets не отображаются.
@@ -168,5 +170,10 @@
 - [ ] GitLab pipeline проходит `validate`, `test`, `typecheck`, `build`.
 - [ ] `docker:build` проходит на GitLab runner с Docker-in-Docker.
 - [ ] `security:secret-scan` блокирует реальные ключи и unsafe placeholder defaults в продуктовых файлах.
-- [ ] `security:npm-audit` результат просмотрен; текущий Fastify/fast-uri baseline остается отдельным upgrade task до закрытия.
+- [ ] `security:npm-audit` блокирует high vulnerabilities для Gateway и Syncer.
 - [ ] Live integration и LiteLLM/OpenAI smoke jobs запускаются только вручную.
+
+## Production Storage Decision
+
+- [ ] Для пилота подтвержден SQLite и прописан backup/restore `state/`.
+- [ ] Для production SLA/HA/compliance подтвержден Postgres migration plan или зафиксирован release blocker.

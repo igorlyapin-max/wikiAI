@@ -16,6 +16,17 @@ curl -s http://127.0.0.1:3001/live
 curl -s http://127.0.0.1:3001/ready
 ```
 
+Metrics:
+
+```bash
+curl -s http://127.0.0.1:3000/metrics
+curl -s http://127.0.0.1:3001/metrics
+```
+
+`/metrics` отдается в Prometheus text format. Не публикуйте endpoint наружу без
+reverse proxy allowlist, collector sidecar или другой внутренней сетевой
+границы.
+
 MediaWiki:
 
 ```bash

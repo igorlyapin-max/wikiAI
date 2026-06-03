@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wikiai.local/contracts/syncer-webhook.schema.json",
+  "title": "WikiAI Syncer MediaWiki webhook payload",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["event", "page_id", "namespace", "timestamp"],
+  "properties": {
+    "event": {
+      "type": "string",
+      "description": "Canonical event name or legacy MediaWiki extension alias.",
+      "enum": [
+        "edit",
+        "delete",
+        "move",
+        "protect",
+        "page_save",
+        "page_delete",
+        "page_move",
+        "page_protect"
+      ]
+    },
+    "page_id": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "new_title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "namespace": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "rev_id": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "user": {
+      "type": "string"
+    },
+    "user_id": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "summary": {
+      "type": "string"
+    }
+  },
+  "anyOf": [
+    {
+      "required": ["title"]
+    },
+    {
+      "required": ["new_title"]
+    }
+  ]
+}

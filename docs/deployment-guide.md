@@ -96,6 +96,9 @@ Health endpoints:
 - `GET /live` - process liveness без проверки зависимостей.
 - `GET /ready` - readiness с bounded checks зависимостей.
 - `GET /health` - backward-compatible readiness alias.
+- `GET /metrics` - Prometheus-compatible process/request metrics. Публикуйте
+  только во внутренней сети, через allowlist reverse proxy или collector
+  sidecar.
 
 Для временной диагностики:
 
@@ -232,6 +235,10 @@ DATABASE_URL=sqlite://./state/wiki-ai.sqlite
 Docker images запускают Node.js под non-root пользователем `node`; если
 используется bind mount `./state:/app/state`, каталог должен быть доступен на
 запись UID/GID контейнера.
+
+SQLite не является production HA/compliance решением для нескольких инстансов.
+Если нужен SLA, длительное хранение audit/chat metadata или конкурентная запись,
+закладывайте Postgres migration до промышленного запуска.
 
 ## Когда нужен Postgres
 

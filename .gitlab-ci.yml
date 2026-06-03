@@ -126,7 +126,6 @@ security:secret-scan:
 security:npm-audit:
   image: node:24
   stage: security
-  allow_failure: true
   script:
     - npm --prefix packages/gateway ci --cache packages/gateway/.npm --prefer-offline
     - npm --prefix packages/gateway audit --audit-level=high --omit=dev
