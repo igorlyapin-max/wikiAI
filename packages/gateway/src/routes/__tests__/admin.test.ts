@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { adminRoutes } from '../admin.js';
+import { config } from '../../config.js';
 import { resetAdminStoreForTests } from '../../db/admin-store.js';
 import { resetIndexingProfileSchedulerForTests } from '../../services/indexing-profile-scheduler.js';
 import { resetTrustAutoRecalculationForTests } from '../../services/trust-auto-recalculation.js';
@@ -25,6 +26,7 @@ const startSyncerReindex = vi.hoisted(() => vi.fn());
 const getSyncerReindexStatus = vi.hoisted(() => vi.fn());
 const getSyncerMediaWikiServiceAuthStatus = vi.hoisted(() => vi.fn());
 const testSyncerMediaWikiServiceAuth = vi.hoisted(() => vi.fn());
+const originalConfig = { ...config };
 
 vi.mock('../../services/mediawiki.js', () => ({
   fetchUserInfo: vi.fn(async () => ({
@@ -94,6 +96,7 @@ vi.mock('../../services/syncer-admin.js', () => ({
 
 describe('admin routes', () => {
   beforeEach(() => {
+    Object.assign(config, originalConfig);
     userGroups.groups = ['sysop'];
     store.clear();
     resetChatStoreForTests();
@@ -2511,6 +2514,319 @@ describe('admin routes', () => {
         wait: true,
       })
     );
+    await app.close();
+  });
+
+  it('rejects invalid admin config payloads with typed 400 responses', async () => {
+    const app = await makeApp();
+    const headers = { cookie: 'mw=1' };
+    const cases: Array<{ method: 'GET' | 'POST'; url: string; payload?: unknown; error: string }> = [
+      { method: 'POST', url: '/api/admin/external-api/config', payload: { maxTopK: 0 }, error: 'Invalid external API config' },
+      { method: 'POST', url: '/api/admin/llm/config', payload: { timeoutMs: 1 }, error: 'Invalid LLM config' },
+      { method: 'POST', url: '/api/admin/embedding/config', payload: { provider: 'bad-provider' }, error: 'Invalid embedding config' },
+      { method: 'POST', url: '/api/admin/conflict-detection/config', payload: { trustGapThreshold: 2 }, error: 'Invalid conflict detection config' },
+      { method: 'POST', url: '/api/admin/indexing-profiles', payload: { id: 'bad profile id' }, error: 'Invalid indexing profile' },
+      { method: 'POST', url: '/api/admin/webhook/config', payload: { syncerUrl: 'not-a-url' }, error: 'Invalid webhook config' },
+      { method: 'POST', url: '/api/admin/chat-retention/config', payload: { activeDays: 0 }, error: 'Invalid chat retention config' },
+      { method: 'POST', url: '/api/admin/document-processing', payload: { mimeTypes: { 'application/pdf': { mode: 'vision' } } }, error: 'Invalid document processing config' },
+      { method: 'GET', url: '/api/admin/semantic/search', error: 'Query parameter "property" is required' },
+      { method: 'POST', url: '/api/admin/smw/autofill/config', payload: { minConfidence: 2 }, error: 'Invalid semantic autofill config' },
+      { method: 'GET', url: '/api/admin/smw/autofill/status?state=bad', error: 'Semantic autofill status failed' },
+      { method: 'POST', url: '/api/admin/smw/autofill/reset-ownership', payload: {}, error: 'Semantic autofill ownership reset failed' },
+      { method: 'POST', url: '/api/admin/trust-models', payload: { id: 'bad model id' }, error: 'Invalid trust model' },
+      { method: 'POST', url: '/api/admin/trust-recalculation/config', payload: { intervalMinutes: 1 }, error: 'Invalid trust recalculation config' },
+      { method: 'POST', url: '/api/admin/trust-scores/recalculate', payload: { dryRun: true }, error: 'Trust recalculation failed' },
+    ];
+
+    for (const item of cases) {
+      const response = await app.inject({
+        method: item.method,
+        url: item.url,
+        headers,
+        payload: item.payload,
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error).toBe(item.error);
+    }
+
+    await app.close();
+  });
+
+  it('reports missing trust resources as 404 responses', async () => {
+    const app = await makeApp();
+    const headers = { cookie: 'mw=1' };
+
+    const missingRules = await app.inject({
+      method: 'GET',
+      url: '/api/admin/trust-models/missing/rules',
+      headers,
+    });
+    const missingEntityRules = await app.inject({
+      method: 'GET',
+      url: '/api/admin/trust-models/missing/entities/entity/rules',
+      headers,
+    });
+    const invalidEntity = await app.inject({
+      method: 'POST',
+      url: '/api/admin/trust-models/missing/entities',
+      headers,
+      payload: { id: 'entity', entityType: 'namespace', name: 'Namespace', value: '3030' },
+    });
+    const invalidRule = await app.inject({
+      method: 'POST',
+      url: '/api/admin/trust-models/missing/rules',
+      headers,
+      payload: {
+        id: 'rule',
+        name: 'Rule',
+        condition: { field: 'namespace', operator: 'equals', value: '3030' },
+      },
+    });
+    const missingPreview = await app.inject({
+      method: 'POST',
+      url: '/api/admin/trust-models/missing/preview',
+      headers,
+      payload: { title: 'Missing', namespace: 0 },
+    });
+
+    expect(missingRules.statusCode).toBe(404);
+    expect(missingEntityRules.statusCode).toBe(404);
+    expect(invalidEntity.statusCode).toBe(404);
+    expect(invalidRule.statusCode).toBe(404);
+    expect(missingPreview.statusCode).toBe(404);
+    await app.close();
+  });
+
+  it('guards internal endpoints with admin tokens and validates internal payloads', async () => {
+    config.syncerAdminToken = 'internal-token';
+    const app = await makeApp();
+    const invalidHeaders = { 'x-wikiai-admin-token': 'wrong' };
+    const validHeaders = { 'x-wikiai-admin-token': 'internal-token' };
+
+    const guarded = [
+      await app.inject({ method: 'GET', url: '/api/internal/embedding/config', headers: invalidHeaders }),
+      await app.inject({ method: 'POST', url: '/api/internal/embedding/vector', headers: invalidHeaders, payload: { text: 'x' } }),
+      await app.inject({ method: 'POST', url: '/api/internal/reindex/llm-enrich', headers: invalidHeaders, payload: { title: 'T', text: 'x' } }),
+      await app.inject({ method: 'POST', url: '/api/internal/trust/recalculate-page', headers: invalidHeaders, payload: { pageId: 1 } }),
+      await app.inject({ method: 'GET', url: '/api/internal/smw/indexed-properties', headers: invalidHeaders }),
+      await app.inject({ method: 'POST', url: '/api/internal/smw/autofill/evaluate', headers: invalidHeaders, payload: {} }),
+      await app.inject({ method: 'POST', url: '/api/internal/smw/autofill/applied', headers: invalidHeaders, payload: {} }),
+      await app.inject({ method: 'POST', url: '/api/internal/search-index/page', headers: invalidHeaders, payload: {} }),
+      await app.inject({ method: 'POST', url: '/api/internal/search-index/delete-page', headers: invalidHeaders, payload: { pageId: 1 } }),
+    ];
+    for (const response of guarded) {
+      expect(response.statusCode).toBe(401);
+      expect(response.json().error).toBe('Invalid internal admin token');
+    }
+
+    const embeddingConfig = await app.inject({
+      method: 'GET',
+      url: '/api/internal/embedding/config',
+      headers: validHeaders,
+    });
+    expect(embeddingConfig.statusCode).toBe(200);
+    expect(embeddingConfig.json().metadata.secretsRedacted).toBe(true);
+
+    const invalidPayloads = [
+      await app.inject({ method: 'POST', url: '/api/internal/embedding/vector', headers: validHeaders, payload: {} }),
+      await app.inject({ method: 'POST', url: '/api/internal/reindex/llm-enrich', headers: validHeaders, payload: { title: '', text: '' } }),
+      await app.inject({ method: 'POST', url: '/api/internal/trust/recalculate-page', headers: validHeaders, payload: {} }),
+      await app.inject({ method: 'POST', url: '/api/internal/smw/autofill/evaluate', headers: validHeaders, payload: {} }),
+      await app.inject({ method: 'POST', url: '/api/internal/smw/autofill/applied', headers: validHeaders, payload: {} }),
+      await app.inject({ method: 'POST', url: '/api/internal/search-index/page', headers: validHeaders, payload: {} }),
+      await app.inject({ method: 'POST', url: '/api/internal/search-index/delete-page', headers: validHeaders, payload: {} }),
+    ];
+    expect(invalidPayloads.map((response) => response.statusCode)).toEqual([400, 400, 400, 400, 400, 400, 400]);
+    await app.close();
+  });
+
+  it('serves semantic autofill admin routes and missing chat session fallbacks', async () => {
+    const app = await makeApp();
+    const headers = { cookie: 'mw=1' };
+
+    const configRead = await app.inject({
+      method: 'GET',
+      url: '/api/admin/smw/autofill/config',
+      headers,
+    });
+    expect(configRead.statusCode).toBe(200);
+    expect(configRead.json().values).toMatchObject({ enabled: false, mode: 'suggest_only' });
+
+    const saved = await app.inject({
+      method: 'POST',
+      url: '/api/admin/smw/autofill/config',
+      headers,
+      payload: {
+        enabled: true,
+        mode: 'suggest_only',
+        minConfidence: 0.75,
+        templates: ['Корпоративный документ'],
+        namespaces: [3030],
+      },
+    });
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json().values).toMatchObject({ enabled: true, minConfidence: 0.75, namespaces: [3030] });
+
+    const applied = await app.inject({
+      method: 'POST',
+      url: '/api/internal/smw/autofill/applied',
+      payload: {
+        pageId: 90,
+        title: 'CorpIT:Service Desk',
+        revId: 901,
+        fields: [{ property: 'Департамент', value: 'ИТ', confidence: 0.9 }],
+      },
+    });
+    expect(applied.statusCode).toBe(200);
+    expect(applied.json().values.updated).toBe(1);
+
+    const status = await app.inject({
+      method: 'GET',
+      url: '/api/admin/smw/autofill/status?state=auto&property=%D0%94%D0%B5%D0%BF%D0%B0%D1%80%D1%82%D0%B0%D0%BC%D0%B5%D0%BD%D1%82&title=Service&limit=5',
+      headers,
+    });
+    expect(status.statusCode).toBe(200);
+    expect(status.json().values.records[0]).toMatchObject({
+      pageId: 90,
+      property: 'Департамент',
+      lastAiValue: 'ИТ',
+    });
+
+    const test = await app.inject({
+      method: 'POST',
+      url: '/api/admin/smw/autofill/test',
+      headers,
+      payload: {
+        pageId: 91,
+        title: 'CorpIT:Service Desk',
+        namespace: 3030,
+        content: '{{Корпоративный документ\n|Департамент=\n}}\nBody',
+      },
+    });
+    expect(test.statusCode).toBe(200);
+    expect(test.json().values).toMatchObject({
+      enabled: true,
+      diagnostics: { llmCalled: true },
+    });
+
+    const reset = await app.inject({
+      method: 'POST',
+      url: '/api/admin/smw/autofill/reset-ownership',
+      headers,
+      payload: { pageId: 90, property: 'Департамент' },
+    });
+    expect(reset.statusCode).toBe(200);
+    expect(reset.json().values.updated).toBe(1);
+
+    const missingArchive = await app.inject({
+      method: 'POST',
+      url: '/api/admin/chat-sessions/missing/archive',
+      headers,
+      payload: {},
+    });
+    const missingExport = await app.inject({
+      method: 'POST',
+      url: '/api/admin/chat-sessions/missing/export',
+      headers,
+      payload: { format: 'xml' },
+    });
+    expect(missingArchive.statusCode).toBe(404);
+    expect(missingExport.statusCode).toBe(404);
+    await app.close();
+  });
+
+  it('reports ontology and reindex failure branches without leaking upstream errors', async () => {
+    const app = await makeApp();
+    const headers = { cookie: 'mw=1' };
+
+    const invalidOntology = await app.inject({
+      method: 'POST',
+      url: '/api/admin/smw/ontology',
+      headers,
+      payload: { name: '' },
+    });
+    const deleteMissingOntology = await app.inject({
+      method: 'DELETE',
+      url: '/api/admin/smw/ontology/missing',
+      headers,
+    });
+    const generateMissingVector = await app.inject({
+      method: 'POST',
+      url: '/api/admin/smw/ontology/missing/generate-vector',
+      headers,
+    });
+    const missingSimilarities = await app.inject({
+      method: 'GET',
+      url: '/api/admin/smw/ontology/missing/similarities?threshold=bad&limit=bad',
+      headers,
+    });
+    const invalidClassification = await app.inject({
+      method: 'POST',
+      url: '/api/admin/smw/ontology/classify-fragment',
+      headers,
+      payload: {},
+    });
+
+    expect(invalidOntology.statusCode).toBe(400);
+    expect(invalidOntology.json().error).toBe('Invalid ontology property');
+    expect(deleteMissingOntology.statusCode).toBe(404);
+    expect(deleteMissingOntology.json().error).toBe('Ontology property delete failed');
+    expect(generateMissingVector.statusCode).toBe(400);
+    expect(generateMissingVector.json().error).toBe('Ontology vector generation failed');
+    expect(missingSimilarities.statusCode).toBe(400);
+    expect(missingSimilarities.json().error).toBe('Ontology similarities failed');
+    expect(invalidClassification.statusCode).toBe(400);
+    expect(invalidClassification.json().error).toBe('Ontology fragment classification failed');
+
+    const profileError = await app.inject({
+      method: 'POST',
+      url: '/api/admin/reindex',
+      headers,
+      payload: { profileId: 'missing' },
+    });
+    expect(profileError.statusCode).toBe(400);
+    expect(profileError.json()).toMatchObject({
+      error: 'Unable to start syncer reindex',
+      message: 'Indexing profile not found: missing',
+    });
+
+    startSyncerReindex.mockRejectedValueOnce(Object.assign(new Error('Syncer rejected request'), {
+      statusCode: 409,
+      responseBody: {},
+    }));
+    const conflictWithoutStatus = await app.inject({
+      method: 'POST',
+      url: '/api/admin/reindex',
+      headers,
+      payload: { maxPages: 1 },
+    });
+    expect(conflictWithoutStatus.statusCode).toBe(409);
+
+    startSyncerReindex.mockRejectedValueOnce(new Error('syncer offline'));
+    const upstreamFailure = await app.inject({
+      method: 'POST',
+      url: '/api/admin/reindex',
+      headers,
+      payload: { maxPages: 1 },
+    });
+    expect(upstreamFailure.statusCode).toBe(502);
+
+    getSyncerReindexStatus.mockRejectedValueOnce(new Error('status unavailable'));
+    const statusFailure = await app.inject({
+      method: 'GET',
+      url: '/api/admin/reindex/status',
+      headers,
+    });
+    expect(statusFailure.statusCode).toBe(502);
+    expect(statusFailure.json().error).toBe('Unable to read syncer reindex status');
+
+    const audit = await app.inject({
+      method: 'GET',
+      url: '/api/admin/audit-log?limit=bad',
+      headers,
+    });
+    expect(audit.statusCode).toBe(200);
+    expect(audit.json().values).toEqual(expect.any(Array));
     await app.close();
   });
 });

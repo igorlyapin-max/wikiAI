@@ -3,7 +3,9 @@ import { resetAdminStoreForTests } from '../../db/admin-store.js';
 import { upsertOntologyProperty } from '../ontology-vectors.js';
 import {
   evaluateSemanticAutofill,
+  getSemanticAutofillStatus,
   recordSemanticAutofillApplied,
+  resetSemanticAutofillOwnership,
   setSemanticAutofillConfig,
 } from '../semantic-autofill.js';
 
@@ -134,5 +136,89 @@ describe('semantic autofill', () => {
     }));
     expect(result.patch.find((item) => item.property === 'Департамент')).toBeUndefined();
   });
-});
 
+  it('skips disabled namespaces, missing templates, and service edits before calling LLM', async () => {
+    await setSemanticAutofillConfig({
+      enabled: true,
+      namespaces: [3010],
+    });
+
+    await expect(evaluateSemanticAutofill({
+      pageId: 11,
+      title: 'CorpIT:Service Desk/Регламент',
+      namespace: 3030,
+      content: pageContent(),
+    })).resolves.toMatchObject({
+      diagnostics: { skippedReason: 'namespace_not_enabled', llmCalled: false },
+    });
+
+    await setSemanticAutofillConfig({
+      namespaces: [],
+      templates: ['Другая карточка'],
+    });
+    await expect(evaluateSemanticAutofill({
+      pageId: 12,
+      title: 'CorpIT:Service Desk/Регламент',
+      namespace: 3030,
+      content: pageContent(),
+    })).resolves.toMatchObject({
+      diagnostics: { skippedReason: 'template_not_found', llmCalled: false },
+    });
+
+    await setSemanticAutofillConfig({
+      templates: ['Корпоративный документ'],
+    });
+    await expect(evaluateSemanticAutofill({
+      pageId: 13,
+      title: 'CorpIT:Service Desk/Регламент',
+      namespace: 3030,
+      summary: 'WikiAI semantic autofill applied fields',
+      content: pageContent(),
+    })).resolves.toMatchObject({
+      diagnostics: { skippedReason: 'service_edit', llmCalled: false },
+    });
+    expect(callLiteLLM).not.toHaveBeenCalled();
+  });
+
+  it('records suggested ownership, filters status, and resets ownership by property', async () => {
+    await recordSemanticAutofillApplied({
+      pageId: 20,
+      title: 'CorpIT:Service Desk/Регламент',
+      revId: 201,
+      fields: [
+        { property: 'Департамент', value: 'ИТ-департамент', confidence: 0.9, evidence: 'Service Desk' },
+        { property: 'Система', value: 'Service Desk', confidence: 0.85 },
+      ],
+    });
+
+    await expect(getSemanticAutofillStatus({
+      state: 'auto',
+      property: 'Департамент',
+      title: 'Service Desk',
+      limit: 10,
+    })).resolves.toMatchObject({
+      summary: {
+        auto: 2,
+        user: 0,
+        suggested: 0,
+        disabled: 0,
+      },
+      total: 2,
+      records: [
+        expect.objectContaining({
+          pageId: 20,
+          property: 'Департамент',
+          lastAiValue: 'ИТ-департамент',
+        }),
+      ],
+    });
+
+    await expect(resetSemanticAutofillOwnership({
+      pageId: 20,
+      property: 'Департамент',
+    }, 'TestAdmin')).resolves.toEqual({ updated: 1 });
+    await expect(resetSemanticAutofillOwnership({})).rejects.toThrow(
+      'At least one of pageId, title or property is required'
+    );
+  });
+});

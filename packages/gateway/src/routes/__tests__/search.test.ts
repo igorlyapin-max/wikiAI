@@ -196,6 +196,20 @@ describe('search routes trust filtering', () => {
     await app.close();
   });
 
+  it('rejects empty search queries before calling embeddings', async () => {
+    const app = await makeApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/search',
+      payload: { query: '   ', topK: 2 },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: 'Query is required' });
+    expect(getEmbedding).not.toHaveBeenCalled();
+    await app.close();
+  });
+
   it('reranks only readable trusted chunks with ColBERT when enabled', async () => {
     await setRagAdminConfig({
       rerankMode: 'colbert_v2',
@@ -327,6 +341,40 @@ describe('search routes trust filtering', () => {
       },
       results: [{ title: 'CorpIT:Инструкция VPN' }],
     });
+    await app.close();
+  });
+
+  it('returns RuntimeHttpError payloads from ColBERT fail_search mode', async () => {
+    await setRagAdminConfig({
+      searchMode: 'colbert_full',
+      rerankMode: 'none',
+      colbertEnabled: true,
+      colbertBaseUrl: 'http://colbert.internal:8080',
+      colbertModel: 'antoinelouis/colbert-xm',
+      colbertCollection: 'wiki_colbert_chunks',
+      colbertCandidateLimit: 25,
+      colbertTimeoutMs: 2500,
+      colbertMinScore: 0,
+      colbertFailMode: 'fail_search',
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('bad gateway', {
+      status: 502,
+      statusText: 'Bad Gateway',
+    })));
+
+    const app = await makeApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/search',
+      headers: { cookie: 'mw=1' },
+      payload: { query: 'vpn', topK: 2 },
+    });
+
+    expect(res.statusCode).toBe(502);
+    expect(res.json()).toMatchObject({
+      error: 'ColBERT search failed',
+    });
+    expect(getEmbedding).not.toHaveBeenCalled();
     await app.close();
   });
 });

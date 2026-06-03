@@ -4,11 +4,15 @@ import type { ChatRetentionConfig } from '../admin-platform-config.js';
 import {
   ChatRetentionLimitError,
   archiveChatSession,
+  enforceChatRetention,
   exportChatSession,
+  exportUserChatArchive,
+  exportUserChatSession,
   getChatRegistryStats,
   getChatSessionMessages,
   getSqlChatHistory,
   listChatSessions,
+  listUserChatSessions,
   recordChatMessage,
   resetChatStoreForTests,
 } from '../chat-store.js';
@@ -205,5 +209,111 @@ describe('chat store', () => {
     const stats = await getChatRegistryStats();
     expect(stats.archives).toBe(1);
     expect(stats.exports).toBe(1);
+  });
+
+  it('deletes oldest sessions when limits use delete_oldest policy', async () => {
+    const retention = retentionConfig({
+      maxActiveChats: 1,
+      maxTotalChats: 1,
+      onLimitExceeded: 'delete_oldest',
+    });
+
+    const first = await recordChatMessage({
+      sessionHash: 'session-a',
+      conversationId: 'conv-delete-oldest',
+      userId: 10,
+      username: 'User One',
+      role: 'user',
+      content: 'Первый чат',
+    }, retention);
+    const second = await recordChatMessage({
+      sessionHash: 'session-a',
+      conversationId: 'conv-delete-new',
+      userId: 10,
+      username: 'User One',
+      role: 'user',
+      content: 'Второй чат',
+    }, retention);
+
+    expect(second.enforcement.deletedSessionIds).toContain(first.session.id);
+    await expect(listChatSessions('deleted', 10)).resolves.toEqual([
+      expect.objectContaining({ conversationId: 'conv-delete-oldest', status: 'deleted' }),
+    ]);
+    await expect(listUserChatSessions(10, 'active', 10)).resolves.toEqual([
+      expect.objectContaining({ conversationId: 'conv-delete-new', status: 'active' }),
+    ]);
+  });
+
+  it('exports user sessions and archived chats as CSV and HTML', async () => {
+    const retention = retentionConfig({
+      retentionMode: 'export_then_archive',
+      activeDays: 1,
+      archiveDays: 365,
+      exportOptions: {
+        formats: ['csv', 'html'],
+        includeMetadata: true,
+        includeSources: true,
+        includeMessages: true,
+      },
+    });
+
+    const saved = await recordChatMessage({
+      sessionHash: 'session-a',
+      conversationId: 'conv-formats',
+      userId: 10,
+      username: 'User One',
+      role: 'user',
+      content: 'Сообщение с "кавычками" и <html>',
+      sources: [{ pageId: 9, title: 'Source' }],
+    }, retention);
+
+    const csv = await exportUserChatSession(saved.session.id, 10, 'csv', retention);
+    expect(csv.format).toBe('csv');
+    expect(csv.content).toContain('created_at,role,content,sources_json');
+    expect(csv.content).toContain('""кавычками""');
+
+    const html = await exportChatSession(saved.session.id, 'html', retention);
+    expect(html.format).toBe('html');
+    expect(html.content).toContain('&lt;html&gt;');
+    expect(html.content).toContain('Chat conv-formats');
+
+    await archiveChatSession(saved.session.id, 'format-test');
+    const archive = await exportUserChatArchive(10, 'html', retention);
+    expect(archive.format).toBe('html');
+    expect(archive.sessionCount).toBe(1);
+    expect(archive.content).toContain('Сообщение с &quot;кавычками&quot;');
+  });
+
+  it('exports then archives expired active sessions during retention enforcement', async () => {
+    const retention = retentionConfig({
+      retentionMode: 'export_then_archive',
+      activeDays: 1,
+      archiveDays: 365,
+      exportOptions: {
+        formats: ['json', 'csv'],
+        includeMetadata: true,
+        includeSources: true,
+        includeMessages: true,
+      },
+    });
+
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+    const saved = await recordChatMessage({
+      sessionHash: 'session-a',
+      conversationId: 'conv-expired-export',
+      userId: 10,
+      role: 'user',
+      content: 'Истекающий чат',
+    }, retention);
+
+    vi.setSystemTime(new Date('2026-01-03T00:00:00.000Z'));
+    const enforcement = await enforceChatRetention(retention);
+
+    expect(enforcement.archivedSessionIds).toContain(saved.session.id);
+    expect(enforcement.exportedSessionIds).toContain(saved.session.id);
+    const stats = await getChatRegistryStats();
+    expect(stats.archived).toBe(1);
+    expect(stats.exports).toBe(2);
   });
 });

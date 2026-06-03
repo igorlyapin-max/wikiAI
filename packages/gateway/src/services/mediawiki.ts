@@ -79,6 +79,10 @@ function readString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
+function readArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
 function stripHtml(value: string | undefined): string | undefined {
   return value
     ?.replace(/<[^>]*>/g, '')
@@ -409,7 +413,7 @@ export async function fetchWikiCategories(options: FetchWikiCategoriesOptions = 
     options.sessionCookie,
     'MW categories API error:'
   );
-  const categories = data?.query?.allcategories ?? [];
+  const categories = readArray(data?.query?.allcategories);
   return categories
     .map(readCategoryName)
     .filter((name): name is string => Boolean(name))
@@ -445,7 +449,7 @@ export async function fetchWikiUserGroups(options: FetchWikiSiteInfoOptions = {}
     options.sessionCookie,
     'MW user groups API error:'
   );
-  return (data?.query?.usergroups ?? [])
+  return readArray(data?.query?.usergroups)
     .map(readUserGroup)
     .filter((group): group is WikiUserGroup => Boolean(group))
     .sort((left, right) => left.name.localeCompare(right.name));
@@ -464,7 +468,7 @@ export async function fetchWikiTags(options: FetchWikiListOptions = {}): Promise
     options.sessionCookie,
     'MW tags API error:'
   );
-  return (data?.query?.tags ?? [])
+  return readArray(data?.query?.tags)
     .map(readTag)
     .filter((tag): tag is WikiTag => Boolean(tag))
     .filter((tag) => !search || tag.name.toLocaleLowerCase().includes(search) || tag.displayName.toLocaleLowerCase().includes(search))
@@ -488,7 +492,7 @@ export async function fetchWikiTemplates(options: FetchWikiListOptions = {}): Pr
     options.sessionCookie,
     'MW templates API error:'
   );
-  return (data?.query?.allpages ?? [])
+  return readArray(data?.query?.allpages)
     .map(readTemplate)
     .filter((template): template is WikiTemplate => Boolean(template));
 }
@@ -518,7 +522,7 @@ export async function fetchWikiPages(options: FetchWikiListOptions = {}): Promis
       options.sessionCookie,
       'MW pages API error:'
     );
-    const namespacePages = (data?.query?.allpages ?? [])
+    const namespacePages = readArray(data?.query?.allpages)
       .map(readPage)
       .filter((page): page is WikiPage => Boolean(page));
     pages.push(...namespacePages);
@@ -547,7 +551,7 @@ export async function fetchSmwProperties(options: FetchWikiListOptions = {}): Pr
   );
   const continuation = asRecord(data)?.continue;
   const nextContinue = readString(asRecord(continuation)?.apcontinue);
-  const properties = (data?.query?.allpages ?? [])
+  const properties = readArray(data?.query?.allpages)
     .map(readSmwProperty)
     .filter((property): property is SmwProperty => Boolean(property))
     .filter((property) => !normalizedSearch || property.name.toLocaleLowerCase().includes(normalizedSearch))

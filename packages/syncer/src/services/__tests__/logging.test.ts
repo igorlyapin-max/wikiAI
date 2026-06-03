@@ -1,3 +1,4 @@
+import { createSocket } from 'node:dgram';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { config } from '../../config.js';
 import {
@@ -7,15 +8,40 @@ import {
   logOperationalEvent,
 } from '../logging.js';
 
+const sendMock = vi.hoisted(() => vi.fn());
+const unrefMock = vi.hoisted(() => vi.fn());
+
+vi.mock('node:dgram', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:dgram')>();
+  return {
+    ...actual,
+    createSocket: vi.fn(() => ({
+      unref: unrefMock,
+      send: sendMock,
+    })),
+  };
+});
+
 const originalConfig = { ...config };
 
 afterEach(() => {
   Object.assign(config, originalConfig);
   vi.restoreAllMocks();
+  sendMock.mockReset();
+  unrefMock.mockReset();
 });
 
 describe('syncer structured logging', () => {
   it('builds Fastify logger options with redaction paths and debug level when diagnostics are enabled', () => {
+    config.debugDiagnosticsEnabled = false;
+    expect(createFastifyLoggerOptions()).toMatchObject({
+      level: 'info',
+      base: {
+        service: 'syncer',
+        env: config.nodeEnv,
+      },
+    });
+
     config.debugDiagnosticsEnabled = true;
 
     const logger = createFastifyLoggerOptions() as {
@@ -63,6 +89,43 @@ describe('syncer structured logging', () => {
     expect(line).toContain('"cookie":"[redacted]"');
     expect(line).toContain('"message":"boom"');
     expect(line).not.toContain('"stack"');
+  });
+
+  it('writes Verbose error stacks and syslog messages through the configured sink', () => {
+    config.logSinks = ['stdout', 'syslog'];
+    config.debugDiagnosticsLevel = 'Verbose';
+    config.logSyslogHost = '127.0.0.3';
+    config.logSyslogPort = 5515;
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    logOperationalError('syncer.verbose_error', new Error('verbose boom'), {
+      nested: [{ pamToken: 'secret-pam-token' }],
+    });
+
+    const line = String(stderr.mock.calls[0]?.[0]);
+    expect(line).toContain('"stack"');
+    expect(line).toContain('"pamToken":"[redacted]"');
+    expect(line).not.toContain('secret-pam-token');
+    expect(createSocket).toHaveBeenCalledWith('udp4');
+    expect(unrefMock).toHaveBeenCalled();
+    expect(sendMock).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      5515,
+      '127.0.0.3',
+      expect.any(Function)
+    );
+    expect(String(sendMock.mock.calls[0]?.[0])).toContain('wikiai-syncer');
+  });
+
+  it('routes warn and debug operational events to stdout', () => {
+    config.logSinks = ['stdout'];
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    logOperationalEvent('warn', 'syncer.warn');
+    logOperationalEvent('debug', 'syncer.debug');
+
+    expect(String(stdout.mock.calls[0]?.[0])).toContain('"level":40');
+    expect(String(stdout.mock.calls[1]?.[0])).toContain('"level":20');
   });
 
   it('emits Basic dependency diagnostics and Verbose endpoint diagnostics', () => {

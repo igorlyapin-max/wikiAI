@@ -88,4 +88,69 @@ describe('ACL Chunk Filtering', () => {
 
     expect(result.map((r) => r.title)).toEqual(['Public', 'Finance', 'Secret']);
   });
+
+  it('skips chunks without titles and stops after the requested limit', async () => {
+    const checkedTitles: string[] = [];
+    const result = await filterReadableChunks(
+      [
+        { id: 10, pageId: 10, title: '', text: 'untitled', namespace: 0, allowedGroups: ['*'], score: 1 },
+        ...chunks,
+      ],
+      undefined,
+      2,
+      async (_cookie, title) => {
+        checkedTitles.push(title);
+        return true;
+      }
+    );
+
+    expect(result.map((chunk) => chunk.title)).toEqual(['Public', 'Engineering']);
+    expect(checkedTitles).toEqual(['Public', 'Engineering']);
+  });
+
+  it('uses principal MediaWiki checks with per-title caching in mediawiki_check mode', async () => {
+    const checked: string[] = [];
+    const result = await filterReadableChunksForPrincipal(
+      [
+        ...chunks,
+        { id: 5, pageId: 2, title: 'Engineering', text: 'more', namespace: 0, allowedGroups: ['engineer'], score: 0.5 },
+      ],
+      {
+        authMode: 'mediawiki_cookie',
+        username: 'Admin',
+        userId: 42,
+        groups: ['sysop'],
+        sessionCookie: 'mw=1',
+      },
+      10,
+      'mediawiki_check',
+      async (principal, title) => {
+        expect(principal.authMode).toBe('mediawiki_cookie');
+        checked.push(title);
+        return title !== 'Secret';
+      }
+    );
+
+    expect(result.map((chunk) => chunk.title)).toEqual(['Public', 'Engineering', 'Finance', 'Engineering']);
+    expect(checked.filter((title) => title === 'Engineering')).toHaveLength(1);
+  });
+
+  it('rejects group-only chunks when principal groups do not match and title is missing', async () => {
+    const result = await filterReadableChunksForPrincipal(
+      [
+        { id: 10, pageId: 10, title: '', text: 'untitled', namespace: 0, allowedGroups: ['*'], score: 1 },
+        { id: 11, pageId: 11, title: 'HR', text: 'hr', namespace: 0, allowedGroups: ['hr'], score: 0.9 },
+      ],
+      {
+        authMode: 'oidc',
+        username: 'external-user',
+        userId: 1_000_000_001,
+        groups: ['finance'],
+      },
+      10,
+      'groups_only'
+    );
+
+    expect(result).toEqual([]);
+  });
 });
