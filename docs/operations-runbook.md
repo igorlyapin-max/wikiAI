@@ -184,11 +184,28 @@ curl -s -X POST http://127.0.0.1:3000/api/admin/reindex \
 
 ## Backup / Restore
 
+Пилот на SQLite требует persistent `state/` и backup перед destructive
+операциями, обновлениями образов и полной переиндексацией.
+
 Пока обязательные данные:
 
 - Qdrant collection `wiki_chunks`;
 - Redis runtime settings, если SQL config еще не включен;
-- будущая SQLite/Postgres DB;
+- SQLite файл из `DATABASE_URL`, обычно `state/wiki-ai.sqlite`, или будущая
+  Postgres DB для production SLA;
 - MediaWiki DB и uploaded files.
+
+Минимальный SQLite backup на pilot-стенде:
+
+```bash
+mkdir -p backups
+cp state/wiki-ai.sqlite "backups/wiki-ai-$(date +%Y%m%d%H%M%S).sqlite"
+```
+
+Restore выполняйте при остановленных Gateway/Syncer:
+
+```bash
+cp backups/wiki-ai-<timestamp>.sqlite state/wiki-ai.sqlite
+```
 
 Перед полной переиндексацией сделайте backup Qdrant или убедитесь, что reindex воспроизводим.

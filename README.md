@@ -231,6 +231,7 @@ node scripts/verify-corporate-acl-live.mjs
 В репозитории есть `.gitlab-ci.yml` для базового quality gate:
 
 - проверка whitespace diff, i18n JSON и `scripts/*.mjs`;
+- проверка контрактов Gateway OpenAPI, Syncer webhook schema и MCP adapter;
 - Gateway lint/test/typecheck/build;
 - Syncer test/typecheck/build;
 - MCP adapter syntax check;

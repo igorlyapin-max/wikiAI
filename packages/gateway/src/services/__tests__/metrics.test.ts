@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import Fastify from 'fastify';
 import {
   recordRequestEnd,
   recordRequestStart,
+  registerMetrics,
   renderMetrics,
   resetMetricsForTests,
 } from '../metrics.js';
@@ -31,5 +33,21 @@ describe('gateway metrics', () => {
     expect(metrics).toContain(
       'wikiai_http_request_duration_seconds_count{service="gateway",method="GET",route="/ready",status="200"} 1'
     );
+  });
+
+  it('serves metrics through the registered Fastify endpoint', async () => {
+    const app = Fastify();
+    registerMetrics(app, 'gateway');
+    app.get('/probe', async () => ({ ok: true }));
+
+    await app.inject({ method: 'GET', url: '/probe' });
+    const metrics = await app.inject({ method: 'GET', url: '/metrics' });
+
+    expect(metrics.statusCode).toBe(200);
+    expect(metrics.headers['content-type']).toContain('text/plain');
+    expect(metrics.body).toContain('wikiai_process_uptime_seconds{service="gateway"}');
+    expect(metrics.body).toContain('wikiai_http_requests_total{service="gateway",method="GET",route="/probe",status="200"} 1');
+
+    await app.close();
   });
 });

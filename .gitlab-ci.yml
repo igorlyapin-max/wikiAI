@@ -48,6 +48,7 @@ validate:repo:
       fi
     - node -e "const fs=require('node:fs'); for (const file of ['packages/mw-extension/i18n/ru.json','packages/mw-extension/i18n/en.json']) JSON.parse(fs.readFileSync(file,'utf8')); console.log('i18n json ok')"
     - for file in scripts/*.mjs; do node --check "$file"; done
+    - node scripts/validate-contracts.mjs
     - npm --prefix packages/mcp-adapter run check
     - node --test scripts/*.test.mjs
 

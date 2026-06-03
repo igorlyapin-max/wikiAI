@@ -168,6 +168,7 @@
 ## GitLab CI / Release Gates
 
 - [ ] GitLab pipeline проходит `validate`, `test`, `typecheck`, `build`.
+- [ ] `validate:repo` выполняет `node scripts/validate-contracts.mjs`.
 - [ ] `docker:build` проходит на GitLab runner с Docker-in-Docker.
 - [ ] `security:secret-scan` блокирует реальные ключи и unsafe placeholder defaults в продуктовых файлах.
 - [ ] `security:npm-audit` блокирует high vulnerabilities для Gateway и Syncer.

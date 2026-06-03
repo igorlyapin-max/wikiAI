@@ -17,6 +17,10 @@ Status after the current modernization pass.
   `/metrics`.
 - P2 contract artifacts: Gateway OpenAPI, Syncer webhook JSON Schema, MCP
   adapter contract.
+- P2 contract validation automation: CI validates Gateway OpenAPI required
+  paths, Syncer webhook schema and MCP adapter tool contract.
+- P2 metrics endpoint smoke: Gateway and Syncer unit tests verify `/metrics`
+  via Fastify inject.
 
 ## Remaining
 
@@ -26,7 +30,7 @@ Status after the current modernization pass.
   MediaWiki service user, Ollama embeddings, limited reindex, ACL payload
   checks.
 - OpenAI/LiteLLM smoke: opt-in only, with explicit cost/budget confirmation.
-- Contract validation automation: add schema/OpenAPI validation to CI when the
-  project chooses a validator dependency.
 - Metrics integration: wire `/metrics` into the target collector, dashboard and
-  alert rules.
+  alert rules for the chosen deployment stack.
+- Production storage implementation: replace Postgres DAL placeholders before a
+  production SLA/HA/compliance release.
