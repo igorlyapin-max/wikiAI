@@ -27,6 +27,14 @@ curl -s http://127.0.0.1:3001/metrics
 reverse proxy allowlist, collector sidecar или другой внутренней сетевой
 границы.
 
+Minimum pilot alerts:
+
+- Gateway or Syncer scrape target missing for more than two scrape intervals;
+- Gateway or Syncer `/ready` returns degraded for more than five minutes;
+- Gateway 5xx rate grows on `/api/search`, `/api/chat` or `/api/v1/*`;
+- request latency grows above the accepted pilot baseline;
+- process restart is detected by `wikiai_process_start_time_seconds`.
+
 MediaWiki:
 
 ```bash
@@ -181,6 +189,33 @@ curl -s -X POST http://127.0.0.1:3000/api/admin/reindex \
 - проверить, что у пользователя есть доступ к найденным страницам;
 - проверить таймаут LLM в runtime/admin config;
 - не запускать платный OpenAI smoke без явного подтверждения.
+
+## Manual LiteLLM / OpenAI Smoke
+
+OpenAI/LiteLLM smoke is manual only. Run it only after the budget owner confirms
+that a paid API call is allowed for this acceptance window.
+
+Before running:
+
+- record approver, date, target environment and expected model alias;
+- verify `LITELLM_MODEL` points to the LiteLLM alias, for example
+  `corp-openai-gpt-4.1-mini`;
+- verify the upstream `OPENAI_API_KEY` is configured in LiteLLM runtime, not in
+  WikiAI;
+- use a minimal prompt and avoid full reindex with OpenAI-compatible embeddings.
+
+Suggested smoke:
+
+```bash
+npm --prefix packages/gateway run test:smoke:llm
+```
+
+Record after running:
+
+- model alias;
+- HTTP status/result summary;
+- token/cost output if available;
+- failure reason or retry decision.
 
 ## Backup / Restore
 

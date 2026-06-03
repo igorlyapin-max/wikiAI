@@ -24,13 +24,21 @@ Status after the current modernization pass.
 
 ## Remaining
 
-- Production storage decision: keep SQLite only for dev/test/pilot, or implement
-  Postgres stores before SLA/HA/compliance deployment.
-- Live integration acceptance on customer-like environment: Redis, Qdrant,
-  MediaWiki service user, Ollama embeddings, limited reindex, ACL payload
-  checks.
+- Pilot acceptance evidence: fill `docs/pilot-acceptance-report.md` on a
+  customer-like environment with Redis, Qdrant, MediaWiki service user, Ollama
+  embeddings, limited reindex, ACL payload checks and `/metrics` scrape proof.
 - OpenAI/LiteLLM smoke: opt-in only, with explicit cost/budget confirmation.
 - Metrics integration: wire `/metrics` into the target collector, dashboard and
   alert rules for the chosen deployment stack.
 - Production storage implementation: replace Postgres DAL placeholders before a
   production SLA/HA/compliance release.
+- Production storage decision: keep SQLite only for dev/test/pilot, or implement
+  Postgres stores before SLA/HA/compliance deployment.
+
+## Next Iteration
+
+- Run pilot acceptance and store sanitized evidence in
+  `docs/pilot-acceptance-report.md`.
+- Configure monitoring scrape, dashboard and alert rules in the deployment stack.
+- Keep OpenAI/LiteLLM smoke manual and record explicit approval before running.
+- Treat Postgres as a release blocker only for production SLA/HA/compliance.

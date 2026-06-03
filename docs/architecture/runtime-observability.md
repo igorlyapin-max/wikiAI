@@ -49,6 +49,32 @@ Labels:
 Expose `/metrics` only through an internal network, reverse proxy allowlist or
 collector sidecar. Metrics do not include request bodies, headers or secrets.
 
+## Pilot Monitoring Contract
+
+Pilot monitoring must scrape both services:
+
+| Service | Target | Required labels |
+|---------|--------|-----------------|
+| Gateway | `http://<gateway-internal-host>:3000/metrics` | `service=gateway`, environment label from collector |
+| Syncer | `http://<syncer-internal-host>:3001/metrics` | `service=syncer`, environment label from collector |
+
+The pilot dashboard must show:
+
+- process uptime for Gateway and Syncer;
+- HTTP request rate by service, route and status;
+- 5xx request rate by service;
+- p95 or closest available latency view from
+  `wikiai_http_request_duration_seconds_sum/count`;
+- readiness state from `/ready` or an external probe.
+
+Minimum alert rules:
+
+- Gateway or Syncer scrape missing for more than two scrape intervals;
+- Gateway or Syncer `/ready` degraded for more than five minutes;
+- any sustained 5xx growth on user-facing Gateway routes;
+- request latency growth relative to the pilot baseline;
+- unexpected restart indicated by process start time change.
+
 ## Dependency Readiness
 
 Gateway readiness checks Redis, Qdrant and LiteLLM readiness. Syncer readiness
