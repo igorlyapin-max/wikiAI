@@ -24,12 +24,14 @@ Status after the current modernization pass.
 
 ## Remaining
 
-- Pilot acceptance evidence: fill `docs/pilot-acceptance-report.md` on a
-  customer-like environment with Redis, Qdrant, MediaWiki service user, Ollama
-  embeddings, limited reindex, ACL payload checks and `/metrics` scrape proof.
+- Pilot acceptance blocker: `docs/pilot-acceptance-report.md` now contains local
+  Docker stand evidence from 2026-06-03. Dependencies and ACL/payload checks are
+  mostly healthy, but deployed Gateway/Syncer containers do not expose
+  `/live`, `/ready` or `/metrics`; redeploy current images before accepting the
+  pilot.
 - OpenAI/LiteLLM smoke: opt-in only, with explicit cost/budget confirmation.
 - Metrics integration: wire `/metrics` into the target collector, dashboard and
-  alert rules for the chosen deployment stack.
+  alert rules after redeploy makes Gateway/Syncer `/metrics` available.
 - Production storage implementation: replace Postgres DAL placeholders before a
   production SLA/HA/compliance release.
 - Production storage decision: keep SQLite only for dev/test/pilot, or implement
@@ -39,6 +41,8 @@ Status after the current modernization pass.
 
 - Run pilot acceptance and store sanitized evidence in
   `docs/pilot-acceptance-report.md`.
+- Rebuild/redeploy Gateway and Syncer from the current repo before rerunning
+  acceptance; the inspected containers still expose only legacy `/health`.
 - Configure monitoring scrape, dashboard and alert rules in the deployment stack.
 - Keep OpenAI/LiteLLM smoke manual and record explicit approval before running.
 - Treat Postgres as a release blocker only for production SLA/HA/compliance.
