@@ -49,6 +49,8 @@ import {
   testEmbeddingAdminConfig,
   getIndexingProfiles,
   upsertIndexingProfile,
+  upsertRetrievalProfile,
+  restoreDefaultRetrievalProfiles,
   applyIndexingProfileToReindexRequest,
   getRagAdminConfig,
   previewRagAdminConfig,
@@ -74,6 +76,10 @@ import {
   previewTrustModel,
   listAdminAuditLog,
 } from '../services/admin-platform-config.js';
+import {
+  getRetrievalProfileCapabilities,
+  getRetrievalProfilesWithReadiness,
+} from '../services/retrieval-profiles.js';
 import type { ChatExportFormat } from '../services/admin-platform-config.js';
 import { buildConflictDetectionTestData, detectConflicts } from '../services/conflict-detection.js';
 import { getEmbedding } from '../services/embedding.js';
@@ -83,6 +89,13 @@ import {
   syncColbertIndexPage,
   testColbertReranker,
 } from '../services/colbert-reranker.js';
+import {
+  cancelColbertIndexSpec,
+  createColbertIndexSpec,
+  getColbertIndexSpecs,
+  promoteColbertIndexSpec,
+  updateColbertIndexSpecStatus,
+} from '../services/colbert-indexes.js';
 import {
   archiveChatSession,
   enforceChatRetention,
@@ -94,7 +107,21 @@ import {
 } from '../services/chat-store.js';
 import { getIndexingProfileSchedulerStatus } from '../services/indexing-profile-scheduler.js';
 import { getTrustRecalculationSchedulerStatus } from '../services/trust-recalculation-scheduler.js';
-import { deleteSearchIndexPage, getSearchIndexStatus, upsertSearchIndexPage } from '../services/search-index.js';
+import {
+  cancelTrigramBackfillJob,
+  deleteSearchIndexPage,
+  getSearchIndexStatus,
+  getTrigramBackfillJobStatus,
+  startTrigramBackfillJob,
+  upsertSearchIndexPage,
+} from '../services/search-index.js';
+import {
+  analyzeOpenSearchQuery,
+  deleteOpenSearchPage,
+  getOpenSearchStatus,
+  searchOpenSearchChunksWithDiagnostics,
+  upsertOpenSearchPage,
+} from '../services/opensearch.js';
 import {
   fetchWikiCategories,
   fetchWikiNamespaces,
@@ -168,6 +195,18 @@ const HELP_TEXT: Record<keyof RuntimeConfig, { label: string; help: string; type
     min: 5000,
     max: 120000,
   },
+  searchHistoryEnabled: {
+    label: 'Запоминать последние поисковые запросы',
+    help: 'Если включено — UI ассистента сохраняет последние успешные поисковые запросы в браузере пользователя.',
+    type: 'boolean',
+  },
+  searchHistoryLimit: {
+    label: 'Лимит последних поисковых запросов',
+    help: 'Сколько последних запросов показывать в ИИ-поиске. История хранится локально в браузере.',
+    type: 'number',
+    min: 1,
+    max: 20,
+  },
 };
 
 function isAdmin(user: AuthenticatedRequest['mwUser']): boolean {
@@ -226,6 +265,9 @@ function parseSearchIndexChunks(value: unknown): Array<{
   totalChunks?: number;
   sourceType?: string;
   attachmentFilename?: string;
+  mimeType?: string;
+  processingMode?: string;
+  contentType?: string;
 }> {
   if (!Array.isArray(value)) return [];
   return value
@@ -237,7 +279,54 @@ function parseSearchIndexChunks(value: unknown): Array<{
       totalChunks: parsePositiveIntegerBodyField(item, 'totalChunks'),
       sourceType: typeof item.sourceType === 'string' ? item.sourceType : undefined,
       attachmentFilename: typeof item.attachmentFilename === 'string' ? item.attachmentFilename : undefined,
+      mimeType: typeof item.mimeType === 'string' ? item.mimeType : undefined,
+      processingMode: typeof item.processingMode === 'string' ? item.processingMode : undefined,
+      contentType: typeof item.contentType === 'string' ? item.contentType : undefined,
     }));
+}
+
+function parseIndexTargets(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return Array.from(new Set(
+    value
+      .filter((item): item is string => typeof item === 'string')
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0)
+  ));
+}
+
+function buildSearchReadiness(input: {
+  searchIndexPopulated: boolean;
+  bm25Populated: boolean;
+  colbertEnabled: boolean;
+  colbertStatus?: 'ok' | 'error';
+}): {
+  status: 'prod_ready' | 'limited_ready' | 'not_ready';
+  reasons: string[];
+} {
+  const reasons: string[] = [];
+  if (!input.searchIndexPopulated || !input.bm25Populated) {
+    reasons.push('BM25/search index is not populated');
+  }
+  if (!input.colbertEnabled) {
+    reasons.push('ColBERT is disabled; only limited scenarios are allowed');
+  } else if (input.colbertStatus !== 'ok') {
+    reasons.push('ColBERT is enabled but health check is not ok');
+  }
+
+  if (input.searchIndexPopulated && input.bm25Populated && input.colbertEnabled && input.colbertStatus === 'ok') {
+    return { status: 'prod_ready', reasons };
+  }
+  if (input.searchIndexPopulated && input.bm25Populated) {
+    return { status: 'limited_ready', reasons };
+  }
+  return { status: 'not_ready', reasons };
+}
+
+function parseRouteId(params: unknown): string | undefined {
+  if (!isRecord(params)) return undefined;
+  const value = params.id;
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
 }
 
 function parseChatSessionStatus(value: unknown): ChatSessionStatus | undefined {
@@ -307,10 +396,21 @@ function parseReindexBody(value: unknown): StartReindexRequest {
     : undefined;
 
   const request: StartReindexRequest = {
+    indexTargets: parseIndexTargets(value.indexTargets),
+    source: value.source === 'qdrant_payload' ? 'qdrant_payload' : value.source === 'mediawiki' ? 'mediawiki' : undefined,
+    colbertModel: typeof value.colbertModel === 'string' && value.colbertModel.trim()
+      ? value.colbertModel.trim()
+      : undefined,
+    colbertCollection: typeof value.colbertCollection === 'string' && value.colbertCollection.trim()
+      ? value.colbertCollection.trim()
+      : undefined,
     attachmentsEnabled: typeof value.attachmentsEnabled === 'boolean'
       ? value.attachmentsEnabled
       : profileId ? undefined : false,
     semanticFactsEnabled: typeof value.semanticFactsEnabled === 'boolean' ? value.semanticFactsEnabled : undefined,
+    cmdbDynamicPagesEnabled: typeof value.cmdbDynamicPagesEnabled === 'boolean'
+      ? value.cmdbDynamicPagesEnabled
+      : undefined,
     maxPages: typeof value.maxPages === 'number' && Number.isInteger(value.maxPages) && value.maxPages > 0
       ? value.maxPages
       : undefined,
@@ -368,7 +468,10 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       const values = await getExternalApiConfig();
       reply.send({
         values,
-        capabilities: toExternalApiCapabilities(values),
+        capabilities: {
+          ...toExternalApiCapabilities(values),
+          retrievalProfiles: await getRetrievalProfileCapabilities(),
+        },
         metadata: { secretsRedacted: true },
       });
     }
@@ -386,7 +489,10 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
         reply.send({
           status: 'saved',
           values,
-          capabilities: toExternalApiCapabilities(values),
+          capabilities: {
+            ...toExternalApiCapabilities(values),
+            retrievalProfiles: await getRetrievalProfileCapabilities(),
+          },
           metadata: { secretsRedacted: true },
         });
       } catch (err) {
@@ -527,8 +633,71 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: mwAuthMiddleware },
     async (request, reply) => {
       if (rejectNonAdmin(request as AuthenticatedRequest, reply)) return;
-      const [health, diagnostics] = await Promise.all([getHealthStatus(), testServiceAdminConfig()]);
-      reply.send({ values: { health, ...diagnostics } });
+      const [health, diagnostics, opensearch] = await Promise.all([
+        getHealthStatus(),
+        testServiceAdminConfig(),
+        getOpenSearchStatus(),
+      ]);
+      reply.send({ values: { health, ...diagnostics, opensearch } });
+    }
+  );
+
+  app.get(
+    '/api/admin/opensearch/status',
+    { preHandler: mwAuthMiddleware },
+    async (request, reply) => {
+      if (rejectNonAdmin(request as AuthenticatedRequest, reply)) return;
+      reply.send({ values: await getOpenSearchStatus() });
+    }
+  );
+
+  app.post(
+    '/api/admin/opensearch/analyze',
+    { preHandler: mwAuthMiddleware },
+    async (request, reply) => {
+      if (rejectNonAdmin(request as AuthenticatedRequest, reply)) return;
+      const query = isRecord(request.body) && typeof request.body.query === 'string'
+        ? request.body.query.trim()
+        : '';
+      if (!query) {
+        reply.status(400).send({ error: 'query is required' });
+        return;
+      }
+      reply.send({ values: await analyzeOpenSearchQuery(query) });
+    }
+  );
+
+  app.post(
+    '/api/admin/opensearch/search-preview',
+    { preHandler: mwAuthMiddleware },
+    async (request, reply) => {
+      if (rejectNonAdmin(request as AuthenticatedRequest, reply)) return;
+      const query = isRecord(request.body) && typeof request.body.query === 'string'
+        ? request.body.query.trim()
+        : '';
+      const limit = isRecord(request.body) && typeof request.body.limit === 'number'
+        ? request.body.limit
+        : undefined;
+      if (!query) {
+        reply.status(400).send({ error: 'query is required' });
+        return;
+      }
+      const result = await searchOpenSearchChunksWithDiagnostics(query, limit, await getRagAdminConfig());
+      reply.send({
+        values: {
+          diagnostics: result.diagnostics,
+          chunks: result.chunks.map((chunk) => ({
+            id: chunk.id,
+            pageId: chunk.pageId,
+            title: chunk.title,
+            namespace: chunk.namespace,
+            lexicalRank: chunk.lexicalRank,
+            matchedTerms: chunk.lexicalMatchedTerms,
+            sourceType: chunk.sourceType,
+            text: chunk.text.slice(0, 500),
+          })),
+        },
+      });
     }
   );
 
@@ -692,6 +861,15 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
+  app.get('/api/internal/indexing-profiles', async (request, reply) => {
+    if (!hasInternalAdminAccess(request.headers)) {
+      reply.status(401).send({ error: 'Invalid internal admin token' });
+      return;
+    }
+
+    reply.send({ values: await getIndexingProfiles() });
+  });
+
   app.post('/api/internal/embedding/vector', async (request, reply) => {
     if (!hasInternalAdminAccess(request.headers)) {
       reply.status(401).send({ error: 'Invalid internal admin token' });
@@ -771,6 +949,52 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     }
   );
 
+  app.get(
+    '/api/admin/retrieval-profiles',
+    { preHandler: mwAuthMiddleware },
+    async (request, reply) => {
+      if (rejectNonAdmin(request as AuthenticatedRequest, reply)) return;
+      reply.send({ values: await getRetrievalProfilesWithReadiness() });
+    }
+  );
+
+  app.post(
+    '/api/admin/retrieval-profiles',
+    { preHandler: mwAuthMiddleware },
+    async (request, reply) => {
+      const authenticated = request as AuthenticatedRequest;
+      if (rejectNonAdmin(authenticated, reply)) return;
+
+      try {
+        await upsertRetrievalProfile(request.body, auditActor(authenticated));
+        reply.send({
+          status: 'saved',
+          values: await getRetrievalProfilesWithReadiness(),
+        });
+      } catch (err) {
+        reply.status(400).send({
+          error: 'Invalid retrieval profile',
+          message: err instanceof Error ? err.message : 'Unknown validation error',
+        });
+      }
+    }
+  );
+
+  app.post(
+    '/api/admin/retrieval-profiles/restore-defaults',
+    { preHandler: mwAuthMiddleware },
+    async (request, reply) => {
+      const authenticated = request as AuthenticatedRequest;
+      if (rejectNonAdmin(authenticated, reply)) return;
+
+      await restoreDefaultRetrievalProfiles(auditActor(authenticated));
+      reply.send({
+        status: 'saved',
+        values: await getRetrievalProfilesWithReadiness(),
+      });
+    }
+  );
+
   app.post(
     '/api/admin/rag/config',
     { preHandler: mwAuthMiddleware },
@@ -809,11 +1033,224 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
   );
 
   app.get(
+    '/api/admin/rag/colbert/indexes',
+    { preHandler: mwAuthMiddleware },
+    async (request, reply) => {
+      if (rejectNonAdmin(request as AuthenticatedRequest, reply)) return;
+      reply.send({ values: await getColbertIndexSpecs() });
+    }
+  );
+
+  app.post(
+    '/api/admin/rag/colbert/indexes',
+    { preHandler: mwAuthMiddleware },
+    async (request, reply) => {
+      const authenticated = request as AuthenticatedRequest;
+      if (rejectNonAdmin(authenticated, reply)) return;
+      if (!isRecord(request.body)) {
+        reply.status(400).send({ error: 'Invalid ColBERT index request' });
+        return;
+      }
+
+      let createdSpecId: string | undefined;
+      try {
+        const spec = await createColbertIndexSpec(request.body, auditActor(authenticated));
+        createdSpecId = spec.id;
+        const reindex = await startSyncerReindex({
+          profileId: typeof request.body.sourceProfile === 'string' ? request.body.sourceProfile : undefined,
+          indexTargets: ['colbert'],
+          source: spec.source,
+          colbertModel: spec.model,
+          colbertCollection: spec.collection,
+          dryRun: typeof request.body.dryRun === 'boolean' ? request.body.dryRun : false,
+          maxPages: parsePositiveIntegerBodyField(request.body, 'maxPages'),
+          attachmentsEnabled: false,
+          semanticFactsEnabled: false,
+        });
+        reply.status(202).send({ values: spec, reindex });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown ColBERT index build error';
+        if (createdSpecId) {
+          await updateColbertIndexSpecStatus(createdSpecId, { status: 'failed', error: message }, auditActor(authenticated))
+            .catch(() => undefined);
+        }
+        reply.status(isSyncerAdminError(err) ? err.statusCode : 400).send({
+          error: 'Unable to start ColBERT index build',
+          message,
+        });
+      }
+    }
+  );
+
+  app.get(
+    '/api/admin/rag/colbert/indexes/:id/status',
+    { preHandler: mwAuthMiddleware },
+    async (request, reply) => {
+      const authenticated = request as AuthenticatedRequest;
+      if (rejectNonAdmin(authenticated, reply)) return;
+      const id = parseRouteId(request.params);
+      if (!id) {
+        reply.status(400).send({ error: 'ColBERT index id is required' });
+        return;
+      }
+
+      try {
+        const indexes = await getColbertIndexSpecs();
+        let spec = indexes.find((item) => item.id === id);
+        if (!spec) {
+          reply.status(404).send({ error: 'ColBERT index not found' });
+          return;
+        }
+        const reindexStatus = await getSyncerReindexStatus().catch(() => undefined);
+        const reindexStartedAt = isRecord(reindexStatus) && typeof reindexStatus.startedAt === 'string'
+          ? Date.parse(reindexStatus.startedAt)
+          : NaN;
+        const specStartedAt = Date.parse(spec.startedAt ?? spec.createdAt);
+        const reindexBelongsToSpec = Number.isFinite(reindexStartedAt)
+          && Number.isFinite(specStartedAt)
+          && reindexStartedAt >= specStartedAt;
+        if (spec.status === 'building' && isRecord(reindexStatus) && reindexBelongsToSpec) {
+          if (reindexStatus.state === 'completed' && isRecord(reindexStatus.summary)) {
+            spec = await updateColbertIndexSpecStatus(id, {
+              status: 'complete',
+              pagesProcessed: typeof reindexStatus.summary.processed === 'number'
+                ? reindexStatus.summary.processed
+                : spec.pagesProcessed,
+              chunksIndexed: typeof reindexStatus.summary.totalChunks === 'number'
+                ? reindexStatus.summary.totalChunks
+                : spec.chunksIndexed,
+              failures: typeof reindexStatus.summary.failed === 'number'
+                ? reindexStatus.summary.failed
+                : spec.failures,
+            }, auditActor(authenticated));
+          } else if (reindexStatus.state === 'failed') {
+            spec = await updateColbertIndexSpecStatus(id, {
+              status: 'failed',
+              error: typeof reindexStatus.error === 'string' ? reindexStatus.error : 'Syncer reindex failed',
+            }, auditActor(authenticated));
+          }
+        }
+        reply.send({ values: spec, reindex: reindexStatus });
+      } catch (err) {
+        reply.status(400).send({
+          error: 'Unable to read ColBERT index status',
+          message: err instanceof Error ? err.message : 'Unknown ColBERT index status error',
+        });
+      }
+    }
+  );
+
+  app.post(
+    '/api/admin/rag/colbert/indexes/:id/promote',
+    { preHandler: mwAuthMiddleware },
+    async (request, reply) => {
+      const authenticated = request as AuthenticatedRequest;
+      if (rejectNonAdmin(authenticated, reply)) return;
+      const id = parseRouteId(request.params);
+      if (!id) {
+        reply.status(400).send({ error: 'ColBERT index id is required' });
+        return;
+      }
+
+      try {
+        reply.send({ values: await promoteColbertIndexSpec(id, auditActor(authenticated)) });
+      } catch (err) {
+        reply.status(400).send({
+          error: 'Unable to promote ColBERT index',
+          message: err instanceof Error ? err.message : 'Unknown ColBERT promote error',
+        });
+      }
+    }
+  );
+
+  app.post(
+    '/api/admin/rag/colbert/indexes/:id/cancel',
+    { preHandler: mwAuthMiddleware },
+    async (request, reply) => {
+      const authenticated = request as AuthenticatedRequest;
+      if (rejectNonAdmin(authenticated, reply)) return;
+      const id = parseRouteId(request.params);
+      if (!id) {
+        reply.status(400).send({ error: 'ColBERT index id is required' });
+        return;
+      }
+
+      try {
+        reply.send({ values: await cancelColbertIndexSpec(id, auditActor(authenticated)) });
+      } catch (err) {
+        reply.status(400).send({
+          error: 'Unable to cancel ColBERT index',
+          message: err instanceof Error ? err.message : 'Unknown ColBERT cancel error',
+        });
+      }
+    }
+  );
+
+  app.get(
     '/api/admin/search-index/status',
     { preHandler: mwAuthMiddleware },
     async (request, reply) => {
       if (rejectNonAdmin(request as AuthenticatedRequest, reply)) return;
-      reply.send({ values: await getSearchIndexStatus() });
+      const [status, ragConfig] = await Promise.all([
+        getSearchIndexStatus(),
+        getRagAdminConfig(),
+      ]);
+      const colbertHealth = ragConfig.colbertEnabled
+        ? await testColbertReranker(ragConfig).catch((err) => ({
+          status: 'error' as const,
+          url: ragConfig.colbertBaseUrl,
+          latencyMs: 0,
+          error: err instanceof Error ? err.message : 'Unknown ColBERT health error',
+        }))
+        : undefined;
+      reply.send({
+        values: {
+          ...status,
+          readiness: buildSearchReadiness({
+            searchIndexPopulated: status.populated,
+            bm25Populated: status.ftsChunks > 0,
+            colbertEnabled: ragConfig.colbertEnabled,
+            colbertStatus: colbertHealth?.status,
+          }),
+          colbertHealth,
+        },
+      });
+    }
+  );
+
+  app.post(
+    '/api/admin/search-index/trigram/backfill',
+    { preHandler: mwAuthMiddleware },
+    async (request, reply) => {
+      const authenticated = request as AuthenticatedRequest;
+      if (rejectNonAdmin(authenticated, reply)) return;
+      try {
+        reply.status(202).send({ values: await startTrigramBackfillJob(auditActor(authenticated)) });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown trigram backfill error';
+        reply.status(message.includes('already running') ? 409 : 400).send({
+          error: 'Trigram backfill failed',
+          message,
+        });
+      }
+    }
+  );
+
+  app.get(
+    '/api/admin/search-index/trigram/backfill/status',
+    { preHandler: mwAuthMiddleware },
+    async (request, reply) => {
+      if (rejectNonAdmin(request as AuthenticatedRequest, reply)) return;
+      reply.send({ values: await getTrigramBackfillJobStatus() ?? null });
+    }
+  );
+
+  app.post(
+    '/api/admin/search-index/trigram/backfill/cancel',
+    { preHandler: mwAuthMiddleware },
+    async (request, reply) => {
+      if (rejectNonAdmin(request as AuthenticatedRequest, reply)) return;
+      reply.send({ values: await cancelTrigramBackfillJob() ?? null });
     }
   );
 
@@ -1397,14 +1834,36 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
           allowedGroups: parseStringArrayBodyField(request.body, 'allowedGroups'),
           lastModified: typeof request.body.lastModified === 'string' ? request.body.lastModified : undefined,
           replacePage: typeof request.body.replacePage === 'boolean' ? request.body.replacePage : undefined,
+          indexTargets: parseIndexTargets(request.body.indexTargets),
+          colbertModel: typeof request.body.colbertModel === 'string' ? request.body.colbertModel.trim() : undefined,
+          colbertCollection: typeof request.body.colbertCollection === 'string'
+            ? request.body.colbertCollection.trim()
+            : undefined,
           chunks: parseSearchIndexChunks(request.body.chunks),
         };
-        const searchIndex = await upsertSearchIndexPage(pageInput);
-        const colbertIndex = await syncColbertIndexPage(pageInput);
+        const targets = pageInput.indexTargets;
+        const shouldUpdateBm25 = !targets || targets.includes('bm25');
+        const shouldUpdateColbert = !targets || targets.includes('colbert');
+        const shouldUpdateOpenSearch = !targets || targets.includes('opensearch');
+        const searchIndex = shouldUpdateBm25
+          ? await upsertSearchIndexPage(pageInput)
+          : { status: 'disabled' as const, pageId, replacedPage: pageInput.replacePage !== false, chunks: 0 };
+        const colbertIndex = shouldUpdateColbert
+          ? await syncColbertIndexPage(pageInput)
+          : { status: 'disabled' as const, url: '/index/page', chunks: 0, error: 'ColBERT target is disabled for this request' };
+        const openSearchIndex = shouldUpdateOpenSearch
+          ? await upsertOpenSearchPage(pageInput)
+          : { status: 'disabled' as const, pageId, replacedPage: pageInput.replacePage !== false, chunks: 0 };
+        const anyTargetUpdated = searchIndex.status === 'ok'
+          || colbertIndex.status === 'ok'
+          || openSearchIndex.status === 'ok';
         reply.send({
           values: {
             ...searchIndex,
+            status: anyTargetUpdated ? 'ok' : searchIndex.status,
+            chunks: searchIndex.chunks + colbertIndex.chunks + openSearchIndex.chunks,
             colbertIndex,
+            openSearchIndex,
           },
         });
       } catch (err) {
@@ -1438,10 +1897,12 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       try {
         const searchIndex = await deleteSearchIndexPage(pageId);
         const colbertIndex = await deleteColbertIndexPage(pageId);
+        const openSearchIndex = await deleteOpenSearchPage(pageId);
         reply.send({
           values: {
             ...searchIndex,
             colbertIndex,
+            openSearchIndex,
           },
         });
       } catch (err) {

@@ -22,10 +22,19 @@ const baseConfig: RagAdminConfig = {
   rerankMode: 'none',
   vectorWeight: 0.65,
   lexicalWeight: 0.35,
+  lexicalBackend: 'sqlite_fts',
   vectorCandidateLimit: 50,
   lexicalCandidateLimit: 50,
   lexicalMinMatchedTerms: 2,
   lexicalGateMode: 'when_bm25_available',
+  lexicalNormalizationMode: 'simple_stem',
+  lexicalSynonymsEnabled: false,
+  lexicalSynonyms: [],
+  lexicalTransliterationEnabled: false,
+  lexicalEditDistanceEnabled: false,
+  trigramIndexEnabled: false,
+  trigramCandidateLimit: 50,
+  trigramMinQueryLength: 4,
   vectorOnlyFallbackEnabled: true,
   vectorOnlyFallbackMinScore: 0.78,
   minFinalScore: 0,
@@ -250,5 +259,47 @@ describe('ColBERT reranker', () => {
       url: 'http://colbert.internal:8080/index/delete-page',
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses candidate model and collection overrides for index writes', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      text: async () => '',
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await syncColbertIndexPage({
+      pageId: 11,
+      title: 'Candidate',
+      namespace: 0,
+      allowedGroups: ['*'],
+      colbertModel: 'candidate-model',
+      colbertCollection: 'candidate_collection',
+      chunks: [{
+        id: 110000,
+        text: 'Candidate chunk',
+        chunkIndex: 0,
+        totalChunks: 1,
+        mimeType: 'text/plain',
+        processingMode: 'text',
+      }],
+    }, enabledConfig({
+      colbertModel: 'active-model',
+      colbertCollection: 'active_collection',
+    }));
+
+    const firstCall = fetchMock.mock.calls.at(0) as unknown as [string, { body?: unknown }];
+    expect(JSON.parse(String(firstCall[1].body))).toMatchObject({
+      model: 'candidate-model',
+      collection: 'candidate_collection',
+      chunks: [
+        expect.objectContaining({
+          mimeType: 'text/plain',
+          processingMode: 'text',
+        }),
+      ],
+    });
   });
 });

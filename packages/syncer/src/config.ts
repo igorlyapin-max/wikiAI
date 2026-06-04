@@ -77,6 +77,12 @@ export interface SyncerConfig {
   namespaceAcl: Record<string, string[]>;
   smwSyncEnabled: boolean;
   smwSyncProperties: string[];
+  cmdbDynamicPagesEnabled: boolean;
+  cmdbDynamicPagesBaseUrl?: string;
+  cmdbDynamicPagesMaxBlocksPerPage: number;
+  cmdbDynamicPagesMaxSnapshotChars: number;
+  cmdbDynamicPagesSnapshotTimeoutMs: number;
+  cmdbDynamicPagesRedactParams: string[];
   nodeEnv: string;
   debugDiagnosticsEnabled: boolean;
   debugDiagnosticsLevel: DiagnosticLevel;
@@ -172,6 +178,21 @@ export const config: SyncerConfig = {
     'Процесс',
     'Дата действия',
     'Критичность',
+  ]),
+  cmdbDynamicPagesEnabled: envBool('CMDBDYNAMICPAGES_ENABLED', false),
+  cmdbDynamicPagesBaseUrl: optionalEnv('CMDBDYNAMICPAGES_BASE_URL'),
+  cmdbDynamicPagesMaxBlocksPerPage: parseInt(env('CMDBDYNAMICPAGES_MAX_BLOCKS_PER_PAGE', '10'), 10),
+  cmdbDynamicPagesMaxSnapshotChars: parseInt(env('CMDBDYNAMICPAGES_MAX_SNAPSHOT_CHARS', '20000'), 10),
+  cmdbDynamicPagesSnapshotTimeoutMs: parseInt(env('CMDBDYNAMICPAGES_SNAPSHOT_TIMEOUT_MS', '10000'), 10),
+  cmdbDynamicPagesRedactParams: envList('CMDBDYNAMICPAGES_REDACT_PARAMS', [
+    'password',
+    'passwd',
+    'pwd',
+    'token',
+    'secret',
+    'authorization',
+    'auth',
+    'csrf',
   ]),
   nodeEnv,
   debugDiagnosticsEnabled: envBool('DEBUG_DIAGNOSTICS_ENABLED', false),

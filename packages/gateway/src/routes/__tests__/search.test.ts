@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { searchRoutes } from '../search.js';
 import { resetAdminStoreForTests } from '../../db/admin-store.js';
 import { setRagAdminConfig, upsertTrustEntity, upsertTrustModel } from '../../services/admin-platform-config.js';
+import { setRuntimeConfig } from '../../services/config.js';
 import { SearchChunk } from '../../types/index.js';
 
 const redisStore = vi.hoisted(() => new Map<string, string>());
@@ -109,6 +110,31 @@ describe('search routes trust filtering', () => {
     return app;
   }
 
+  it('serves only safe UI config values', async () => {
+    await setRuntimeConfig({
+      searchHistoryEnabled: false,
+      searchHistoryLimit: 3,
+      systemPrompt: 'secret prompt must not be exposed',
+    });
+
+    const app = await makeApp();
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/ui/config',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      values: {
+        searchHistoryEnabled: false,
+        searchHistoryLimit: 3,
+      },
+    });
+    expect(JSON.stringify(res.json())).not.toContain('secret prompt');
+
+    await app.close();
+  });
+
   it('returns only chunks allowed by the active trust policy', async () => {
     await upsertTrustModel({
       id: 'corp-default',
@@ -153,7 +179,16 @@ describe('search routes trust filtering', () => {
     });
     expect(filterReadableChunks).toHaveBeenCalledWith(chunks, 'mw=1', 10);
     expect(res.json().diagnostics).toMatchObject({
+      query: 'vpn',
+      retrievalQuery: 'vpn',
       searchMode: 'hybrid',
+      retrievalProfileId: null,
+      requestedTopK: 2,
+      effectiveTopK: 2,
+      rawChunks: 2,
+      readableChunks: 2,
+      trustedChunks: 1,
+      finalResults: 1,
       bm25Candidates: 1,
       bm25RawCandidates: 1,
       lexicalMinMatchedTerms: 2,
@@ -179,7 +214,16 @@ describe('search routes trust filtering', () => {
       user: 'anonymous',
       groups: ['*'],
       diagnostics: {
+        query: 'vpn',
+        retrievalQuery: 'vpn',
         searchMode: 'hybrid',
+        retrievalProfileId: null,
+        requestedTopK: 2,
+        effectiveTopK: 2,
+        rawChunks: 2,
+        readableChunks: 1,
+        trustedChunks: 1,
+        finalResults: 1,
         bm25Candidates: 1,
         bm25RawCandidates: 1,
         lexicalMinMatchedTerms: 2,
@@ -336,6 +380,14 @@ describe('search routes trust filtering', () => {
       searchMode: 'colbert_full',
       diagnostics: {
         searchMode: 'colbert_full',
+        query: 'vpn',
+        retrievalQuery: 'vpn',
+        requestedTopK: 2,
+        effectiveTopK: 2,
+        rawChunks: 1,
+        readableChunks: 1,
+        trustedChunks: 1,
+        finalResults: 1,
         colbertIndexApplied: true,
         colbertCandidates: 1,
       },

@@ -4,6 +4,7 @@ import { type WikiPageUrlOptions } from '../services/mediawiki-url.js';
 import { executeRuntimeSearch } from '../services/runtime-search.js';
 import { RuntimeHttpError } from '../services/runtime-errors.js';
 import { principalFromMwUser } from '../services/principal-auth.js';
+import { getRuntimeConfig } from '../services/config.js';
 import { SearchRequest } from '../types/index.js';
 
 function readHeader(value: string | string[] | undefined): string | undefined {
@@ -19,6 +20,16 @@ function wikiUrlOptionsFromRequest(request: FastifyRequest): WikiPageUrlOptions 
 }
 
 export async function searchRoutes(app: FastifyInstance): Promise<void> {
+  app.get('/api/ui/config', async (_request, reply) => {
+    const runtime = await getRuntimeConfig();
+    reply.send({
+      values: {
+        searchHistoryEnabled: runtime.searchHistoryEnabled,
+        searchHistoryLimit: runtime.searchHistoryLimit,
+      },
+    });
+  });
+
   app.post<{ Body: SearchRequest }>(
     '/api/search',
     {
@@ -28,7 +39,7 @@ export async function searchRoutes(app: FastifyInstance): Promise<void> {
       ],
     },
     async (request, reply) => {
-      const { query, topK } = request.body;
+      const { query, topK, retrievalProfileId } = request.body;
       const mwUser = (request as AuthenticatedRequest).mwUser!;
       const cookie = (request as AuthenticatedRequest).sessionCookie;
 
@@ -41,6 +52,7 @@ export async function searchRoutes(app: FastifyInstance): Promise<void> {
         reply.send(await executeRuntimeSearch({
           query,
           topK,
+          retrievalProfileId,
           principal: principalFromMwUser(mwUser, cookie),
           wikiUrlOptions: wikiUrlOptionsFromRequest(request),
           aclMode: 'mediawiki_check',

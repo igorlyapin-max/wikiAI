@@ -23,6 +23,8 @@ describe('Document processing config', () => {
     expect(config.attachmentsEnabled).toBe(true);
     expect(config.mimeTypes['application/pdf'].mode).toBe('text');
     expect(config.mimeTypes['image/png'].mode).toBe('ocr');
+    expect(config.mimeTypes['application/vnd.openxmlformats-officedocument.wordprocessingml.document'].mode).toBe('text');
+    expect(config.mimeTypes['application/zip'].mode).toBe('metadata');
   });
 
   it('saves and merges MIME policy with defaults', async () => {

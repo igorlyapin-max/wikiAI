@@ -6,6 +6,7 @@ import { buildFtsQuery, upsertSearchIndexPage } from '../search-index.js';
 import { SearchChunk } from '../../types/index.js';
 
 const searchChunkCandidates = vi.hoisted(() => vi.fn());
+const searchOpenSearchChunksWithDiagnostics = vi.hoisted(() => vi.fn());
 
 vi.mock('../qdrant.js', () => ({
   normalizeTopK: (topK: number | undefined, fallback = 5) => {
@@ -19,6 +20,10 @@ vi.mock('../qdrant.js', () => ({
     return Math.min(Math.max(Math.trunc(value), 1), 200);
   },
   searchChunkCandidates,
+}));
+
+vi.mock('../opensearch.js', () => ({
+  searchOpenSearchChunksWithDiagnostics,
 }));
 
 describe('hybrid search ranking', () => {
@@ -47,6 +52,22 @@ describe('hybrid search ranking', () => {
     resetAdminStoreForTests();
     searchChunkCandidates.mockReset();
     searchChunkCandidates.mockResolvedValue(chunks);
+    searchOpenSearchChunksWithDiagnostics.mockReset();
+    searchOpenSearchChunksWithDiagnostics.mockResolvedValue({
+      chunks: [],
+      diagnostics: {
+        enabled: false,
+        ready: false,
+        indexName: 'wikiai_chunks',
+        analyzer: 'russian',
+        rawHits: 0,
+        candidates: 0,
+        analyzedTerms: [],
+        removedTerms: [],
+        latencyMs: 0,
+        highlightsAvailable: false,
+      },
+    });
   });
 
   it('uses BM25 matches as a gate when lexical candidates exist', async () => {
@@ -166,6 +187,63 @@ describe('hybrid search ranking', () => {
         title: 'CorpIT:Администрирование систем',
       }),
     ]);
+  });
+
+  it('uses OpenSearch as the lexical provider when selected by profile config', async () => {
+    searchOpenSearchChunksWithDiagnostics.mockResolvedValueOnce({
+      chunks: [{
+        id: 760000,
+        pageId: 76,
+        title: 'Древний Египет',
+        text: 'Одна из древнейших цивилизаций мира.',
+        namespace: 0,
+        allowedGroups: ['*'],
+        score: 0,
+        lexicalRank: 1,
+        lexicalMatchedTerms: ['цивилизации'],
+        lexicalMatchedTermCount: 1,
+      }],
+      diagnostics: {
+        enabled: true,
+        ready: true,
+        indexName: 'wikiai_chunks',
+        analyzer: 'russian',
+        rawHits: 1,
+        candidates: 1,
+        analyzedTerms: ['цивилизации'],
+        removedTerms: [],
+        latencyMs: 12,
+        highlightsAvailable: true,
+      },
+    });
+    await setRagAdminConfig({
+      searchMode: 'hybrid',
+      lexicalBackend: 'opensearch',
+      lexicalCandidateLimit: 20,
+      lexicalMinMatchedTerms: 1,
+      showRawScores: false,
+    });
+
+    const result = await searchRagChunks({
+      query: 'как там цивилизации',
+      vector: [0.1, 0.2, 0.3],
+      topK: 5,
+    });
+
+    expect(searchOpenSearchChunksWithDiagnostics).toHaveBeenCalledWith(
+      'как там цивилизации',
+      20,
+      expect.objectContaining({ lexicalBackend: 'opensearch' })
+    );
+    expect(result.diagnostics).toMatchObject({
+      lexicalBackend: 'opensearch',
+      bm25Candidates: 0,
+      opensearchCandidates: 1,
+      opensearchRawHits: 1,
+      opensearchAnalyzedTerms: ['цивилизации'],
+      opensearchHighlightsAvailable: true,
+    });
+    expect(result.chunks.map((chunk) => chunk.title)).toEqual(['Древний Египет']);
   });
 
   it('matches Russian inflections for ancient civilization queries', async () => {
@@ -329,5 +407,57 @@ describe('hybrid search ranking', () => {
       vectorOnlyFallbackUsed: false,
     });
     expect(result.chunks).toEqual([]);
+  });
+
+  it('uses trigram lexical fallback before vector-only fallback', async () => {
+    searchChunkCandidates.mockResolvedValueOnce([
+      {
+        id: 4040001,
+        pageId: 404,
+        title: 'CorpIT:Администрирование систем',
+        text: 'Регламент администрирования систем и доступа операторов.',
+        namespace: 3030,
+        allowedGroups: ['ai-it'],
+        score: 0.79,
+      },
+    ]);
+    await upsertSearchIndexPage({
+      pageId: 404,
+      title: 'CorpIT:Администрирование систем',
+      namespace: 3030,
+      allowedGroups: ['ai-it'],
+      chunks: [{
+        id: 4040001,
+        text: 'Регламент администрирования информационных систем и доступа операторов.',
+      }],
+    });
+    await setRagAdminConfig({
+      searchMode: 'hybrid',
+      lexicalMinMatchedTerms: 3,
+      trigramIndexEnabled: true,
+      trigramCandidateLimit: 20,
+      vectorOnlyFallbackEnabled: true,
+      vectorOnlyFallbackMinScore: 0.78,
+      showRawScores: false,
+    });
+
+    const result = await searchRagChunks({
+      query: 'адмиристрирвание инфармацыонных систеи',
+      vector: [0.1, 0.2, 0.3],
+      topK: 2,
+    });
+
+    expect(result.diagnostics).toMatchObject({
+      bm25Candidates: 0,
+      trigramCandidates: 1,
+      trigramFallbackUsed: true,
+      vectorOnlyFallbackUsed: false,
+    });
+    expect(result.chunks).toEqual([
+      expect.objectContaining({
+        id: 4040001,
+        title: 'CorpIT:Администрирование систем',
+      }),
+    ]);
   });
 });

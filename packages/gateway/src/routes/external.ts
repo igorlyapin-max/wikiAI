@@ -9,6 +9,11 @@ import {
   type ExternalApiConfig,
 } from '../services/external-api-config.js';
 import {
+  getRetrievalProfileAccess,
+  getRetrievalProfileCapabilities,
+  type RetrievalProfileSurface,
+} from '../services/retrieval-profiles.js';
+import {
   anonymousPrincipal,
   authenticateOidcBearerToken,
   principalFromMwUser,
@@ -23,11 +28,48 @@ import {
 import { type WikiPageUrlOptions } from '../services/mediawiki-url.js';
 import { AuthenticatedPrincipal } from '../types/index.js';
 
+const externalContextValueSchema = z.union([
+  z.string().trim().max(1000),
+  z.number(),
+  z.boolean(),
+  z.array(z.string().trim().max(1000)).max(20),
+]);
+
+const dynamicBlockContextSchema = z.object({
+  sourceApp: z.literal('cmdbdynamicpages').optional(),
+  templateCode: z.string().trim().min(1).max(200).optional(),
+  status: z.enum([
+    'snapshot_hit',
+    'snapshot_miss',
+    'auth_runtime_hit',
+    'auth_required',
+    'permission_denied',
+    'runtime_error',
+    'unresolved_params',
+  ]).optional(),
+  title: z.string().trim().max(500).optional(),
+  url: z.string().trim().max(2000).optional(),
+}).strict();
+
+const externalContextSchema = z.object({
+  sourceApp: z.string().trim().max(100).optional(),
+  objectType: z.string().trim().max(200).optional(),
+  objectId: z.string().trim().max(200).optional(),
+  title: z.string().trim().max(500).optional(),
+  url: z.string().trim().max(2000).optional(),
+  tags: z.array(z.string().trim().max(200)).max(50).optional(),
+  params: z.record(externalContextValueSchema).optional(),
+  attributes: z.record(externalContextValueSchema).optional(),
+  dynamicBlocks: z.array(dynamicBlockContextSchema).max(20).optional(),
+}).strict();
+
 const searchBodySchema = z.object({
   query: z.string().trim().min(1).max(4000),
   topK: z.number().int().min(1).max(50).optional(),
+  retrievalProfileId: z.string().trim().min(1).max(120).regex(/^[A-Za-z0-9_.-]+$/).optional(),
   format: z.enum(['compact', 'full']).optional(),
   language: z.string().trim().min(1).max(20).optional(),
+  context: externalContextSchema.optional(),
 }).strict();
 
 const chatBodySchema = z.object({
@@ -35,8 +77,10 @@ const chatBodySchema = z.object({
   conversationId: z.string().trim().min(1).max(200).optional(),
   stream: z.boolean().optional(),
   topK: z.number().int().min(1).max(50).optional(),
+  retrievalProfileId: z.string().trim().min(1).max(120).regex(/^[A-Za-z0-9_.-]+$/).optional(),
   format: z.enum(['compact', 'full']).optional(),
   language: z.string().trim().min(1).max(20).optional(),
+  context: externalContextSchema.optional(),
 }).strict();
 
 function readHeader(value: string | string[] | undefined): string | undefined {
@@ -55,6 +99,10 @@ function readBearerToken(value: string | string[] | undefined): string | undefin
   const header = readHeader(value);
   const match = header?.match(/^Bearer\s+(.+)$/i);
   return match?.[1]?.trim();
+}
+
+function retrievalProfileSurfaceFromRequest(request: FastifyRequest): RetrievalProfileSurface {
+  return readHeader(request.headers['x-wikiai-client']) === 'mcp' ? 'mcp' : 'api';
 }
 
 async function principalFromExternalRequest(input: {
@@ -121,8 +169,14 @@ function sendRuntimeError(reply: { status: (code: number) => { send: (payload: u
 
 export async function externalRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/v1/capabilities', async (_request, reply) => {
-    const configValue = await getExternalApiConfig();
-    reply.send(toExternalApiCapabilities(configValue));
+    const [configValue, retrievalProfiles] = await Promise.all([
+      getExternalApiConfig(),
+      getRetrievalProfileCapabilities(),
+    ]);
+    reply.send({
+      ...toExternalApiCapabilities(configValue),
+      retrievalProfiles,
+    });
   });
 
   app.post<{ Body: unknown }>(
@@ -144,14 +198,18 @@ export async function externalRoutes(app: FastifyInstance): Promise<void> {
       }
 
       try {
+        const surface = retrievalProfileSurfaceFromRequest(request);
+        const profile = await getRetrievalProfileAccess(parsed.data.retrievalProfileId, surface);
         const principal = await principalFromExternalRequest({
           request,
           configValue,
-          anonymousAllowed: configValue.anonymousSearchAllowed,
+          anonymousAllowed: configValue.anonymousSearchAllowed && (profile?.anonymousAllowed ?? true),
         });
         reply.send(await executeRuntimeSearch({
           query: parsed.data.query,
           topK: parsed.data.topK,
+          retrievalProfileId: parsed.data.retrievalProfileId,
+          retrievalProfileSurface: surface,
           principal,
           wikiUrlOptions: wikiUrlOptionsFromRequest(request),
           maxTopK: configValue.maxTopK,
@@ -183,6 +241,7 @@ export async function externalRoutes(app: FastifyInstance): Promise<void> {
       }
 
       try {
+        const surface = retrievalProfileSurfaceFromRequest(request);
         const principal = await principalFromExternalRequest({
           request,
           configValue,
@@ -194,6 +253,8 @@ export async function externalRoutes(app: FastifyInstance): Promise<void> {
           principal,
           wikiUrlOptions: wikiUrlOptionsFromRequest(request),
           topK: parsed.data.topK,
+          retrievalProfileId: parsed.data.retrievalProfileId,
+          retrievalProfileSurface: surface,
           maxTopK: configValue.maxTopK,
           aclMode: configValue.aclMode,
         });

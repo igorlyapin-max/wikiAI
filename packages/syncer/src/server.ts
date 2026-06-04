@@ -9,7 +9,7 @@ import {
   testMediaWikiServiceLogin,
 } from './services/mediawiki.js';
 import { splitText } from './services/chunker.js';
-import { upsertChunks } from './services/qdrant.js';
+import { upsertChunks, upsertCmdbDynamicSnapshotChunks } from './services/qdrant.js';
 import { getAllowedGroups } from './services/acl.js';
 import {
   deleteSearchIndexPage,
@@ -28,6 +28,7 @@ import {
   diagnosticStartupFields,
 } from './services/logging.js';
 import { registerMetrics } from './services/metrics.js';
+import { extractCmdbDynamicSources, fetchCmdbDynamicSnapshotChunks } from './services/cmdbdynamicpages.js';
 
 const app = Fastify({ logger: createFastifyLoggerOptions() });
 
@@ -95,6 +96,14 @@ function parseReindexOptions(body: unknown): ReindexOptions {
   if (!isRecord(body)) return {};
   return {
     profileId: typeof body.profileId === 'string' && body.profileId.trim() ? body.profileId.trim() : undefined,
+    indexTargets: parseStringList(body.indexTargets),
+    source: body.source === 'qdrant_payload' ? 'qdrant_payload' : body.source === 'mediawiki' ? 'mediawiki' : undefined,
+    colbertModel: typeof body.colbertModel === 'string' && body.colbertModel.trim()
+      ? body.colbertModel.trim()
+      : undefined,
+    colbertCollection: typeof body.colbertCollection === 'string' && body.colbertCollection.trim()
+      ? body.colbertCollection.trim()
+      : undefined,
     attachmentsEnabled: parseBoolean(body.attachmentsEnabled),
     semanticFactsEnabled: parseBoolean(body.semanticFactsEnabled),
     smwProperties: parseStringList(body.smwProperties),
@@ -115,6 +124,7 @@ function parseReindexOptions(body: unknown): ReindexOptions {
       ? body.llmEnrichmentModel.trim()
       : undefined,
     llmEnrichmentMaxChars: parsePositiveInteger(body.llmEnrichmentMaxChars),
+    cmdbDynamicPagesEnabled: parseBoolean(body.cmdbDynamicPagesEnabled),
   };
 }
 
@@ -262,6 +272,39 @@ app.post('/webhook/page', async (request, reply) => {
       page.lastModified ?? body.timestamp,
       semanticFacts
     );
+    let dynamicBlocks: unknown;
+    if (config.cmdbDynamicPagesEnabled) {
+      try {
+        const sources = extractCmdbDynamicSources(page.content, page.title);
+        const snapshotChunks = await fetchCmdbDynamicSnapshotChunks(sources);
+        const expandedSnapshotChunks = snapshotChunks.flatMap((snapshot) =>
+          splitText(snapshot.text).map((chunk) => ({ ...snapshot, text: chunk.text }))
+        );
+        const syncResult = expandedSnapshotChunks.length > 0
+          ? await upsertCmdbDynamicSnapshotChunks(
+            page.pageid,
+            page.title,
+            page.ns,
+            expandedSnapshotChunks,
+            allowedGroups,
+            page.lastModified ?? body.timestamp
+          )
+          : undefined;
+        dynamicBlocks = {
+          matched: sources.length,
+          snapshotHits: snapshotChunks.filter((chunk) => chunk.snapshotFound).length,
+          snapshotMisses: snapshotChunks.filter((chunk) => !chunk.snapshotFound && chunk.status !== 'error').length,
+          snapshotErrors: snapshotChunks.filter((chunk) => chunk.status === 'error').length,
+          chunks: expandedSnapshotChunks.length,
+          searchIndexSync: syncResult,
+        };
+      } catch (err) {
+        dynamicBlocks = {
+          status: 'error',
+          error: err instanceof Error ? err.message : 'Unknown cmdbdynamicpages indexing error',
+        };
+      }
+    }
     const trustRecalculation = await notifyTrustRecalculation({
       pageId: page.pageid,
       reason: `webhook-${event}`,
@@ -330,6 +373,7 @@ app.post('/webhook/page', async (request, reply) => {
       smw_properties_source: indexedSmwProperties?.source,
       smw_properties_error: indexedSmwProperties?.error,
       search_index_sync: searchIndexSync,
+      dynamic_blocks: dynamicBlocks,
       trust_recalculation: trustRecalculation,
       semantic_autofill: semanticAutofill,
     });

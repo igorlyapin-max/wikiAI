@@ -58,6 +58,21 @@ describe('document policy', () => {
     expect(getMimeProcessingRule('application/x-unknown', policy).mode).toBe('metadata');
   });
 
+  it('defaults office documents to text and media/archive files to metadata', () => {
+    const policy = normalizeDocumentProcessingConfig({});
+    expect(getMimeProcessingRule(
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      policy
+    ).mode).toBe('text');
+    expect(getMimeProcessingRule(
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      policy
+    ).mode).toBe('text');
+    expect(getMimeProcessingRule('application/vnd.oasis.opendocument.presentation', policy).mode).toBe('text');
+    expect(getMimeProcessingRule('audio/mpeg', policy).mode).toBe('metadata');
+    expect(getMimeProcessingRule('application/x-7z-compressed', policy).mode).toBe('metadata');
+  });
+
   it('rejects invalid policy modes', () => {
     expect(() => normalizeDocumentProcessingConfig({
       mimeTypes: { 'application/pdf': { mode: 'vision' } },

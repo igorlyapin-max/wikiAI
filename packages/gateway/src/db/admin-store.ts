@@ -1,6 +1,8 @@
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { Pool } from 'pg';
+import type { PoolClient, QueryResultRow } from 'pg';
 import { config } from '../config.js';
 
 export type DatabaseDialect = 'sqlite' | 'postgres';
@@ -35,6 +37,10 @@ export interface AdminStore {
   appendAuditLog(entry: Omit<AuditLogEntry, 'id' | 'createdAt'>): Promise<void>;
   listAuditLog(limit?: number): Promise<AuditLogEntry[]>;
   close(): void;
+}
+
+export interface PostgresQueryClient {
+  query<T extends QueryResultRow = QueryResultRow>(sql: string, values?: unknown[]): Promise<{ rows: T[]; rowCount: number | null }>;
 }
 
 interface Migration {
@@ -494,6 +500,95 @@ export const ADMIN_MIGRATIONS: Migration[] = [
         ON ai_smw_autofill_fields (title)`,
     ],
   },
+  {
+    version: '006_search_chunk_metadata',
+    sqlite: [
+      `ALTER TABLE ai_search_chunks ADD COLUMN attachment_mime TEXT`,
+      `ALTER TABLE ai_search_chunks ADD COLUMN attachment_processing_mode TEXT`,
+      `ALTER TABLE ai_search_chunks ADD COLUMN content_type TEXT`,
+    ],
+    postgres: [
+      `ALTER TABLE ai_search_chunks ADD COLUMN IF NOT EXISTS attachment_mime TEXT`,
+      `ALTER TABLE ai_search_chunks ADD COLUMN IF NOT EXISTS attachment_processing_mode TEXT`,
+      `ALTER TABLE ai_search_chunks ADD COLUMN IF NOT EXISTS content_type TEXT`,
+    ],
+  },
+  {
+    version: '007_search_trigram_index',
+    sqlite: [
+      `CREATE TABLE IF NOT EXISTS ai_search_chunks_trigram (
+        chunk_id TEXT PRIMARY KEY,
+        page_id INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        grams_text TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_ai_search_chunks_trigram_page
+        ON ai_search_chunks_trigram (page_id)`,
+      `CREATE VIRTUAL TABLE IF NOT EXISTS ai_search_chunks_trigram_fts USING fts5(
+        chunk_id UNINDEXED,
+        title,
+        grams_text,
+        tokenize='unicode61'
+      )`,
+    ],
+    postgres: [
+      `CREATE TABLE IF NOT EXISTS ai_search_chunks_trigram (
+        chunk_id TEXT PRIMARY KEY,
+        page_id BIGINT NOT NULL,
+        title TEXT NOT NULL,
+        grams_text TEXT NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_ai_search_chunks_trigram_page
+        ON ai_search_chunks_trigram (page_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_ai_search_chunks_trigram_vector
+        ON ai_search_chunks_trigram USING GIN (to_tsvector('simple', grams_text))`,
+    ],
+  },
+  {
+    version: '008_search_backfill_jobs',
+    sqlite: [
+      `CREATE TABLE IF NOT EXISTS ai_search_backfill_jobs (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        total_chunks INTEGER NOT NULL DEFAULT 0,
+        processed_chunks INTEGER NOT NULL DEFAULT 0,
+        written_chunks INTEGER NOT NULL DEFAULT 0,
+        grams INTEGER NOT NULL DEFAULT 0,
+        requested_by TEXT,
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        updated_at TEXT NOT NULL,
+        error TEXT
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_ai_search_backfill_jobs_type_started
+        ON ai_search_backfill_jobs (type, started_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_ai_search_backfill_jobs_status
+        ON ai_search_backfill_jobs (status)`,
+    ],
+    postgres: [
+      `CREATE TABLE IF NOT EXISTS ai_search_backfill_jobs (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        total_chunks INTEGER NOT NULL DEFAULT 0,
+        processed_chunks INTEGER NOT NULL DEFAULT 0,
+        written_chunks INTEGER NOT NULL DEFAULT 0,
+        grams INTEGER NOT NULL DEFAULT 0,
+        requested_by TEXT,
+        started_at TIMESTAMPTZ NOT NULL,
+        finished_at TIMESTAMPTZ,
+        updated_at TIMESTAMPTZ NOT NULL,
+        error TEXT
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_ai_search_backfill_jobs_type_started
+        ON ai_search_backfill_jobs (type, started_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_ai_search_backfill_jobs_status
+        ON ai_search_backfill_jobs (status)`,
+    ],
+  },
 ];
 
 function redactUrlCredentials(value: string): string {
@@ -544,6 +639,21 @@ function parseJson(value: string | null): unknown | undefined {
   } catch {
     return undefined;
   }
+}
+
+function parseStoredJson(value: unknown): unknown | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value === 'string') return parseJson(value);
+  return value;
+}
+
+function toJsonbParameter(value: unknown): string | null {
+  return value === undefined ? null : JSON.stringify(value);
+}
+
+function toIsoString(value: unknown): string {
+  if (value instanceof Date) return value.toISOString();
+  return String(value);
 }
 
 export class SqliteAdminStore implements AdminStore {
@@ -677,6 +787,167 @@ export class SqliteAdminStore implements AdminStore {
   }
 }
 
+export class PostgresAdminStore implements AdminStore {
+  private readonly pool: Pool;
+  private readonly ready: Promise<void>;
+
+  constructor(databaseUrl: string) {
+    this.pool = new Pool({ connectionString: databaseUrl });
+    this.ready = this.runMigrations();
+  }
+
+  async waitUntilReady(): Promise<void> {
+    await this.ready;
+  }
+
+  async query<T extends QueryResultRow = QueryResultRow>(
+    sql: string,
+    values: unknown[] = []
+  ): Promise<{ rows: T[]; rowCount: number | null }> {
+    await this.ready;
+    const result = await this.pool.query<T>(sql, values);
+    return { rows: result.rows, rowCount: result.rowCount };
+  }
+
+  async withTransaction<T>(work: (client: PoolClient) => Promise<T>): Promise<T> {
+    await this.ready;
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await work(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  async getJson<T>(area: string, key: string): Promise<T | null> {
+    const result = await this.query<{ value_json: unknown }>(
+      'SELECT value_json FROM ai_admin_config WHERE area = $1 AND key = $2',
+      [area, key]
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    return parseStoredJson(row.value_json) as T;
+  }
+
+  async setJson<T>(area: string, key: string, value: T, options: AdminStoreSetOptions = {}): Promise<void> {
+    const now = new Date().toISOString();
+    const action = options.action ?? `${area}.update`;
+    const entityType = options.entityType ?? area;
+    const entityId = `${area}:${key}`;
+
+    await this.withTransaction(async (client) => {
+      const oldResult = await client.query<{ value_json: unknown }>(
+        'SELECT value_json FROM ai_admin_config WHERE area = $1 AND key = $2',
+        [area, key]
+      );
+      const oldValue = parseStoredJson(oldResult.rows[0]?.value_json);
+
+      await client.query(
+        `INSERT INTO ai_admin_config (area, key, value_json, updated_at, updated_by)
+         VALUES ($1, $2, $3::jsonb, $4, $5)
+         ON CONFLICT(area, key) DO UPDATE SET
+           value_json = excluded.value_json,
+           updated_at = excluded.updated_at,
+           updated_by = excluded.updated_by`,
+        [area, key, toJsonbParameter(value), now, options.actor ?? null]
+      );
+
+      await client.query(
+        `INSERT INTO ai_audit_log
+           (actor, action, entity_type, entity_id, old_value_json, new_value_json, created_at)
+         VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7)`,
+        [
+          options.actor ?? null,
+          action,
+          entityType,
+          entityId,
+          toJsonbParameter(oldValue),
+          toJsonbParameter(value),
+          now,
+        ]
+      );
+    });
+  }
+
+  async listAuditLog(limit = 50): Promise<AuditLogEntry[]> {
+    const safeLimit = Math.max(1, Math.min(limit, 200));
+    const result = await this.query<{
+      id: string | number;
+      actor: string | null;
+      action: string;
+      entity_type: string;
+      entity_id: string;
+      old_value_json: unknown;
+      new_value_json: unknown;
+      created_at: Date | string;
+    }>(
+      `SELECT id, actor, action, entity_type, entity_id, old_value_json, new_value_json, created_at
+       FROM ai_audit_log
+       ORDER BY id DESC
+       LIMIT $1`,
+      [safeLimit]
+    );
+
+    return result.rows.map((row) => ({
+      id: Number(row.id),
+      actor: row.actor ?? undefined,
+      action: row.action,
+      entityType: row.entity_type,
+      entityId: row.entity_id,
+      oldValue: parseStoredJson(row.old_value_json),
+      newValue: parseStoredJson(row.new_value_json),
+      createdAt: toIsoString(row.created_at),
+    }));
+  }
+
+  async appendAuditLog(entry: Omit<AuditLogEntry, 'id' | 'createdAt'>): Promise<void> {
+    await this.query(
+      `INSERT INTO ai_audit_log
+         (actor, action, entity_type, entity_id, old_value_json, new_value_json, created_at)
+       VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7)`,
+      [
+        entry.actor ?? null,
+        entry.action,
+        entry.entityType,
+        entry.entityId,
+        toJsonbParameter(entry.oldValue),
+        toJsonbParameter(entry.newValue),
+        new Date().toISOString(),
+      ]
+    );
+  }
+
+  close(): void {
+    void this.pool.end();
+  }
+
+  private async runMigrations(): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      const now = new Date().toISOString();
+      for (const migration of ADMIN_MIGRATIONS) {
+        for (const statement of migration.postgres) {
+          await client.query(statement);
+        }
+        await client.query(
+          `INSERT INTO ai_schema_migrations (version, applied_at)
+           VALUES ($1, $2)
+           ON CONFLICT(version) DO NOTHING`,
+          [migration.version, now]
+        );
+      }
+    } finally {
+      client.release();
+    }
+  }
+}
+
 let adminStore: AdminStore | undefined;
 
 export function getAdminStore(): AdminStore {
@@ -684,7 +955,8 @@ export function getAdminStore(): AdminStore {
 
   const parsed = parseDatabaseUrl(config.databaseUrl);
   if (parsed.dialect === 'postgres') {
-    throw new Error('Postgres admin store is planned by the DAL contract but is not implemented in this build');
+    adminStore = new PostgresAdminStore(parsed.url);
+    return adminStore;
   }
   if (!parsed.filename) {
     throw new Error('SQLite DATABASE_URL did not resolve to a filename');
@@ -692,6 +964,23 @@ export function getAdminStore(): AdminStore {
 
   adminStore = new SqliteAdminStore(parsed.filename);
   return adminStore;
+}
+
+export function getDatabaseDialect(): DatabaseDialect {
+  return parseDatabaseUrl(config.databaseUrl).dialect;
+}
+
+export function isPostgresDatabase(): boolean {
+  return getDatabaseDialect() === 'postgres';
+}
+
+export async function getAdminPostgresStore(): Promise<PostgresAdminStore> {
+  const store = getAdminStore();
+  if (!(store instanceof PostgresAdminStore)) {
+    throw new Error('Postgres admin store is not available for the configured admin store');
+  }
+  await store.waitUntilReady();
+  return store;
 }
 
 export function getAdminSqliteDatabase(): DatabaseSync {

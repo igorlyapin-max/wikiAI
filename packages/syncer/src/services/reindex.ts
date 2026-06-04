@@ -14,13 +14,24 @@ import {
   getMediaWikiServiceAuthStatus,
   semanticFactsToText,
 } from './mediawiki.js';
-import { upsertAttachmentChunks, upsertAttachmentMetadata, upsertChunks } from './qdrant.js';
+import {
+  syncSearchIndexFromQdrantPayload,
+  upsertCmdbDynamicSnapshotChunks,
+  upsertAttachmentChunks,
+  upsertAttachmentMetadata,
+  upsertChunks,
+} from './qdrant.js';
 import { getNamespacesToReindex } from './reindex-scope.js';
 import { applyIndexingProfileDefaults, getIndexingProfileFromAdminStorage } from './indexing-profile-store.js';
 import { enrichPageForReindex, fetchEffectiveEmbeddingConfig, ReindexLlmEnrichmentResult } from './gateway.js';
+import { extractCmdbDynamicSources, fetchCmdbDynamicSnapshotChunks } from './cmdbdynamicpages.js';
 
 export interface ReindexOptions {
   profileId?: string;
+  indexTargets?: string[];
+  source?: 'mediawiki' | 'qdrant_payload';
+  colbertModel?: string;
+  colbertCollection?: string;
   attachmentsEnabled?: boolean;
   semanticFactsEnabled?: boolean;
   smwProperties?: string[];
@@ -37,6 +48,7 @@ export interface ReindexOptions {
   llmEnrichmentEnabled?: boolean;
   llmEnrichmentModel?: string;
   llmEnrichmentMaxChars?: number;
+  cmdbDynamicPagesEnabled?: boolean;
 }
 
 export interface ReindexTextFilters {
@@ -55,11 +67,16 @@ export interface ReindexSummary {
   skipped: number;
   failed: number;
   totalChunks: number;
+  indexTargets: string[];
   embeddingCalls: number;
   llmEnrichmentCalls: number;
   estimatedPaidCalls: number;
   attachmentsProcessed: number;
   attachmentsFailed: number;
+  dynamicBlocksMatched: number;
+  dynamicSnapshotsIndexed: number;
+  dynamicSnapshotsMissed: number;
+  dynamicSnapshotsFailed: number;
   startedAt: string;
   finishedAt: string;
   elapsedMs: number;
@@ -77,6 +94,7 @@ export interface ReindexProgress {
   skipped?: number;
   failed: number;
   totalChunks: number;
+  indexTargets?: string[];
   embeddingCalls?: number;
   llmEnrichmentCalls?: number;
   estimatedPaidCalls?: number;
@@ -118,6 +136,34 @@ function getMaxPages(maxPages: number | undefined): number | undefined {
 
 function namespaceIsPublic(groups: string[]): boolean {
   return groups.length === 1 && groups[0]?.trim() === '*';
+}
+
+function normalizeIndexTargets(
+  options: ReindexOptions,
+  defaults: { attachmentsEnabled: boolean; semanticFactsEnabled: boolean }
+): string[] {
+  const input = options.indexTargets && options.indexTargets.length > 0
+    ? options.indexTargets
+    : [
+      'dense',
+      'bm25',
+      'colbert',
+      ...(defaults.attachmentsEnabled ? ['attachments'] : []),
+      ...(defaults.semanticFactsEnabled ? ['semanticFacts'] : []),
+    ];
+  return Array.from(new Set(
+    input
+      .map((item) => item.trim())
+      .filter((item) => [
+        'dense',
+        'bm25',
+        'colbert',
+        'opensearch',
+        'attachments',
+        'semanticFacts',
+        'ontologyVectors',
+      ].includes(item))
+  ));
 }
 
 export function getProtectedReindexNamespaces(
@@ -220,11 +266,93 @@ export async function runReindex(
     : options;
   const startedAt = new Date();
   const documentPolicy = await getDocumentProcessingConfig();
-  const attachmentsEnabled = effectiveOptions.attachmentsEnabled ?? false;
-  const semanticFactsEnabled = effectiveOptions.semanticFactsEnabled ?? config.smwSyncEnabled;
+  const requestedAttachmentsEnabled = effectiveOptions.attachmentsEnabled ?? false;
+  const requestedSemanticFactsEnabled = effectiveOptions.semanticFactsEnabled ?? config.smwSyncEnabled;
+  const indexTargets = normalizeIndexTargets(effectiveOptions, {
+    attachmentsEnabled: requestedAttachmentsEnabled,
+    semanticFactsEnabled: requestedSemanticFactsEnabled,
+  });
+  const denseEnabled = indexTargets.includes('dense');
+  const attachmentsEnabled = requestedAttachmentsEnabled && indexTargets.includes('attachments');
+  const semanticFactsEnabled = requestedSemanticFactsEnabled && indexTargets.includes('semanticFacts');
+  const searchIndexTargets = indexTargets.filter((target) => (
+    target === 'bm25' || target === 'colbert' || target === 'opensearch'
+  ));
   const smwProperties = effectiveOptions.smwProperties ?? config.smwSyncProperties;
   const dryRun = effectiveOptions.dryRun ?? false;
   const llmEnrichmentEnabled = effectiveOptions.llmEnrichmentEnabled ?? false;
+  const cmdbDynamicPagesEnabled = effectiveOptions.cmdbDynamicPagesEnabled ?? config.cmdbDynamicPagesEnabled;
+  const maxPages = getMaxPages(effectiveOptions.maxPages);
+  if (effectiveOptions.source === 'qdrant_payload') {
+    onProgress?.({
+      phase: 'started',
+      profileId: effectiveOptions.profileId,
+      dryRun,
+      namespaces: [],
+      matchedPages: 0,
+      limitApplied: maxPages,
+      totalPages: 0,
+      processed: 0,
+      skipped: 0,
+      failed: 0,
+      totalChunks: 0,
+      indexTargets,
+      embeddingCalls: 0,
+      llmEnrichmentCalls: 0,
+      estimatedPaidCalls: 0,
+    });
+    const payloadSummary = await syncSearchIndexFromQdrantPayload({
+      dryRun,
+      maxPages,
+      searchIndexTargets,
+      colbertModel: effectiveOptions.colbertModel,
+      colbertCollection: effectiveOptions.colbertCollection,
+    });
+    const finishedAt = new Date();
+    const summary: ReindexSummary = {
+      profileId: effectiveOptions.profileId,
+      dryRun,
+      namespaces: [],
+      matchedPages: payloadSummary.pages,
+      limitApplied: maxPages,
+      totalPages: payloadSummary.pages,
+      processed: payloadSummary.pages,
+      skipped: 0,
+      failed: payloadSummary.failed,
+      totalChunks: payloadSummary.chunks,
+      indexTargets,
+      embeddingCalls: 0,
+      llmEnrichmentCalls: 0,
+      estimatedPaidCalls: 0,
+      attachmentsProcessed: 0,
+      attachmentsFailed: 0,
+      dynamicBlocksMatched: 0,
+      dynamicSnapshotsIndexed: 0,
+      dynamicSnapshotsMissed: 0,
+      dynamicSnapshotsFailed: 0,
+      startedAt: startedAt.toISOString(),
+      finishedAt: finishedAt.toISOString(),
+      elapsedMs: finishedAt.getTime() - startedAt.getTime(),
+    };
+    onProgress?.({
+      phase: 'complete',
+      profileId: summary.profileId,
+      dryRun,
+      namespaces: [],
+      matchedPages: summary.matchedPages,
+      limitApplied: summary.limitApplied,
+      totalPages: summary.totalPages,
+      processed: summary.processed,
+      skipped: summary.skipped,
+      failed: summary.failed,
+      totalChunks: summary.totalChunks,
+      indexTargets,
+      embeddingCalls: 0,
+      llmEnrichmentCalls: 0,
+      estimatedPaidCalls: 0,
+    });
+    return summary;
+  }
   const embeddingConfig = await fetchEffectiveEmbeddingConfig().catch(() => undefined);
   const effectiveNamespaceAcl = effectiveOptions.namespaceAcl ?? config.namespaceAcl;
   const namespaces = getRequestedNamespaces(effectiveOptions.namespaces, effectiveNamespaceAcl);
@@ -237,7 +365,6 @@ export async function runReindex(
       + `then rerun auth test. Protected namespaces: ${protectedNamespaces.join(', ')}.`
     );
   }
-  const maxPages = getMaxPages(effectiveOptions.maxPages);
   const allPages = (
     await Promise.all(namespaces.map((namespace) => fetchAllPages(namespace)))
   ).flat().filter((page) => textMatchesFilters(page.title, effectiveOptions.titleFilters));
@@ -255,6 +382,10 @@ export async function runReindex(
   let estimatedPaidCalls = 0;
   let attachmentsProcessed = 0;
   let attachmentsFailed = 0;
+  let dynamicBlocksMatched = 0;
+  let dynamicSnapshotsIndexed = 0;
+  let dynamicSnapshotsMissed = 0;
+  let dynamicSnapshotsFailed = 0;
 
   onProgress?.({
     phase: 'started',
@@ -268,6 +399,7 @@ export async function runReindex(
     skipped,
     failed,
     totalChunks,
+    indexTargets,
     embeddingCalls,
     llmEnrichmentCalls,
     estimatedPaidCalls,
@@ -290,6 +422,7 @@ export async function runReindex(
           skipped,
           failed,
           totalChunks,
+          indexTargets,
           embeddingCalls,
           llmEnrichmentCalls,
           estimatedPaidCalls,
@@ -319,10 +452,10 @@ export async function runReindex(
       });
       const allowedGroups = getAllowedGroups(page.ns, effectiveNamespaceAcl);
       const lastModified = content.lastModified ?? new Date().toISOString();
-      const estimatedPagePaidCalls = (embeddingConfig?.provider === 'openai_compatible' ? chunks.length : 0)
+      const estimatedPagePaidCalls = (denseEnabled && embeddingConfig?.provider === 'openai_compatible' ? chunks.length : 0)
         + (llmEnrichmentEnabled ? 1 : 0);
       estimatedPaidCalls += estimatedPagePaidCalls;
-      if (!dryRun) {
+      if (!dryRun && denseEnabled) {
         embeddingCalls += chunks.length;
       }
 
@@ -339,12 +472,61 @@ export async function runReindex(
             summary: enrichment.summary,
             keywords: enrichment.keywords,
             model: enrichment.model,
-          } : undefined
+          } : undefined,
+          {
+            denseEnabled,
+            searchIndexTargets,
+            colbertModel: effectiveOptions.colbertModel,
+            colbertCollection: effectiveOptions.colbertCollection,
+          }
         );
       }
 
       processed++;
       totalChunks += chunks.length;
+
+      if (cmdbDynamicPagesEnabled) {
+        const dynamicSources = extractCmdbDynamicSources(content.content, content.title);
+        dynamicBlocksMatched += dynamicSources.length;
+        const snapshotChunks = await fetchCmdbDynamicSnapshotChunks(dynamicSources);
+        dynamicSnapshotsIndexed += snapshotChunks.filter((chunk) => chunk.snapshotFound).length;
+        dynamicSnapshotsMissed += snapshotChunks.filter((chunk) => !chunk.snapshotFound && chunk.status !== 'error').length;
+        dynamicSnapshotsFailed += snapshotChunks.filter((chunk) => chunk.status === 'error').length;
+
+        if (snapshotChunks.length > 0) {
+          const expandedSnapshotChunks = snapshotChunks.flatMap((snapshot) =>
+            splitText(snapshot.text, {
+              chunkSize: effectiveOptions.chunkSize,
+              chunkOverlap: effectiveOptions.chunkOverlap,
+              chunkSeparators: effectiveOptions.chunkSeparators,
+            }).map((chunk) => ({ ...snapshot, text: chunk.text }))
+          );
+          totalChunks += expandedSnapshotChunks.length;
+          if (denseEnabled && embeddingConfig?.provider === 'openai_compatible') {
+            estimatedPaidCalls += expandedSnapshotChunks.length;
+          }
+          if (!dryRun && denseEnabled) {
+            embeddingCalls += expandedSnapshotChunks.length;
+          }
+
+          if (!dryRun) {
+            await upsertCmdbDynamicSnapshotChunks(
+              page.pageid,
+              page.title,
+              page.ns,
+              expandedSnapshotChunks,
+              allowedGroups,
+              lastModified,
+              {
+                denseEnabled,
+                searchIndexTargets,
+                colbertModel: effectiveOptions.colbertModel,
+                colbertCollection: effectiveOptions.colbertCollection,
+              }
+            );
+          }
+        }
+      }
 
       if (!dryRun && attachmentsEnabled && documentPolicy.attachmentsEnabled) {
         const files = await fetchPageFiles(page.title);
@@ -364,8 +546,8 @@ export async function runReindex(
             if (rule.mode === 'disabled') continue;
 
             if (rule.mode === 'metadata') {
-              if (embeddingConfig?.provider === 'openai_compatible') estimatedPaidCalls++;
-              embeddingCalls++;
+              if (denseEnabled && embeddingConfig?.provider === 'openai_compatible') estimatedPaidCalls++;
+              if (denseEnabled) embeddingCalls++;
               await upsertAttachmentMetadata(
                 page.pageid,
                 page.title,
@@ -374,7 +556,13 @@ export async function runReindex(
                 getMetadataText(filename, fileInfo.mime, metadata),
                 allowedGroups,
                 lastModified,
-                metadata
+                metadata,
+                {
+                  denseEnabled,
+                  searchIndexTargets,
+                  colbertModel: effectiveOptions.colbertModel,
+                  colbertCollection: effectiveOptions.colbertCollection,
+                }
               );
               attachmentsProcessed++;
               continue;
@@ -386,8 +574,8 @@ export async function runReindex(
             const result = await processAttachment(buffer, fileInfo.mime, filename, documentPolicy);
             if (result.text && result.text.trim().length > 0) {
               const attachmentChunks = splitText(result.text);
-              if (embeddingConfig?.provider === 'openai_compatible') estimatedPaidCalls += attachmentChunks.length;
-              embeddingCalls += attachmentChunks.length;
+              if (denseEnabled && embeddingConfig?.provider === 'openai_compatible') estimatedPaidCalls += attachmentChunks.length;
+              if (denseEnabled) embeddingCalls += attachmentChunks.length;
               await upsertAttachmentChunks(
                 page.pageid,
                 page.title,
@@ -396,11 +584,17 @@ export async function runReindex(
                 attachmentChunks.map((chunk) => chunk.text),
                 allowedGroups,
                 lastModified,
-                result.metadata
+                result.metadata,
+                {
+                  denseEnabled,
+                  searchIndexTargets,
+                  colbertModel: effectiveOptions.colbertModel,
+                  colbertCollection: effectiveOptions.colbertCollection,
+                }
               );
             } else {
-              if (embeddingConfig?.provider === 'openai_compatible') estimatedPaidCalls++;
-              embeddingCalls++;
+              if (denseEnabled && embeddingConfig?.provider === 'openai_compatible') estimatedPaidCalls++;
+              if (denseEnabled) embeddingCalls++;
               await upsertAttachmentMetadata(
                 page.pageid,
                 page.title,
@@ -409,7 +603,13 @@ export async function runReindex(
                 getMetadataText(filename, fileInfo.mime, result.metadata),
                 allowedGroups,
                 lastModified,
-                result.metadata
+                result.metadata,
+                {
+                  denseEnabled,
+                  searchIndexTargets,
+                  colbertModel: effectiveOptions.colbertModel,
+                  colbertCollection: effectiveOptions.colbertCollection,
+                }
               );
             }
             attachmentsProcessed++;
@@ -431,6 +631,7 @@ export async function runReindex(
         skipped,
         failed,
         totalChunks,
+        indexTargets,
         embeddingCalls,
         llmEnrichmentCalls,
         estimatedPaidCalls,
@@ -450,6 +651,7 @@ export async function runReindex(
         skipped,
         failed,
         totalChunks,
+        indexTargets,
         embeddingCalls,
         llmEnrichmentCalls,
         estimatedPaidCalls,
@@ -470,11 +672,16 @@ export async function runReindex(
     skipped,
     failed,
     totalChunks,
+    indexTargets,
     embeddingCalls,
     llmEnrichmentCalls,
     estimatedPaidCalls,
     attachmentsProcessed,
     attachmentsFailed,
+    dynamicBlocksMatched,
+    dynamicSnapshotsIndexed,
+    dynamicSnapshotsMissed,
+    dynamicSnapshotsFailed,
     startedAt: startedAt.toISOString(),
     finishedAt: finishedAt.toISOString(),
     elapsedMs: finishedAt.getTime() - startedAt.getTime(),
@@ -492,6 +699,7 @@ export async function runReindex(
     skipped,
     failed,
     totalChunks,
+    indexTargets,
     embeddingCalls,
     llmEnrichmentCalls,
     estimatedPaidCalls,

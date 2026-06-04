@@ -1,6 +1,13 @@
 import { getRagAdminConfig, RagAdminConfig } from './admin-platform-config.js';
 import { normalizeCandidateLimit, normalizeTopK, searchChunkCandidates } from './qdrant.js';
-import { LexicalSearchChunk, searchLexicalChunksWithDiagnostics } from './search-index.js';
+import {
+  getSearchIndexStatus,
+  LexicalSearchChunk,
+  searchLexicalChunksWithDiagnostics,
+  searchTrigramChunksWithDiagnostics,
+  TrigramSearchResult,
+} from './search-index.js';
+import { searchOpenSearchChunksWithDiagnostics } from './opensearch.js';
 import { SearchChunk } from '../types/index.js';
 
 export interface RagSearchInput {
@@ -8,6 +15,7 @@ export interface RagSearchInput {
   vector: number[];
   topK?: number;
   fallbackTopK?: number;
+  config?: RagAdminConfig;
 }
 
 export interface RagSearchResult {
@@ -22,12 +30,37 @@ export interface RagSearchResult {
 export interface RagSearchDiagnostics {
   searchMode: RagAdminConfig['searchMode'];
   rerankMode: RagAdminConfig['rerankMode'];
+  lexicalBackend: RagAdminConfig['lexicalBackend'];
   lexicalGateMode: RagAdminConfig['lexicalGateMode'];
   vectorCandidates: number;
   bm25Candidates: number;
   bm25RawCandidates: number;
+  bm25QueryTerms: string[];
+  bm25ExpandedTerms: string[];
+  bm25SynonymTerms: string[];
+  bm25TransliterationTerms: string[];
+  bm25EditDistanceTerms: string[];
+  opensearchEnabled: boolean;
+  opensearchReady: boolean;
+  opensearchIndexName: string;
+  opensearchAnalyzer: string;
+  opensearchCandidates: number;
+  opensearchRawHits: number;
+  opensearchAnalyzedTerms: string[];
+  opensearchRemovedTerms: string[];
+  opensearchLatencyMs: number;
+  opensearchHighlightsAvailable: boolean;
+  opensearchError?: string;
   lexicalMinMatchedTerms: number;
   lexicalRequiredMatchedTerms: number;
+  trigramIndexEnabled: boolean;
+  trigramCandidates: number;
+  trigramRawCandidates: number;
+  trigramRequiredMatchedTerms: number;
+  trigramQueryTerms: string[];
+  trigramLatencyMs: number;
+  trigramFallbackUsed: boolean;
+  trigramSkippedReason?: 'disabled' | 'bm25_available' | 'incomplete_index';
   lexicalGateApplied: boolean;
   vectorOnlyFallbackUsed: boolean;
   vectorOnlyFallbackMinScore: number;
@@ -169,22 +202,73 @@ function getEffectiveCandidateLimit(config: RagAdminConfig, limit: number): numb
 function buildDiagnostics(
   config: RagAdminConfig,
   vectorChunks: SearchChunk[],
-  bm25Candidates: number,
-  bm25RawCandidates: number,
-  lexicalRequiredMatchedTerms: number,
-  flags: Pick<RagSearchDiagnostics, 'lexicalGateApplied' | 'vectorOnlyFallbackUsed'>
+  stats: Pick<RagSearchDiagnostics,
+    | 'bm25Candidates'
+    | 'bm25RawCandidates'
+    | 'bm25QueryTerms'
+    | 'bm25ExpandedTerms'
+    | 'bm25SynonymTerms'
+    | 'bm25TransliterationTerms'
+    | 'bm25EditDistanceTerms'
+    | 'lexicalRequiredMatchedTerms'
+    | 'trigramCandidates'
+    | 'trigramRawCandidates'
+    | 'trigramRequiredMatchedTerms'
+    | 'trigramQueryTerms'
+    | 'trigramLatencyMs'
+    | 'trigramFallbackUsed'
+    | 'trigramSkippedReason'
+    | 'lexicalGateApplied'
+    | 'vectorOnlyFallbackUsed'>
+    & Partial<Pick<RagSearchDiagnostics,
+      | 'opensearchEnabled'
+      | 'opensearchReady'
+      | 'opensearchIndexName'
+      | 'opensearchAnalyzer'
+      | 'opensearchCandidates'
+      | 'opensearchRawHits'
+      | 'opensearchAnalyzedTerms'
+      | 'opensearchRemovedTerms'
+      | 'opensearchLatencyMs'
+      | 'opensearchHighlightsAvailable'
+      | 'opensearchError'>>
 ): RagSearchDiagnostics {
   return {
     searchMode: config.searchMode,
     rerankMode: config.rerankMode,
+    lexicalBackend: config.lexicalBackend,
     lexicalGateMode: config.lexicalGateMode,
     vectorCandidates: vectorChunks.length,
-    bm25Candidates,
-    bm25RawCandidates,
+    bm25Candidates: stats.bm25Candidates,
+    bm25RawCandidates: stats.bm25RawCandidates,
+    bm25QueryTerms: stats.bm25QueryTerms,
+    bm25ExpandedTerms: stats.bm25ExpandedTerms,
+    bm25SynonymTerms: stats.bm25SynonymTerms,
+    bm25TransliterationTerms: stats.bm25TransliterationTerms,
+    bm25EditDistanceTerms: stats.bm25EditDistanceTerms,
+    opensearchEnabled: stats.opensearchEnabled ?? false,
+    opensearchReady: stats.opensearchReady ?? false,
+    opensearchIndexName: stats.opensearchIndexName ?? '',
+    opensearchAnalyzer: stats.opensearchAnalyzer ?? '',
+    opensearchCandidates: stats.opensearchCandidates ?? 0,
+    opensearchRawHits: stats.opensearchRawHits ?? 0,
+    opensearchAnalyzedTerms: stats.opensearchAnalyzedTerms ?? [],
+    opensearchRemovedTerms: stats.opensearchRemovedTerms ?? [],
+    opensearchLatencyMs: stats.opensearchLatencyMs ?? 0,
+    opensearchHighlightsAvailable: stats.opensearchHighlightsAvailable ?? false,
+    opensearchError: stats.opensearchError,
     lexicalMinMatchedTerms: config.lexicalMinMatchedTerms,
-    lexicalRequiredMatchedTerms,
-    lexicalGateApplied: flags.lexicalGateApplied,
-    vectorOnlyFallbackUsed: flags.vectorOnlyFallbackUsed,
+    lexicalRequiredMatchedTerms: stats.lexicalRequiredMatchedTerms,
+    trigramIndexEnabled: config.trigramIndexEnabled,
+    trigramCandidates: stats.trigramCandidates,
+    trigramRawCandidates: stats.trigramRawCandidates,
+    trigramRequiredMatchedTerms: stats.trigramRequiredMatchedTerms,
+    trigramQueryTerms: stats.trigramQueryTerms,
+    trigramLatencyMs: stats.trigramLatencyMs,
+    trigramFallbackUsed: stats.trigramFallbackUsed,
+    trigramSkippedReason: stats.trigramSkippedReason,
+    lexicalGateApplied: stats.lexicalGateApplied,
+    vectorOnlyFallbackUsed: stats.vectorOnlyFallbackUsed,
     vectorOnlyFallbackMinScore: config.vectorOnlyFallbackMinScore,
     colbertApplied: false,
     colbertCandidates: 0,
@@ -193,7 +277,7 @@ function buildDiagnostics(
 }
 
 export async function searchRagChunks(input: RagSearchInput): Promise<RagSearchResult> {
-  const config = await getRagAdminConfig();
+  const config = input.config ?? await getRagAdminConfig();
   const limit = normalizeTopK(input.topK, input.fallbackTopK ?? config.topK);
   const aclLimit = getEffectiveCandidateLimit(config, limit);
   const vectorCandidateLimit = normalizeCandidateLimit(config.vectorCandidateLimit, 50);
@@ -207,22 +291,120 @@ export async function searchRagChunks(input: RagSearchInput): Promise<RagSearchR
       aclCandidateLimit: getAclCandidateLimit(aclLimit, chunks.length),
       showRawScores: config.showRawScores,
       mode: config.searchMode,
-      diagnostics: buildDiagnostics(config, vectorChunks, 0, 0, 0, {
+      diagnostics: buildDiagnostics(config, vectorChunks, {
+        bm25Candidates: 0,
+        bm25RawCandidates: 0,
+        bm25QueryTerms: [],
+        bm25ExpandedTerms: [],
+        bm25SynonymTerms: [],
+        bm25TransliterationTerms: [],
+        bm25EditDistanceTerms: [],
+        lexicalRequiredMatchedTerms: 0,
+        trigramCandidates: 0,
+        trigramRawCandidates: 0,
+        trigramRequiredMatchedTerms: 0,
+        trigramQueryTerms: [],
+        trigramLatencyMs: 0,
+        trigramFallbackUsed: false,
+        trigramSkippedReason: 'disabled',
         lexicalGateApplied: false,
         vectorOnlyFallbackUsed: false,
       }),
     };
   }
 
-  const lexicalSearch = await searchLexicalChunksWithDiagnostics(
-    input.query,
-    config.lexicalCandidateLimit,
-    config.lexicalMinMatchedTerms
-  );
-  const lexicalChunks = lexicalSearch.chunks;
+  const emptyTrigramSearch: TrigramSearchResult = {
+    chunks: [],
+    rawCandidates: 0,
+    requiredMatchedTerms: 0,
+    queryTerms: [],
+    ftsQuery: '',
+    latencyMs: 0,
+  };
+  let lexicalSearch = {
+    chunks: [] as LexicalSearchChunk[],
+    rawCandidates: 0,
+    requiredMatchedTerms: 0,
+    queryTerms: [] as string[],
+    expandedTerms: [] as string[],
+    synonymTerms: [] as string[],
+    transliterationTerms: [] as string[],
+    editDistanceTerms: [] as string[],
+    ftsQuery: '',
+  };
+  let trigramSearch = emptyTrigramSearch;
+  let trigramSkippedReason: RagSearchDiagnostics['trigramSkippedReason'] = 'disabled';
+  let trigramFallbackUsed = false;
+  let opensearchStats: Partial<RagSearchDiagnostics> = {};
+
+  if (config.lexicalBackend === 'opensearch') {
+    const opensearchSearch = await searchOpenSearchChunksWithDiagnostics(
+      input.query,
+      config.lexicalCandidateLimit,
+      config
+    );
+    lexicalSearch = {
+      chunks: opensearchSearch.chunks,
+      rawCandidates: opensearchSearch.diagnostics.rawHits,
+      requiredMatchedTerms: 1,
+      queryTerms: opensearchSearch.diagnostics.analyzedTerms,
+      expandedTerms: opensearchSearch.diagnostics.analyzedTerms,
+      synonymTerms: [],
+      transliterationTerms: [],
+      editDistanceTerms: [],
+      ftsQuery: '',
+    };
+    opensearchStats = {
+      opensearchEnabled: opensearchSearch.diagnostics.enabled,
+      opensearchReady: opensearchSearch.diagnostics.ready,
+      opensearchIndexName: opensearchSearch.diagnostics.indexName,
+      opensearchAnalyzer: opensearchSearch.diagnostics.analyzer,
+      opensearchCandidates: opensearchSearch.diagnostics.candidates,
+      opensearchRawHits: opensearchSearch.diagnostics.rawHits,
+      opensearchAnalyzedTerms: opensearchSearch.diagnostics.analyzedTerms,
+      opensearchRemovedTerms: opensearchSearch.diagnostics.removedTerms,
+      opensearchLatencyMs: opensearchSearch.diagnostics.latencyMs,
+      opensearchHighlightsAvailable: opensearchSearch.diagnostics.highlightsAvailable,
+      opensearchError: opensearchSearch.diagnostics.error,
+    };
+  } else {
+    lexicalSearch = await searchLexicalChunksWithDiagnostics(
+      input.query,
+      config.lexicalCandidateLimit,
+      config.lexicalMinMatchedTerms,
+      {
+        normalizationMode: config.lexicalNormalizationMode,
+        synonymsEnabled: config.lexicalSynonymsEnabled,
+        synonyms: config.lexicalSynonyms,
+        transliterationEnabled: config.lexicalTransliterationEnabled,
+        editDistanceEnabled: config.lexicalEditDistanceEnabled,
+      }
+    );
+    const shouldConsiderTrigram = lexicalSearch.chunks.length === 0 && config.trigramIndexEnabled;
+    const trigramStatus = shouldConsiderTrigram ? await getSearchIndexStatus() : undefined;
+    const trigramReady = trigramStatus?.trigramPopulated ?? false;
+    trigramSkippedReason = lexicalSearch.chunks.length > 0
+      ? 'bm25_available'
+      : config.trigramIndexEnabled
+        ? trigramReady ? undefined : 'incomplete_index'
+        : 'disabled';
+    trigramSearch = shouldConsiderTrigram && trigramReady
+      ? await searchTrigramChunksWithDiagnostics(
+        input.query,
+        config.trigramCandidateLimit,
+        config.trigramMinQueryLength
+      )
+      : emptyTrigramSearch;
+    trigramFallbackUsed = lexicalSearch.chunks.length === 0 && trigramSearch.chunks.length > 0;
+  }
+
+  const lexicalChunks = trigramFallbackUsed ? trigramSearch.chunks : lexicalSearch.chunks;
+  const sqliteLexicalStats = config.lexicalBackend === 'sqlite_fts';
   if (lexicalChunks.length === 0) {
     const fallbackMinScore = Math.max(config.minSearchScore, config.vectorOnlyFallbackMinScore);
-    const shouldUseVectorOnlyFallback = config.vectorOnlyFallbackEnabled && lexicalSearch.rawCandidates === 0;
+    const shouldUseVectorOnlyFallback = config.vectorOnlyFallbackEnabled
+      && lexicalSearch.rawCandidates === 0
+      && trigramSearch.rawCandidates === 0;
     const chunks = shouldUseVectorOnlyFallback
       ? applyVectorOnlyScore(vectorChunks, config, fallbackMinScore)
       : [];
@@ -235,12 +417,25 @@ export async function searchRagChunks(input: RagSearchInput): Promise<RagSearchR
       diagnostics: buildDiagnostics(
         config,
         vectorChunks,
-        0,
-        lexicalSearch.rawCandidates,
-        lexicalSearch.requiredMatchedTerms,
         {
+          bm25Candidates: 0,
+          bm25RawCandidates: sqliteLexicalStats ? lexicalSearch.rawCandidates : 0,
+          bm25QueryTerms: sqliteLexicalStats ? lexicalSearch.queryTerms : [],
+          bm25ExpandedTerms: sqliteLexicalStats ? lexicalSearch.expandedTerms : [],
+          bm25SynonymTerms: sqliteLexicalStats ? lexicalSearch.synonymTerms : [],
+          bm25TransliterationTerms: sqliteLexicalStats ? lexicalSearch.transliterationTerms : [],
+          bm25EditDistanceTerms: sqliteLexicalStats ? lexicalSearch.editDistanceTerms : [],
+          lexicalRequiredMatchedTerms: sqliteLexicalStats ? lexicalSearch.requiredMatchedTerms : 1,
+          trigramCandidates: 0,
+          trigramRawCandidates: trigramSearch.rawCandidates,
+          trigramRequiredMatchedTerms: trigramSearch.requiredMatchedTerms,
+          trigramQueryTerms: trigramSearch.queryTerms,
+          trigramLatencyMs: trigramSearch.latencyMs,
+          trigramFallbackUsed: false,
+          trigramSkippedReason,
           lexicalGateApplied: false,
           vectorOnlyFallbackUsed: shouldUseVectorOnlyFallback,
+          ...opensearchStats,
         }
       ),
     };
@@ -261,12 +456,25 @@ export async function searchRagChunks(input: RagSearchInput): Promise<RagSearchR
     diagnostics: buildDiagnostics(
       config,
       vectorChunks,
-      lexicalChunks.length,
-      lexicalSearch.rawCandidates,
-      lexicalSearch.requiredMatchedTerms,
       {
+        bm25Candidates: sqliteLexicalStats ? lexicalSearch.chunks.length : 0,
+        bm25RawCandidates: sqliteLexicalStats ? lexicalSearch.rawCandidates : 0,
+        bm25QueryTerms: sqliteLexicalStats ? lexicalSearch.queryTerms : [],
+        bm25ExpandedTerms: sqliteLexicalStats ? lexicalSearch.expandedTerms : [],
+        bm25SynonymTerms: sqliteLexicalStats ? lexicalSearch.synonymTerms : [],
+        bm25TransliterationTerms: sqliteLexicalStats ? lexicalSearch.transliterationTerms : [],
+        bm25EditDistanceTerms: sqliteLexicalStats ? lexicalSearch.editDistanceTerms : [],
+        lexicalRequiredMatchedTerms: sqliteLexicalStats ? lexicalSearch.requiredMatchedTerms : 1,
+        trigramCandidates: trigramSearch.chunks.length,
+        trigramRawCandidates: trigramSearch.rawCandidates,
+        trigramRequiredMatchedTerms: trigramSearch.requiredMatchedTerms,
+        trigramQueryTerms: trigramSearch.queryTerms,
+        trigramLatencyMs: trigramSearch.latencyMs,
+        trigramFallbackUsed,
+        trigramSkippedReason,
         lexicalGateApplied,
         vectorOnlyFallbackUsed: false,
+        ...opensearchStats,
       }
     ),
   };

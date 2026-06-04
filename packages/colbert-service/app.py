@@ -39,6 +39,9 @@ class ChunkInput(BaseModel):
     totalChunks: int = 1
     sourceType: str | None = None
     attachmentFilename: str | None = None
+    mimeType: str | None = None
+    processingMode: str | None = None
+    contentType: str | None = None
 
 
 class PageIndexRequest(BaseModel):
@@ -182,6 +185,9 @@ def point_to_result(point: Any) -> dict[str, Any]:
         "lastModified": payload.get("last_modified"),
         "sourceType": payload.get("source_type"),
         "attachmentFilename": payload.get("attachment_filename"),
+        "attachmentMime": payload.get("attachment_mime"),
+        "attachmentProcessingMode": payload.get("attachment_processing_mode"),
+        "contentType": payload.get("content_type"),
         "payload": payload,
     }
 
@@ -244,6 +250,9 @@ def index_page(request: PageIndexRequest) -> dict[str, Any]:
             "last_modified": request.lastModified,
             "source_type": chunk.sourceType or "page",
             "attachment_filename": chunk.attachmentFilename,
+            "attachment_mime": chunk.mimeType,
+            "attachment_processing_mode": chunk.processingMode,
+            "content_type": chunk.contentType,
         }
         points.append(
             models.PointStruct(

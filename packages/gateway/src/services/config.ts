@@ -12,6 +12,8 @@ export interface RuntimeConfig {
   showSources: boolean;
   systemPrompt: string;
   timeoutMs: number;
+  searchHistoryEnabled: boolean;
+  searchHistoryLimit: number;
 }
 
 const DEFAULTS: RuntimeConfig = {
@@ -24,6 +26,8 @@ const DEFAULTS: RuntimeConfig = {
   showSources: true,
   systemPrompt: 'Ты — корпоративный помощник по внутренней вики. Отвечай только на основе предоставленных документов. Если ответа нет — честно скажи об этом. Приводи ссылки на источники. Отвечай на том же языке, что и вопрос пользователя.',
   timeoutMs: 30000,
+  searchHistoryEnabled: true,
+  searchHistoryLimit: 8,
 };
 
 export async function getRuntimeConfig(): Promise<RuntimeConfig> {

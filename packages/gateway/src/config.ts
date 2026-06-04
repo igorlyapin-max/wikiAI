@@ -29,6 +29,13 @@ function envInt(name: string, defaultValue: number): number {
   return Number(value);
 }
 
+function envFloat(name: string, defaultValue: number): number {
+  const value = process.env[name];
+  if (!value) return defaultValue;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : defaultValue;
+}
+
 function envExternalAclMode(value: string | undefined): AppConfig['externalAclMode'] {
   return value === 'groups_only' ? 'groups_only' : 'mediawiki_check';
 }
@@ -74,6 +81,8 @@ export function parseCorsOrigins(value: string | undefined, nodeEnv: string): st
 
 const nodeEnv = env('NODE_ENV', 'development');
 
+export const DEFAULT_OPENSEARCH_BASE_URL = 'http://opensearch:9200';
+
 export const config: AppConfig = {
   mwBaseUrl: env('MW_BASE_URL', 'http://localhost:8082'),
   mwPublicBaseUrl: process.env.MW_PUBLIC_BASE_URL ?? '',
@@ -86,6 +95,20 @@ export const config: AppConfig = {
   colbertBaseUrl: process.env.COLBERT_BASE_URL ?? '',
   colbertModel: env('COLBERT_MODEL', 'antoinelouis/colbert-xm'),
   colbertCollection: env('COLBERT_COLLECTION', 'wiki_colbert_chunks'),
+  opensearchEnabled: envBoolean('OPENSEARCH_ENABLED', false),
+  opensearchBaseUrl: env('OPENSEARCH_BASE_URL', DEFAULT_OPENSEARCH_BASE_URL),
+  opensearchIndexName: env('OPENSEARCH_INDEX_NAME', 'wikiai_chunks'),
+  opensearchUsername: process.env.OPENSEARCH_USERNAME ?? '',
+  opensearchPassword: process.env.OPENSEARCH_PASSWORD ?? '',
+  opensearchApiKey: process.env.OPENSEARCH_API_KEY ?? '',
+  opensearchTimeoutMs: envInt('OPENSEARCH_TIMEOUT_MS', 5000),
+  opensearchTlsRejectUnauthorized: envBoolean('OPENSEARCH_TLS_REJECT_UNAUTHORIZED', true),
+  opensearchAnalyzer: env('OPENSEARCH_ANALYZER', 'russian'),
+  opensearchFuzzyEnabled: envBoolean('OPENSEARCH_FUZZY_ENABLED', true),
+  opensearchHighlightEnabled: envBoolean('OPENSEARCH_HIGHLIGHT_ENABLED', true),
+  opensearchTitleBoost: envFloat('OPENSEARCH_TITLE_BOOST', 2.0),
+  opensearchTextBoost: envFloat('OPENSEARCH_TEXT_BOOST', 1.0),
+  opensearchCandidateLimit: envInt('OPENSEARCH_CANDIDATE_LIMIT', 50),
   qdrantUrl: env('QDRANT_URL', 'http://localhost:6333'),
   qdrantCollection: env('QDRANT_COLLECTION', 'wiki_chunks'),
   redisUrl: env('REDIS_URL', 'redis://localhost:16379/0'),

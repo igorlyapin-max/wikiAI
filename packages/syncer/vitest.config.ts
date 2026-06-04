@@ -9,6 +9,12 @@ export default defineConfig({
     coverage: {
       reporter: ['text', 'json', 'html'],
       exclude: ['node_modules/', 'dist/', 'backups/', '**/*.test.ts'],
+      thresholds: {
+        statements: 78,
+        branches: 60,
+        functions: 82,
+        lines: 80,
+      },
     },
   },
 });

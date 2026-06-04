@@ -10,10 +10,12 @@
 - [ ] Gateway `/metrics` отдает Prometheus text format и доступен только из внутреннего monitoring path.
 - [ ] Syncer `/metrics` отдает Prometheus text format и доступен только из внутреннего monitoring path.
 - [ ] Browser preflight `OPTIONS /api/search` от MediaWiki origin получает CORS response, если UI ходит на Gateway напрямую.
-- [ ] Перед поставкой/сборкой MediaWiki extension выполнен `npm --prefix packages/mw-extension/resources/ai-assistant run build`, и `resources/ai-assistant/dist/index.js` содержит актуальные UI-формулировки.
+- [ ] Перед поставкой/сборкой MediaWiki extension выполнены `npm --prefix packages/mw-extension/resources/ai-assistant run build` и `npm --prefix packages/mw-extension/resources/ai-admin run build`; `resources/ai-assistant/dist/index.js` и `resources/ai-admin/dist/index.js` содержат актуальные UI-формулировки.
 - [ ] Secrets не отображаются.
-- [ ] `Служебная:AI-администрирование?uselang=ru` показывает русские вкладки, кнопки, labels и статусы inline-JS.
-- [ ] `Special:AIAdmin?uselang=en` показывает английские вкладки, кнопки, labels и статусы inline-JS.
+- [ ] `Служебная:AI-администрирование?uselang=ru` показывает русские вкладки, кнопки, labels и статусы admin ResourceLoader bundle.
+- [ ] `Special:AIAdmin?uselang=en` показывает английские вкладки, кнопки, labels и статусы admin ResourceLoader bundle.
+- [ ] `RUN_WIKIAI_ENV_DEV=1 node scripts/test-wikiai-env-dev.mjs` проверяет served `ext.aiadmin` bundle и authenticated `Special:AIAdmin`, если задан `MW_TEST_COOKIE` или `WIKIAI_ADMIN_COOKIE`.
+- [ ] `Special:AIAdmin` содержит отдельную вкладку `OpenSearch`, а не только блок внутри `Сервисы`.
 - [ ] API data values, enum/status names и ошибки внешних сервисов не переводятся, если они являются диагностическими данными.
 - [ ] В `Служебная:AI-администрирование` видна ссылка `Справка`.
 - [ ] `WikiAIAdmin:Администрирование` открывается у `sysop`/`aiadmin` и содержит ссылки на все страницы документации админки.
@@ -59,14 +61,29 @@
 - [ ] Chunking параметры передаются в reindex profile.
 - [ ] `searchMode=hybrid` смешивает Qdrant vector candidates и SQLite FTS5/BM25 candidates.
 - [ ] `vectorWeight`, `lexicalWeight`, `vectorCandidateLimit`, `lexicalCandidateLimit`, `minFinalScore` меняются из Admin UI.
+- [ ] Вкладка `BM25` содержит experimental features: `lexicalNormalizationMode`, синонимы, латиница/кириллица, typo tolerance и `trigramIndexEnabled`; Soundex/rsoundex отсутствуют.
+- [ ] `POST /api/admin/search-index/trigram/backfill` возвращает `202` и запускает async job, который пересобирает trigram index из `ai_search_chunks` без embeddings/LLM.
+- [ ] `GET /api/admin/search-index/trigram/backfill/status` показывает `processedChunks`, `totalChunks`, `writtenChunks`, `grams`, `status`, `startedAt` и `finishedAt/error` при завершении.
+- [ ] `POST /api/admin/search-index/trigram/backfill/cancel` запрашивает остановку running job и Admin UI отключает/включает кнопки start/cancel по статусу.
+- [ ] `POST /api/admin/rag/config` отклоняет `trigramIndexEnabled=true`, если `trigramPopulated=false`, с ошибкой `trigram_index_not_ready`.
+- [ ] Admin UI разделяет `RAG / Embeddings`, `BM25`, `ColBERT`, `Суперпозиция поиска`, `Распознавание документов` и `Индексация`.
+- [ ] `GET /api/admin/search-index/status` показывает `prod_ready`, только если BM25 заполнен и ColBERT health `ok`.
+- [ ] Без ColBERT контур помечается `limited_ready`, а не production-ready.
 - [ ] Пользовательский AI Search не показывает raw score при `showRawScores=false`.
 - [ ] Sources в search/chat используют внешний `MW_PUBLIC_BASE_URL` и не содержат Docker-internal `http://mediawiki`.
 - [ ] `searchMode=hybrid` находит `кухня` по запросу `кухню` и не подмешивает нерелевантные vector-only chunks при наличии BM25-кандидатов.
+- [ ] При включенном `trigramIndexEnabled` запрос с короткой опечаткой использует trigram fallback до vector-only fallback.
+- [ ] Diagnostics поиска показывают BM25 query terms, expanded terms, trigram fallback counters, `trigramLatencyMs` и `trigramSkippedReason`.
+- [ ] Gateway `/metrics` содержит `wikiai_search_trigram_queries_total`, `wikiai_search_trigram_last_latency_ms`, `wikiai_search_trigram_raw_candidates_total`, `wikiai_trigram_backfill_jobs_total` и `wikiai_trigram_backfill_progress_chunks`.
+- [ ] `node scripts/benchmark-trigram-readiness.mjs --queries <file> --start-backfill` печатает JSON с `readiness.passed/reasons`, backfill status, SQLite size before/after и p50/p95/p99 latency; production-включение разрешается только при `readiness.passed=true`.
 - [ ] После full reindex FTS5 содержит chunks старых страниц, а webhook обновляет FTS5 для измененной страницы.
 
 ## Document Recognition
 
-- [ ] MIME policy содержит PDF, изображения и неизвестные типы.
+- [ ] MIME policy содержит PDF, изображения, офисные документы, media/archive и неизвестные типы.
+- [ ] `docx/xlsx/pptx/odt/ods/odp` индексируются как text+metadata.
+- [ ] `mp3/wav/mpeg/zip/7zip` индексируются metadata-only, без распаковки архивов и speech-to-text.
+- [ ] Mermaid blocks индексируются как текст с `contentType=mermaid`.
 - [ ] Можно добавить custom MIME.
 - [ ] Можно отключить MIME.
 - [ ] Policy reset возвращает defaults.
@@ -78,11 +95,16 @@
 - [ ] `maxPages=1` работает на тестовом стенде.
 - [ ] `dryRun=true` не пишет chunks в Qdrant.
 - [ ] Profile chunk size/overlap передаются в Syncer.
+- [ ] Profile содержит `indexTargets` и reindex умеет `dense`, `bm25`, `colbert`, `attachments`, `semanticFacts`, `ontologyVectors`.
+- [ ] `source=qdrant_payload` для `indexTargets=["colbert"]` не вызывает MediaWiki, dense embeddings или LLM enrichment.
 - [ ] Search/chat проверяют MediaWiki `readable` для каждого chunk.
 - [ ] Закрытая page-level страница в публичном namespace не попадает в AI-ответ.
 - [ ] Публичная page-level страница в закрытом namespace может попасть в AI-ответ, если MediaWiki разрешает чтение.
 - [ ] Admin docs в `WikiAIAdmin` и legacy `CorpCommon:WikiAI/Администрирование...` не попадают в anonymous search.
 - [ ] Admin docs chunks в `wiki_chunks` и `wiki_colbert_chunks` не имеют `allowed_groups:["*"]`.
+- [ ] Candidate ColBERT index создается отдельно от active collection.
+- [ ] Failed ColBERT build не меняет active search.
+- [ ] Promote разрешен только для complete candidate index.
 - [ ] Title/category filters отсекают страницы до `maxPages`.
 - [ ] Вкладка `Индексация` показывает понятные help-тексты для фильтров страниц.
 - [ ] Category include/exclude выбираются из MediaWiki categories selector, а не вводятся только вручную CSV.
@@ -154,10 +176,16 @@
 
 ## Live Tests Without OpenAI
 
+- [ ] `node scripts/test-wikiai-env-dev.mjs` проходит быстрый package-local gate без живого стенда.
+- [ ] `RUN_WIKIAI_ENV_DEV=1 node scripts/test-wikiai-env-dev.mjs` проверяет Gateway, Syncer, MediaWiki ResourceLoader и Qdrant temporary collection без записи в wiki pages.
 - [ ] Redis доступен.
 - [ ] Qdrant доступен.
 - [ ] Ollama embeddings доступны или тест корректно помечен skipped.
 - [ ] Limited reindex проходит без OpenAI.
+- [ ] ColBERT `/health` доступен из Gateway/container network.
+- [ ] Bounded ColBERT-only dry run `maxPages<=5` проходит без OpenAI и без dense embedding calls.
+- [ ] `RUN_OPENSEARCH_E2E=1` включает OpenSearch status/analyze/search-preview только на подготовленном dev-стенде.
+- [ ] `RUN_COLBERT_E2E=1` включает ColBERT `/health` и readiness проверки только на подготовленном dev-стенде.
 
 ## Opt-in LLM Smoke
 
@@ -168,6 +196,7 @@
 ## GitLab CI / Release Gates
 
 - [ ] GitLab pipeline проходит `validate`, `test`, `typecheck`, `build`.
+- [ ] `test` или `validate` выполняет `node scripts/test-wikiai-env-dev.mjs` как быстрый regression gate.
 - [ ] `validate:repo` выполняет `node scripts/validate-contracts.mjs`.
 - [ ] `docker:build` проходит на GitLab runner с Docker-in-Docker.
 - [ ] `security:secret-scan` блокирует реальные ключи и unsafe placeholder defaults в продуктовых файлах.

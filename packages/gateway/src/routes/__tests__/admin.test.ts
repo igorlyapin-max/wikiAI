@@ -7,7 +7,8 @@ import { resetIndexingProfileSchedulerForTests } from '../../services/indexing-p
 import { resetTrustAutoRecalculationForTests } from '../../services/trust-auto-recalculation.js';
 import { resetTrustRecalculationSchedulerForTests } from '../../services/trust-recalculation-scheduler.js';
 import { recordChatMessage, resetChatStoreForTests } from '../../services/chat-store.js';
-import { searchLexicalChunks } from '../../services/search-index.js';
+import { searchLexicalChunks, upsertSearchIndexPage } from '../../services/search-index.js';
+import { setRagAdminConfig } from '../../services/admin-platform-config.js';
 
 const userGroups = vi.hoisted(() => ({ groups: ['sysop'] }));
 const store = vi.hoisted(() => new Map<string, string>());
@@ -215,6 +216,63 @@ describe('admin routes', () => {
     await app.close();
   });
 
+  it('reports limited readiness when BM25 exists but ColBERT is disabled', async () => {
+    await upsertSearchIndexPage({
+      pageId: 1,
+      title: 'Public',
+      namespace: 0,
+      allowedGroups: ['*'],
+      chunks: [{ id: 10000, text: 'Public search chunk', chunkIndex: 0, totalChunks: 1 }],
+    });
+    const app = await makeApp();
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/admin/search-index/status',
+      headers: { cookie: 'mw=1' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().values.readiness).toMatchObject({
+      status: 'limited_ready',
+    });
+    await app.close();
+  });
+
+  it('reports production readiness when BM25 and ColBERT health are ready', async () => {
+    await upsertSearchIndexPage({
+      pageId: 1,
+      title: 'Public',
+      namespace: 0,
+      allowedGroups: ['*'],
+      chunks: [{ id: 10000, text: 'Public search chunk', chunkIndex: 0, totalChunks: 1 }],
+    });
+    await setRagAdminConfig({
+      colbertEnabled: true,
+      colbertBaseUrl: 'http://colbert:8080',
+      searchMode: 'colbert_full',
+      colbertFailMode: 'fail_search',
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+    })));
+    const app = await makeApp();
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/admin/search-index/status',
+      headers: { cookie: 'mw=1' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().values.readiness).toMatchObject({
+      status: 'prod_ready',
+    });
+    await app.close();
+  });
+
   it('returns degraded admin health as JSON instead of failing the overview request', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: false,
@@ -259,6 +317,11 @@ describe('admin routes', () => {
     expect(read.statusCode).toBe(200);
     expect(read.json().metadata.secretsRedacted).toBe(true);
     expect(read.json().values.llm.apiKeyConfigured).toBe(true);
+    expect(read.json().values.opensearch).toMatchObject({
+      enabled: false,
+      indexName: 'wikiai_chunks',
+      authConfigured: false,
+    });
     expect(read.json().values.syncer.mediaWikiServiceAuth).toMatchObject({
       configured: true,
       source: 'service_credentials',
@@ -275,12 +338,25 @@ describe('admin routes', () => {
       payload: {
         mediaWiki: { baseUrl: 'http://wiki.internal:8082' },
         llm: { model: 'corporate-test-model', timeoutMs: 10000 },
+        opensearch: {
+          enabled: true,
+          baseUrl: 'http://opensearch.internal:9200',
+          indexName: 'wikiai_chunks_v2',
+          analyzer: 'russian',
+          candidateLimit: 75,
+        },
       },
     });
 
     expect(saved.statusCode).toBe(200);
     expect(saved.json().values.mediaWiki.baseUrl).toBe('http://wiki.internal:8082');
     expect(saved.json().values.llm.model).toBe('corporate-test-model');
+    expect(saved.json().values.opensearch).toMatchObject({
+      enabled: true,
+      baseUrl: 'http://opensearch.internal:9200/',
+      indexName: 'wikiai_chunks_v2',
+      candidateLimit: 75,
+    });
 
     const audit = await app.inject({
       method: 'GET',
@@ -294,6 +370,60 @@ describe('admin routes', () => {
       action: 'service-config.update',
       entityType: 'service-config',
     });
+    await app.close();
+  });
+
+  it('defaults an enabled OpenSearch config when the URL field is empty', async () => {
+    const app = await makeApp();
+
+    const saved = await app.inject({
+      method: 'POST',
+      url: '/api/admin/service-config',
+      headers: { cookie: 'mw=1' },
+      payload: {
+        opensearch: {
+          enabled: true,
+          baseUrl: '',
+          indexName: 'wikiai_chunks',
+        },
+      },
+    });
+
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json().values.opensearch).toMatchObject({
+      enabled: true,
+      baseUrl: 'http://opensearch:9200/',
+    });
+
+    await app.close();
+  });
+
+  it('serves OpenSearch status and analyze preview without exposing secrets', async () => {
+    const app = await makeApp();
+    const status = await app.inject({
+      method: 'GET',
+      url: '/api/admin/opensearch/status',
+      headers: { cookie: 'mw=1' },
+    });
+    expect(status.statusCode).toBe(200);
+    expect(status.json().values).toMatchObject({
+      status: 'disabled',
+      ready: false,
+      indexName: 'wikiai_chunks',
+    });
+
+    const analyze = await app.inject({
+      method: 'POST',
+      url: '/api/admin/opensearch/analyze',
+      headers: { cookie: 'mw=1' },
+      payload: { query: 'как там цивилизации' },
+    });
+    expect(analyze.statusCode).toBe(200);
+    expect(analyze.json().values).toMatchObject({
+      status: 'disabled',
+      tokens: ['как', 'там', 'цивилизации'],
+    });
+    expect(JSON.stringify(status.json())).not.toContain('test-key');
     await app.close();
   });
 
@@ -434,6 +564,8 @@ describe('admin routes', () => {
         maxTokens: 512,
         showSources: false,
         systemPrompt: 'Ответь кратко по корпоративной базе знаний.',
+        searchHistoryEnabled: false,
+        searchHistoryLimit: 3,
       },
     });
 
@@ -445,6 +577,8 @@ describe('admin routes', () => {
       temperature: 0.2,
       maxTokens: 512,
       showSources: false,
+      searchHistoryEnabled: false,
+      searchHistoryLimit: 3,
     });
 
     const runtime = await app.inject({
@@ -459,6 +593,8 @@ describe('admin routes', () => {
       temperature: 0.2,
       maxTokens: 512,
       showSources: false,
+      searchHistoryEnabled: false,
+      searchHistoryLimit: 3,
     });
 
     await app.close();
@@ -797,6 +933,13 @@ describe('admin routes', () => {
   });
 
   it('saves RAG config and syncs compatible runtime fields', async () => {
+    await upsertSearchIndexPage({
+      pageId: 900,
+      title: 'Trigram ready',
+      namespace: 0,
+      allowedGroups: ['*'],
+      chunks: [{ id: 9000001, text: 'Trigram readiness chunk' }],
+    });
     const app = await makeApp();
     const res = await app.inject({
       method: 'POST',
@@ -815,6 +958,14 @@ describe('admin routes', () => {
         lexicalCandidateLimit: 60,
         lexicalMinMatchedTerms: 3,
         lexicalGateMode: 'when_bm25_available',
+        lexicalNormalizationMode: 'simple_stem',
+        lexicalSynonymsEnabled: true,
+        lexicalSynonyms: [{ term: 'тикет', synonyms: ['заявка', 'инцидент'] }],
+        lexicalTransliterationEnabled: true,
+        lexicalEditDistanceEnabled: true,
+        trigramIndexEnabled: true,
+        trigramCandidateLimit: 70,
+        trigramMinQueryLength: 5,
         vectorOnlyFallbackEnabled: true,
         vectorOnlyFallbackMinScore: 0.82,
         minFinalScore: 0.1,
@@ -843,6 +994,14 @@ describe('admin routes', () => {
       lexicalCandidateLimit: 60,
       lexicalMinMatchedTerms: 3,
       lexicalGateMode: 'when_bm25_available',
+      lexicalNormalizationMode: 'simple_stem',
+      lexicalSynonymsEnabled: true,
+      lexicalSynonyms: [{ term: 'тикет', synonyms: ['заявка', 'инцидент'] }],
+      lexicalTransliterationEnabled: true,
+      lexicalEditDistanceEnabled: true,
+      trigramIndexEnabled: true,
+      trigramCandidateLimit: 70,
+      trigramMinQueryLength: 5,
       vectorOnlyFallbackEnabled: true,
       vectorOnlyFallbackMinScore: 0.82,
       minFinalScore: 0.1,
@@ -867,6 +1026,51 @@ describe('admin routes', () => {
       chunkSize: 640,
       chunkOverlap: 80,
     });
+    await app.close();
+  });
+
+  it('lists and restores retrieval profile examples with readiness', async () => {
+    const app = await makeApp();
+    const list = await app.inject({
+      method: 'GET',
+      url: '/api/admin/retrieval-profiles',
+      headers: { cookie: 'mw=1' },
+    });
+
+    expect(list.statusCode).toBe(200);
+    expect(list.json().values).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'prod_hybrid_colbert',
+        readiness: expect.objectContaining({ status: 'not_ready' }),
+      }),
+      expect.objectContaining({
+        id: 'semantic_broad',
+        readiness: expect.objectContaining({ status: expect.any(String) }),
+      }),
+    ]));
+
+    const restored = await app.inject({
+      method: 'POST',
+      url: '/api/admin/retrieval-profiles/restore-defaults',
+      headers: { cookie: 'mw=1' },
+    });
+    expect(restored.statusCode).toBe(200);
+    expect(restored.json().values.map((profile: { id: string }) => profile.id)).toContain('colbert_full_strict');
+
+    await app.close();
+  });
+
+  it('rejects enabling trigram search when the trigram index is not fully populated', async () => {
+    const app = await makeApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/rag/config',
+      headers: { cookie: 'mw=1' },
+      payload: { trigramIndexEnabled: true },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().message).toContain('trigram_index_not_ready');
     await app.close();
   });
 
@@ -902,10 +1106,104 @@ describe('admin routes', () => {
     expect(res.json().values).toMatchObject({
       chunks: 1,
       ftsChunks: 1,
+      trigramChunks: 1,
+      trigramFtsChunks: 1,
       pages: 1,
       populated: true,
       backfillRecommended: false,
+      trigramPopulated: true,
+      trigramBackfillRecommended: false,
     });
+    await app.close();
+  });
+
+  it('starts async trigram backfill and exposes job status', async () => {
+    const app = await makeApp();
+    await upsertSearchIndexPage({
+      pageId: 405,
+      title: 'CorpIT:Системы',
+      namespace: 3030,
+      allowedGroups: ['ai-it'],
+      chunks: [{
+        id: 4050001,
+        text: 'Регламент сопровождения систем.',
+      }],
+    });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/search-index/trigram/backfill',
+      headers: { cookie: 'mw=1' },
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(res.json().values).toMatchObject({
+      status: 'running',
+      totalChunks: 1,
+    });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    const status = await app.inject({
+      method: 'GET',
+      url: '/api/admin/search-index/trigram/backfill/status',
+      headers: { cookie: 'mw=1' },
+    });
+
+    expect(status.statusCode).toBe(200);
+    expect(status.json().values).toMatchObject({
+      status: 'completed',
+      totalChunks: 1,
+      writtenChunks: 1,
+    });
+    expect(status.json().values.grams).toBeGreaterThan(0);
+    await app.close();
+  });
+
+  it('cancels a running async trigram backfill job through the admin API', async () => {
+    const app = await makeApp();
+    await upsertSearchIndexPage({
+      pageId: 406,
+      title: 'CorpIT:Большой индекс',
+      namespace: 3030,
+      allowedGroups: ['ai-it'],
+      chunks: Array.from({ length: 1001 }, (_value, index) => ({
+        id: 4060000 + index,
+        text: `Регламент сопровождения систем ${index}.`,
+      })),
+    });
+
+    const started = await app.inject({
+      method: 'POST',
+      url: '/api/admin/search-index/trigram/backfill',
+      headers: { cookie: 'mw=1' },
+    });
+
+    expect(started.statusCode).toBe(202);
+    expect(started.json().values).toMatchObject({
+      status: 'running',
+      totalChunks: 1001,
+    });
+
+    const canceled = await app.inject({
+      method: 'POST',
+      url: '/api/admin/search-index/trigram/backfill/cancel',
+      headers: { cookie: 'mw=1' },
+    });
+
+    expect(canceled.statusCode).toBe(200);
+    expect(canceled.json().values).toMatchObject({
+      status: 'canceled',
+      totalChunks: 1001,
+    });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    const status = await app.inject({
+      method: 'GET',
+      url: '/api/admin/search-index/trigram/backfill/status',
+      headers: { cookie: 'mw=1' },
+    });
+
+    expect(status.json().values.status).toBe('canceled');
     await app.close();
   });
 
@@ -1077,6 +1375,10 @@ describe('admin routes', () => {
     expect(reindex.statusCode).toBe(202);
     expect(startSyncerReindex).toHaveBeenCalledWith({
       profileId: 'corp-it',
+      indexTargets: ['dense', 'bm25', 'attachments', 'semanticFacts'],
+      source: undefined,
+      colbertModel: undefined,
+      colbertCollection: undefined,
       attachmentsEnabled: true,
       semanticFactsEnabled: true,
       smwProperties: ['Департамент', 'Тип документа'],
@@ -2523,7 +2825,10 @@ describe('admin routes', () => {
     const cases: Array<{ method: 'GET' | 'POST'; url: string; payload?: unknown; error: string }> = [
       { method: 'POST', url: '/api/admin/external-api/config', payload: { maxTopK: 0 }, error: 'Invalid external API config' },
       { method: 'POST', url: '/api/admin/llm/config', payload: { timeoutMs: 1 }, error: 'Invalid LLM config' },
+      { method: 'POST', url: '/api/admin/llm/config', payload: { searchHistoryLimit: 0 }, error: 'Invalid LLM config' },
       { method: 'POST', url: '/api/admin/embedding/config', payload: { provider: 'bad-provider' }, error: 'Invalid embedding config' },
+      { method: 'POST', url: '/api/admin/service-config', payload: { opensearch: { enabled: true, baseUrl: 'not-a-url' } }, error: 'Invalid service config' },
+      { method: 'POST', url: '/api/admin/service-config', payload: { opensearch: { enabled: true, baseUrl: 'ftp://opensearch:9200' } }, error: 'Invalid service config' },
       { method: 'POST', url: '/api/admin/conflict-detection/config', payload: { trustGapThreshold: 2 }, error: 'Invalid conflict detection config' },
       { method: 'POST', url: '/api/admin/indexing-profiles', payload: { id: 'bad profile id' }, error: 'Invalid indexing profile' },
       { method: 'POST', url: '/api/admin/webhook/config', payload: { syncerUrl: 'not-a-url' }, error: 'Invalid webhook config' },
@@ -2605,6 +2910,7 @@ describe('admin routes', () => {
 
     const guarded = [
       await app.inject({ method: 'GET', url: '/api/internal/embedding/config', headers: invalidHeaders }),
+      await app.inject({ method: 'GET', url: '/api/internal/indexing-profiles', headers: invalidHeaders }),
       await app.inject({ method: 'POST', url: '/api/internal/embedding/vector', headers: invalidHeaders, payload: { text: 'x' } }),
       await app.inject({ method: 'POST', url: '/api/internal/reindex/llm-enrich', headers: invalidHeaders, payload: { title: 'T', text: 'x' } }),
       await app.inject({ method: 'POST', url: '/api/internal/trust/recalculate-page', headers: invalidHeaders, payload: { pageId: 1 } }),
@@ -2626,6 +2932,14 @@ describe('admin routes', () => {
     });
     expect(embeddingConfig.statusCode).toBe(200);
     expect(embeddingConfig.json().metadata.secretsRedacted).toBe(true);
+
+    const indexingProfiles = await app.inject({
+      method: 'GET',
+      url: '/api/internal/indexing-profiles',
+      headers: validHeaders,
+    });
+    expect(indexingProfiles.statusCode).toBe(200);
+    expect(indexingProfiles.json().values[0]).toMatchObject({ id: 'default' });
 
     const invalidPayloads = [
       await app.inject({ method: 'POST', url: '/api/internal/embedding/vector', headers: validHeaders, payload: {} }),

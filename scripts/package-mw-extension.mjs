@@ -9,6 +9,7 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, '..');
 const extensionRoot = path.join(repoRoot, 'packages', 'mw-extension');
 const frontendRoot = path.join(extensionRoot, 'resources', 'ai-assistant');
+const adminFrontendRoot = path.join(extensionRoot, 'resources', 'ai-admin');
 const skipBuild = process.argv.includes('--skip-build');
 const outputDirArg = readOption('--output-dir');
 const outputDir = path.resolve(outputDirArg || process.env.MW_EXTENSION_ARTIFACT_DIR || path.join(repoRoot, 'dist'));
@@ -57,6 +58,8 @@ const outputPath = path.join(outputDir, `wiki-ai-aiassistant-extension-${version
 if (!skipBuild) {
   run('npm', ['--prefix', frontendRoot, 'ci']);
   run('npm', ['--prefix', frontendRoot, 'run', 'build']);
+  run('npm', ['--prefix', adminFrontendRoot, 'ci']);
+  run('npm', ['--prefix', adminFrontendRoot, 'run', 'build']);
 }
 
 const requiredPaths = [
@@ -66,16 +69,26 @@ const requiredPaths = [
   'i18n',
   'config',
   'resources/ai-assistant/dist',
+  'resources/ai-admin/dist',
 ];
 
 for (const relativePath of requiredPaths) {
   requirePath(path.join(extensionRoot, relativePath));
 }
 
-assertContains(path.join(extensionRoot, 'src', 'SpecialAIAdmin.php'), 'rag-colbertBaseUrl');
-assertContains(path.join(extensionRoot, 'src', 'SpecialAIAdmin.php'), 'colbert_full');
+assertContains(path.join(extensionRoot, 'src', 'SpecialAIAdmin.php'), 'data-ai-panel="retrieval-profiles"');
+assertContains(path.join(extensionRoot, 'src', 'SpecialAIAdmin.php'), 'data-ai-panel="opensearch"');
 assertContains(path.join(extensionRoot, 'i18n', 'ru.json'), 'aiadmin-section-colbert-index');
+assertContains(path.join(extensionRoot, 'i18n', 'ru.json'), 'aiadmin-tab-retrieval-profiles');
+assertContains(path.join(extensionRoot, 'i18n', 'ru.json'), 'aiadmin-tab-opensearch');
 requirePath(path.join(frontendRoot, 'dist', 'index.js'));
+requirePath(path.join(adminFrontendRoot, 'dist', 'index.js'));
+assertContains(path.join(adminFrontendRoot, 'dist', 'index.js'), 'rag-colbertBaseUrl');
+assertContains(path.join(adminFrontendRoot, 'dist', 'index.js'), 'colbert_full');
+assertContains(path.join(adminFrontendRoot, 'dist', 'index.js'), 'aiadmin-retrieval-profiles');
+assertContains(path.join(adminFrontendRoot, 'dist', 'index.js'), 'aiadmin-opensearch-config');
+assertContains(path.join(adminFrontendRoot, 'dist', 'index.js'), 'svc-opensearch-enabled');
+assertContains(path.join(adminFrontendRoot, 'dist', 'index.js'), '/api/admin/opensearch/status');
 
 mkdirSync(outputDir, { recursive: true });
 
@@ -93,6 +106,11 @@ try {
   const stagedFrontendRoot = path.join(stagedExtensionRoot, 'resources', 'ai-assistant');
   mkdirSync(stagedFrontendRoot, { recursive: true });
   cpSync(path.join(frontendRoot, 'dist'), path.join(stagedFrontendRoot, 'dist'), {
+    recursive: true,
+  });
+  const stagedAdminFrontendRoot = path.join(stagedExtensionRoot, 'resources', 'ai-admin');
+  mkdirSync(stagedAdminFrontendRoot, { recursive: true });
+  cpSync(path.join(adminFrontendRoot, 'dist'), path.join(stagedAdminFrontendRoot, 'dist'), {
     recursive: true,
   });
 

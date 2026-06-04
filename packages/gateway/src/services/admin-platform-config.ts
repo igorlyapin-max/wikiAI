@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { config } from '../config.js';
+import { config, DEFAULT_OPENSEARCH_BASE_URL } from '../config.js';
 import { parseDatabaseUrl, getAdminStore, AuditLogEntry } from '../db/admin-store.js';
 import { getRuntimeConfig, setRuntimeConfig } from './config.js';
 import { qdrant, QDRANT_VECTOR_SIZE } from './qdrant.js';
+import { getSearchIndexStatus } from './search-index.js';
 import {
   getSyncerMediaWikiServiceAuthStatus,
   StartReindexRequest,
@@ -15,6 +16,7 @@ import { getIndexedSmwProperties } from './smw-indexing-properties.js';
 
 const SERVICE_CONFIG_AREA = 'service-config';
 const RAG_CONFIG_AREA = 'rag-config';
+const RETRIEVAL_PROFILE_AREA = 'retrieval-profiles';
 const WEBHOOK_CONFIG_AREA = 'webhook-config';
 const INDEXING_PROFILE_AREA = 'indexing-profiles';
 const CHAT_RETENTION_CONFIG_AREA = 'chat-retention-config';
@@ -37,6 +39,9 @@ export interface ServiceAdminConfig {
   database: {
     url: string;
     dialect: 'sqlite' | 'postgres';
+    connectionStatus: 'ok' | 'error';
+    migrationStatus: 'ok' | 'error';
+    error?: string;
   };
   mediaWiki: {
     baseUrl: string;
@@ -59,6 +64,7 @@ export interface ServiceAdminConfig {
     url: string;
     collection: string;
   };
+  opensearch: OpenSearchAdminConfig;
   llm: {
     baseUrl: string;
     model: string;
@@ -97,6 +103,30 @@ export interface QdrantAdminDiagnostics {
   error?: string;
 }
 
+export interface OpenSearchAdminConfig {
+  enabled: boolean;
+  baseUrl: string;
+  indexName: string;
+  usernameConfigured: boolean;
+  passwordConfigured: boolean;
+  apiKeyConfigured: boolean;
+  authConfigured: boolean;
+  timeoutMs: number;
+  tlsRejectUnauthorized: boolean;
+  analyzer: string;
+  fuzzyEnabled: boolean;
+  highlightEnabled: boolean;
+  titleBoost: number;
+  textBoost: number;
+  candidateLimit: number;
+}
+
+export interface EffectiveOpenSearchConfig extends OpenSearchAdminConfig {
+  username?: string;
+  password?: string;
+  apiKey?: string;
+}
+
 export interface RagAdminConfig {
   chunkSize: number;
   chunkOverlap: number;
@@ -111,10 +141,22 @@ export interface RagAdminConfig {
   rerankMode: 'none' | 'colbert_v2';
   vectorWeight: number;
   lexicalWeight: number;
+  lexicalBackend: 'sqlite_fts' | 'opensearch';
   vectorCandidateLimit: number;
   lexicalCandidateLimit: number;
   lexicalMinMatchedTerms: number;
   lexicalGateMode: 'off' | 'when_bm25_available';
+  lexicalNormalizationMode: 'simple_stem' | 'raw_prefix';
+  lexicalSynonymsEnabled: boolean;
+  lexicalSynonyms: Array<{
+    term: string;
+    synonyms: string[];
+  }>;
+  lexicalTransliterationEnabled: boolean;
+  lexicalEditDistanceEnabled: boolean;
+  trigramIndexEnabled: boolean;
+  trigramCandidateLimit: number;
+  trigramMinQueryLength: number;
   vectorOnlyFallbackEnabled: boolean;
   vectorOnlyFallbackMinScore: number;
   minFinalScore: number;
@@ -130,6 +172,67 @@ export interface RagAdminConfig {
   semanticFactsInContext: boolean;
   includeAttachments: boolean;
   includeSemanticHeader: boolean;
+}
+
+export type RetrievalProfileReadinessStatus = 'prod_ready' | 'limited_ready' | 'not_ready';
+
+export interface RetrievalProfileReadiness {
+  status: RetrievalProfileReadinessStatus;
+  reasons: string[];
+  requiredIndexTargets?: string[];
+  missingIndexTargets?: string[];
+}
+
+export type RetrievalProfileOverrides = Pick<RagAdminConfig,
+  | 'topK'
+  | 'searchMode'
+  | 'rerankMode'
+  | 'vectorWeight'
+  | 'lexicalWeight'
+  | 'lexicalBackend'
+  | 'vectorCandidateLimit'
+  | 'lexicalCandidateLimit'
+  | 'lexicalMinMatchedTerms'
+  | 'lexicalGateMode'
+  | 'lexicalNormalizationMode'
+  | 'lexicalSynonymsEnabled'
+  | 'lexicalSynonyms'
+  | 'lexicalTransliterationEnabled'
+  | 'lexicalEditDistanceEnabled'
+  | 'trigramIndexEnabled'
+  | 'trigramCandidateLimit'
+  | 'trigramMinQueryLength'
+  | 'vectorOnlyFallbackEnabled'
+  | 'vectorOnlyFallbackMinScore'
+  | 'minFinalScore'
+  | 'showRawScores'
+  | 'colbertEnabled'
+  | 'colbertCandidateLimit'
+  | 'colbertTimeoutMs'
+  | 'colbertMinScore'
+  | 'colbertFailMode'
+  | 'semanticFactsInContext'
+  | 'includeAttachments'
+  | 'includeSemanticHeader'
+>;
+
+export interface RetrievalProfile {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  apiEnabled: boolean;
+  mcpEnabled: boolean;
+  anonymousAllowed: boolean;
+  maxTopK: number;
+  tags: string[];
+  config: RetrievalProfileOverrides;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RetrievalProfileWithReadiness extends RetrievalProfile {
+  readiness: RetrievalProfileReadiness;
 }
 
 export interface WebhookAdminConfig {
@@ -321,6 +424,8 @@ export interface LlmAdminConfig {
   maxTokens: number;
   showSources: boolean;
   systemPrompt: string;
+  searchHistoryEnabled: boolean;
+  searchHistoryLimit: number;
 }
 
 export interface EffectiveLlmConfig extends LlmAdminConfig {
@@ -356,6 +461,7 @@ export interface IndexingProfile {
   documentPolicyId: string;
   runMode: 'manual' | 'scheduled';
   scheduleIntervalMinutes?: number;
+  indexTargets: string[];
   attachmentsEnabled: boolean;
   semanticFactsEnabled: boolean;
   ontologyVectorsEnabled: boolean;
@@ -389,10 +495,18 @@ export interface EmbeddingTestResult extends HttpTestResult {
 }
 
 const urlSchema = z.string().trim().url();
+const httpUrlSchema = urlSchema.refine((value) => {
+  const protocol = new URL(value).protocol;
+  return protocol === 'http:' || protocol === 'https:';
+}, 'must be a valid HTTP(S) URL');
 const optionalUrlSchema = z.string().trim().max(500).refine((value) => {
   if (value.length === 0) return true;
   return urlSchema.safeParse(value).success;
 }, 'must be empty or a valid URL');
+const optionalHttpUrlSchema = z.string().trim().max(500).refine((value) => {
+  if (value.length === 0) return true;
+  return httpUrlSchema.safeParse(value).success;
+}, 'must be empty or a valid HTTP(S) URL');
 const pathSchema = z.string().trim().min(1).regex(/^\//, 'apiPath must start with /');
 
 const serviceConfigUpdateSchema = z.object({
@@ -410,6 +524,19 @@ const serviceConfigUpdateSchema = z.object({
   qdrant: z.object({
     url: urlSchema.optional(),
     collection: z.string().trim().min(1).max(128).regex(/^[A-Za-z0-9_.-]+$/).optional(),
+  }).strict().optional(),
+  opensearch: z.object({
+    enabled: z.boolean().optional(),
+    baseUrl: optionalHttpUrlSchema.optional(),
+    indexName: z.string().trim().min(1).max(128).regex(/^[A-Za-z0-9_.-]+$/).optional(),
+    timeoutMs: z.number().int().min(500).max(120000).optional(),
+    tlsRejectUnauthorized: z.boolean().optional(),
+    analyzer: z.string().trim().min(1).max(80).regex(/^[A-Za-z0-9_.-]+$/).optional(),
+    fuzzyEnabled: z.boolean().optional(),
+    highlightEnabled: z.boolean().optional(),
+    titleBoost: z.number().min(0).max(20).optional(),
+    textBoost: z.number().min(0).max(20).optional(),
+    candidateLimit: z.number().int().min(5).max(200).optional(),
   }).strict().optional(),
   llm: z.object({
     baseUrl: urlSchema.optional(),
@@ -434,6 +561,8 @@ const llmConfigUpdateSchema = z.object({
   maxTokens: z.number().int().min(64).max(4096).optional(),
   showSources: z.boolean().optional(),
   systemPrompt: z.string().trim().min(1).max(8000).optional(),
+  searchHistoryEnabled: z.boolean().optional(),
+  searchHistoryLimit: z.number().int().min(1).max(20).optional(),
 }).strict();
 
 const embeddingConfigUpdateSchema = z.object({
@@ -455,6 +584,16 @@ const namespaceAclSchema = z.record(
   message: 'namespaceAcl can contain up to 100 namespaces',
 });
 
+const indexTargetSchema = z.enum([
+  'dense',
+  'bm25',
+  'colbert',
+  'opensearch',
+  'attachments',
+  'semanticFacts',
+  'ontologyVectors',
+]);
+
 const indexingProfileInputSchema = z.object({
   id: z.string().trim().min(1).max(120).regex(/^[A-Za-z0-9_.-]+$/).optional(),
   name: z.string().trim().min(1).max(120),
@@ -467,6 +606,7 @@ const indexingProfileInputSchema = z.object({
   documentPolicyId: z.string().trim().min(1).max(120).regex(/^[A-Za-z0-9_.-]+$/).optional(),
   runMode: z.enum(['manual', 'scheduled']).optional(),
   scheduleIntervalMinutes: z.number().int().min(5).max(10080).optional(),
+  indexTargets: z.array(indexTargetSchema).min(1).max(7).optional(),
   attachmentsEnabled: z.boolean().optional(),
   semanticFactsEnabled: z.boolean().optional(),
   ontologyVectorsEnabled: z.boolean().optional(),
@@ -497,10 +637,22 @@ const ragConfigBaseSchema = z.object({
   rerankMode: z.enum(['none', 'colbert_v2']),
   vectorWeight: z.number().min(0).max(1),
   lexicalWeight: z.number().min(0).max(1),
+  lexicalBackend: z.enum(['sqlite_fts', 'opensearch']),
   vectorCandidateLimit: z.number().int().min(5).max(200),
   lexicalCandidateLimit: z.number().int().min(5).max(200),
   lexicalMinMatchedTerms: z.number().int().min(1).max(6),
   lexicalGateMode: z.enum(['off', 'when_bm25_available']),
+  lexicalNormalizationMode: z.enum(['simple_stem', 'raw_prefix']),
+  lexicalSynonymsEnabled: z.boolean(),
+  lexicalSynonyms: z.array(z.object({
+    term: z.string().trim().min(1).max(80),
+    synonyms: z.array(z.string().trim().min(1).max(80)).min(1).max(24),
+  }).strict()).max(100),
+  lexicalTransliterationEnabled: z.boolean(),
+  lexicalEditDistanceEnabled: z.boolean(),
+  trigramIndexEnabled: z.boolean(),
+  trigramCandidateLimit: z.number().int().min(5).max(200),
+  trigramMinQueryLength: z.number().int().min(3).max(32),
   vectorOnlyFallbackEnabled: z.boolean(),
   vectorOnlyFallbackMinScore: z.number().min(0).max(1),
   minFinalScore: z.number().min(0).max(1),
@@ -529,6 +681,52 @@ const ragConfigSchema = ragConfigBaseSchema
   });
 
 const ragConfigUpdateSchema = ragConfigBaseSchema.partial().strict();
+
+const retrievalProfileConfigSchema = ragConfigBaseSchema.pick({
+  topK: true,
+  searchMode: true,
+  rerankMode: true,
+  vectorWeight: true,
+  lexicalWeight: true,
+  lexicalBackend: true,
+  vectorCandidateLimit: true,
+  lexicalCandidateLimit: true,
+  lexicalMinMatchedTerms: true,
+  lexicalGateMode: true,
+  lexicalNormalizationMode: true,
+  lexicalSynonymsEnabled: true,
+  lexicalSynonyms: true,
+  lexicalTransliterationEnabled: true,
+  lexicalEditDistanceEnabled: true,
+  trigramIndexEnabled: true,
+  trigramCandidateLimit: true,
+  trigramMinQueryLength: true,
+  vectorOnlyFallbackEnabled: true,
+  vectorOnlyFallbackMinScore: true,
+  minFinalScore: true,
+  showRawScores: true,
+  colbertEnabled: true,
+  colbertCandidateLimit: true,
+  colbertTimeoutMs: true,
+  colbertMinScore: true,
+  colbertFailMode: true,
+  semanticFactsInContext: true,
+  includeAttachments: true,
+  includeSemanticHeader: true,
+}).strict();
+
+const retrievalProfileInputSchema = z.object({
+  id: z.string().trim().min(1).max(120).regex(/^[A-Za-z0-9_.-]+$/).optional(),
+  name: z.string().trim().min(1).max(160),
+  description: z.string().trim().max(1000).optional(),
+  enabled: z.boolean().optional(),
+  apiEnabled: z.boolean().optional(),
+  mcpEnabled: z.boolean().optional(),
+  anonymousAllowed: z.boolean().optional(),
+  maxTopK: z.number().int().min(1).max(50).optional(),
+  tags: z.array(z.string().trim().min(1).max(80)).max(20).optional(),
+  config: retrievalProfileConfigSchema,
+}).strict();
 
 const webhookConfigSchema = z.object({
   syncerUrl: urlSchema,
@@ -719,6 +917,15 @@ function redactUrlCredentials(value: string): string {
   }
 }
 
+function urlHasCredentials(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return Boolean(parsed.username || parsed.password);
+  } catch {
+    return false;
+  }
+}
+
 function applyServiceOverrides(base: ServiceAdminConfig, overrides: ServiceConfigUpdate): ServiceAdminConfig {
   return {
     ...base,
@@ -726,19 +933,35 @@ function applyServiceOverrides(base: ServiceAdminConfig, overrides: ServiceConfi
     gateway: { ...base.gateway, ...overrides.gateway },
     syncer: { ...base.syncer, ...overrides.syncer },
     qdrant: { ...base.qdrant, ...overrides.qdrant },
+    opensearch: { ...base.opensearch, ...overrides.opensearch },
     llm: { ...base.llm, ...overrides.llm },
     embeddings: { ...base.embeddings, ...overrides.embeddings },
   };
 }
 
 function mergeServiceUpdates(current: ServiceConfigUpdate, next: ServiceConfigUpdate): ServiceConfigUpdate {
-  return {
+  const merged = {
     mediaWiki: { ...current.mediaWiki, ...next.mediaWiki },
     gateway: { ...current.gateway, ...next.gateway },
     syncer: { ...current.syncer, ...next.syncer },
     qdrant: { ...current.qdrant, ...next.qdrant },
+    opensearch: { ...current.opensearch, ...next.opensearch },
     llm: { ...current.llm, ...next.llm },
     embeddings: { ...current.embeddings, ...next.embeddings },
+  };
+  return normalizeOpenSearchUpdate(merged);
+}
+
+function normalizeOpenSearchUpdate(value: ServiceConfigUpdate): ServiceConfigUpdate {
+  if (!value.opensearch?.enabled) return value;
+  const baseUrl = value.opensearch.baseUrl?.trim();
+  if (baseUrl) return value;
+  return {
+    ...value,
+    opensearch: {
+      ...value.opensearch,
+      baseUrl: DEFAULT_OPENSEARCH_BASE_URL,
+    },
   };
 }
 
@@ -773,6 +996,19 @@ export function buildServiceUrl(baseUrl: string, pathSuffix: string): string {
 async function getRuntimeServiceConfig(): Promise<ServiceAdminConfig> {
   const runtimeConfig = await getRuntimeConfig();
   const database = parseDatabaseUrl(config.databaseUrl);
+  let databaseStatus: Pick<ServiceAdminConfig['database'], 'connectionStatus' | 'migrationStatus' | 'error'> = {
+    connectionStatus: 'ok',
+    migrationStatus: 'ok',
+  };
+  try {
+    await getAdminStore().getJson('__diagnostics__', '__connection__');
+  } catch (err) {
+    databaseStatus = {
+      connectionStatus: 'error',
+      migrationStatus: 'error',
+      error: err instanceof Error ? err.message : 'Unable to verify database connection',
+    };
+  }
   const mediaWikiServiceAuth = await getSyncerMediaWikiServiceAuthStatus(config.syncerBaseUrl)
     .catch((err: unknown) => ({
       configured: false,
@@ -789,6 +1025,7 @@ async function getRuntimeServiceConfig(): Promise<ServiceAdminConfig> {
     database: {
       url: database.redactedUrl,
       dialect: database.dialect,
+      ...databaseStatus,
     },
     mediaWiki: {
       baseUrl: config.mwBaseUrl,
@@ -810,6 +1047,23 @@ async function getRuntimeServiceConfig(): Promise<ServiceAdminConfig> {
     qdrant: {
       url: config.qdrantUrl,
       collection: config.qdrantCollection,
+    },
+    opensearch: {
+      enabled: config.opensearchEnabled,
+      baseUrl: redactUrlCredentials(config.opensearchBaseUrl),
+      indexName: config.opensearchIndexName,
+      usernameConfigured: Boolean(config.opensearchUsername),
+      passwordConfigured: Boolean(config.opensearchPassword),
+      apiKeyConfigured: Boolean(config.opensearchApiKey),
+      authConfigured: Boolean(config.opensearchApiKey || (config.opensearchUsername && config.opensearchPassword) || urlHasCredentials(config.opensearchBaseUrl)),
+      timeoutMs: config.opensearchTimeoutMs,
+      tlsRejectUnauthorized: config.opensearchTlsRejectUnauthorized,
+      analyzer: config.opensearchAnalyzer,
+      fuzzyEnabled: config.opensearchFuzzyEnabled,
+      highlightEnabled: config.opensearchHighlightEnabled,
+      titleBoost: config.opensearchTitleBoost,
+      textBoost: config.opensearchTextBoost,
+      candidateLimit: config.opensearchCandidateLimit,
     },
     llm: {
       baseUrl: config.litellmBaseUrl,
@@ -835,6 +1089,7 @@ export async function getServiceAdminConfig(): Promise<ServiceAdminConfigRespons
   const runtime = await getRuntimeServiceConfig();
   const overrides = await getServiceOverrides();
   const values = applyServiceOverrides(runtime, overrides);
+  values.opensearch.baseUrl = redactUrlCredentials(values.opensearch.baseUrl);
   values.embeddings.apiKeyConfigured = values.embeddings.provider === 'openai_compatible'
     ? Boolean(config.litellmApiKey)
     : false;
@@ -851,6 +1106,7 @@ export async function getServiceAdminConfig(): Promise<ServiceAdminConfigRespons
         'gateway.port',
         'syncer.baseUrl',
         'qdrant',
+        'opensearch.auth',
         'embeddings',
       ],
       note: 'LLM and embedding runtime calls use saved overrides with env fallback. Infrastructure settings such as database, ports and MediaWiki extension URLs can still require restart or LocalSettings.php changes.',
@@ -868,6 +1124,38 @@ export async function setServiceAdminConfig(input: unknown, actor?: string): Pro
     entityType: SERVICE_CONFIG_AREA,
   });
   return getServiceAdminConfig();
+}
+
+export async function getEffectiveOpenSearchConfig(): Promise<EffectiveOpenSearchConfig> {
+  const overrides = await getServiceOverrides();
+  const username = config.opensearchUsername || undefined;
+  const password = config.opensearchPassword || undefined;
+  const apiKey = config.opensearchApiKey || undefined;
+  const enabled = overrides.opensearch?.enabled ?? config.opensearchEnabled;
+  const configuredBaseUrl = overrides.opensearch?.baseUrl ?? config.opensearchBaseUrl;
+  const baseUrl = enabled && configuredBaseUrl.trim().length === 0
+    ? DEFAULT_OPENSEARCH_BASE_URL
+    : configuredBaseUrl;
+  return {
+    enabled,
+    baseUrl,
+    indexName: overrides.opensearch?.indexName ?? config.opensearchIndexName,
+    usernameConfigured: Boolean(username),
+    passwordConfigured: Boolean(password),
+    apiKeyConfigured: Boolean(apiKey),
+    authConfigured: Boolean(apiKey || (username && password) || urlHasCredentials(baseUrl)),
+    timeoutMs: overrides.opensearch?.timeoutMs ?? config.opensearchTimeoutMs,
+    tlsRejectUnauthorized: overrides.opensearch?.tlsRejectUnauthorized ?? config.opensearchTlsRejectUnauthorized,
+    analyzer: overrides.opensearch?.analyzer ?? config.opensearchAnalyzer,
+    fuzzyEnabled: overrides.opensearch?.fuzzyEnabled ?? config.opensearchFuzzyEnabled,
+    highlightEnabled: overrides.opensearch?.highlightEnabled ?? config.opensearchHighlightEnabled,
+    titleBoost: overrides.opensearch?.titleBoost ?? config.opensearchTitleBoost,
+    textBoost: overrides.opensearch?.textBoost ?? config.opensearchTextBoost,
+    candidateLimit: overrides.opensearch?.candidateLimit ?? config.opensearchCandidateLimit,
+    username,
+    password,
+    apiKey,
+  };
 }
 
 async function saveServiceOverrides(
@@ -902,6 +1190,8 @@ export async function getEffectiveLlmConfig(): Promise<EffectiveLlmConfig> {
     maxTokens: runtime.maxTokens,
     showSources: runtime.showSources,
     systemPrompt: runtime.systemPrompt,
+    searchHistoryEnabled: runtime.searchHistoryEnabled,
+    searchHistoryLimit: runtime.searchHistoryLimit,
   };
 }
 
@@ -933,6 +1223,8 @@ export async function setLlmAdminConfig(input: unknown, actor?: string): Promise
     maxTokens: patch.maxTokens,
     showSources: patch.showSources,
     systemPrompt: patch.systemPrompt,
+    searchHistoryEnabled: patch.searchHistoryEnabled,
+    searchHistoryLimit: patch.searchHistoryLimit,
   }));
 
   return getLlmAdminConfig();
@@ -1024,6 +1316,24 @@ function normalizeNamespaceAcl(
   return defaultNamespaceAcl(namespaces);
 }
 
+function defaultIndexTargets(input: {
+  attachmentsEnabled?: boolean;
+  semanticFactsEnabled?: boolean;
+  ontologyVectorsEnabled?: boolean;
+  colbertEnabled?: boolean;
+  opensearchEnabled?: boolean;
+}): string[] {
+  return [
+    'dense',
+    'bm25',
+    ...(input.colbertEnabled ? ['colbert'] : []),
+    ...(input.opensearchEnabled ? ['opensearch'] : []),
+    ...(input.attachmentsEnabled ? ['attachments'] : []),
+    ...(input.semanticFactsEnabled !== false ? ['semanticFacts'] : []),
+    ...(input.ontologyVectorsEnabled ? ['ontologyVectors'] : []),
+  ];
+}
+
 async function getDefaultIndexingProfile(): Promise<IndexingProfile> {
   const rag = await getRagAdminConfig();
   const now = new Date().toISOString();
@@ -1039,6 +1349,13 @@ async function getDefaultIndexingProfile(): Promise<IndexingProfile> {
     categoryFilters: { include: [], exclude: [] },
     documentPolicyId: 'default',
     runMode: 'manual',
+    indexTargets: defaultIndexTargets({
+      attachmentsEnabled: rag.includeAttachments,
+      semanticFactsEnabled: true,
+      ontologyVectorsEnabled: false,
+      colbertEnabled: rag.colbertEnabled,
+      opensearchEnabled: rag.lexicalBackend === 'opensearch',
+    }),
     attachmentsEnabled: rag.includeAttachments,
     semanticFactsEnabled: true,
     ontologyVectorsEnabled: false,
@@ -1052,15 +1369,19 @@ async function getDefaultIndexingProfile(): Promise<IndexingProfile> {
 }
 
 function normalizeLegacyDefaultIndexingProfile(profile: IndexingProfile): IndexingProfile {
+  const normalized: IndexingProfile = {
+    ...profile,
+    indexTargets: profile.indexTargets ?? defaultIndexTargets(profile),
+  };
   if (
-    profile.id === 'default'
-    && profile.name === 'Default env profile'
-    && profile.maxPagesDefault === 10
+    normalized.id === 'default'
+    && normalized.name === 'Default env profile'
+    && normalized.maxPagesDefault === 10
   ) {
-    const { maxPagesDefault: _legacyLimit, ...withoutLegacyLimit } = profile;
+    const { maxPagesDefault: _legacyLimit, ...withoutLegacyLimit } = normalized;
     return withoutLegacyLimit;
   }
-  return profile;
+  return normalized;
 }
 
 export async function getIndexingProfiles(): Promise<IndexingProfile[]> {
@@ -1075,6 +1396,9 @@ export async function upsertIndexingProfile(input: unknown, actor?: string): Pro
   const now = new Date().toISOString();
   const existing = parsed.id ? profiles.find((profile) => profile.id === parsed.id) : undefined;
   const id = parsed.id ?? profileIdFromName(parsed.name);
+  const attachmentsEnabled = parsed.attachmentsEnabled ?? existing?.attachmentsEnabled ?? false;
+  const semanticFactsEnabled = parsed.semanticFactsEnabled ?? existing?.semanticFactsEnabled ?? true;
+  const ontologyVectorsEnabled = parsed.ontologyVectorsEnabled ?? existing?.ontologyVectorsEnabled ?? false;
 
   const profile: IndexingProfile = {
     id,
@@ -1088,9 +1412,14 @@ export async function upsertIndexingProfile(input: unknown, actor?: string): Pro
     documentPolicyId: parsed.documentPolicyId ?? existing?.documentPolicyId ?? 'default',
     runMode: parsed.runMode ?? existing?.runMode ?? 'manual',
     scheduleIntervalMinutes: parsed.scheduleIntervalMinutes ?? existing?.scheduleIntervalMinutes,
-    attachmentsEnabled: parsed.attachmentsEnabled ?? existing?.attachmentsEnabled ?? false,
-    semanticFactsEnabled: parsed.semanticFactsEnabled ?? existing?.semanticFactsEnabled ?? true,
-    ontologyVectorsEnabled: parsed.ontologyVectorsEnabled ?? existing?.ontologyVectorsEnabled ?? false,
+    indexTargets: parsed.indexTargets ?? existing?.indexTargets ?? defaultIndexTargets({
+      attachmentsEnabled,
+      semanticFactsEnabled,
+      ontologyVectorsEnabled,
+    }),
+    attachmentsEnabled,
+    semanticFactsEnabled,
+    ontologyVectorsEnabled,
     chunkSize: parsed.chunkSize ?? existing?.chunkSize ?? (await getRagAdminConfig()).chunkSize,
     chunkOverlap: parsed.chunkOverlap ?? existing?.chunkOverlap ?? (await getRagAdminConfig()).chunkOverlap,
     chunkSeparators: parsed.chunkSeparators ?? existing?.chunkSeparators ?? (await getRagAdminConfig()).chunkSeparators,
@@ -1133,6 +1462,10 @@ export async function applyIndexingProfileToReindexRequest(
 
   return {
     profileId: profile.id,
+    indexTargets: input.indexTargets ?? profile.indexTargets,
+    source: input.source,
+    colbertModel: input.colbertModel,
+    colbertCollection: input.colbertCollection,
     attachmentsEnabled: input.attachmentsEnabled ?? profile.attachmentsEnabled,
     semanticFactsEnabled,
     smwProperties,
@@ -1172,10 +1505,19 @@ export async function getRagAdminConfig(): Promise<RagAdminConfig> {
     rerankMode: 'none',
     vectorWeight: 0.65,
     lexicalWeight: 0.35,
+    lexicalBackend: 'sqlite_fts',
     vectorCandidateLimit: 50,
     lexicalCandidateLimit: 50,
     lexicalMinMatchedTerms: 2,
     lexicalGateMode: 'when_bm25_available',
+    lexicalNormalizationMode: 'simple_stem',
+    lexicalSynonymsEnabled: false,
+    lexicalSynonyms: [],
+    lexicalTransliterationEnabled: false,
+    lexicalEditDistanceEnabled: false,
+    trigramIndexEnabled: false,
+    trigramCandidateLimit: 50,
+    trigramMinQueryLength: 4,
     vectorOnlyFallbackEnabled: true,
     vectorOnlyFallbackMinScore: 0.78,
     minFinalScore: 0,
@@ -1204,6 +1546,14 @@ export async function previewRagAdminConfig(input: unknown): Promise<RagAdminCon
 
 export async function setRagAdminConfig(input: unknown, actor?: string): Promise<RagAdminConfig> {
   const updated = await previewRagAdminConfig(input);
+  if (updated.trigramIndexEnabled) {
+    const status = await getSearchIndexStatus();
+    if (!status.trigramPopulated) {
+      throw new Error(
+        'trigram_index_not_ready: run trigram backfill and wait for 100% index coverage before enabling trigramIndexEnabled'
+      );
+    }
+  }
 
   await getAdminStore().setJson(RAG_CONFIG_AREA, DEFAULT_KEY, updated, {
     actor,
@@ -1218,6 +1568,231 @@ export async function setRagAdminConfig(input: unknown, actor?: string): Promise
   });
 
   return updated;
+}
+
+function retrievalProfileConfigFromRag(
+  rag: RagAdminConfig,
+  overrides: Partial<RetrievalProfileOverrides> = {}
+): RetrievalProfileOverrides {
+  return retrievalProfileConfigSchema.parse({
+    topK: rag.topK,
+    searchMode: rag.searchMode,
+    rerankMode: rag.rerankMode,
+    vectorWeight: rag.vectorWeight,
+    lexicalWeight: rag.lexicalWeight,
+    lexicalBackend: rag.lexicalBackend,
+    vectorCandidateLimit: rag.vectorCandidateLimit,
+    lexicalCandidateLimit: rag.lexicalCandidateLimit,
+    lexicalMinMatchedTerms: rag.lexicalMinMatchedTerms,
+    lexicalGateMode: rag.lexicalGateMode,
+    lexicalNormalizationMode: rag.lexicalNormalizationMode,
+    lexicalSynonymsEnabled: rag.lexicalSynonymsEnabled,
+    lexicalSynonyms: rag.lexicalSynonyms,
+    lexicalTransliterationEnabled: rag.lexicalTransliterationEnabled,
+    lexicalEditDistanceEnabled: rag.lexicalEditDistanceEnabled,
+    trigramIndexEnabled: rag.trigramIndexEnabled,
+    trigramCandidateLimit: rag.trigramCandidateLimit,
+    trigramMinQueryLength: rag.trigramMinQueryLength,
+    vectorOnlyFallbackEnabled: rag.vectorOnlyFallbackEnabled,
+    vectorOnlyFallbackMinScore: rag.vectorOnlyFallbackMinScore,
+    minFinalScore: rag.minFinalScore,
+    showRawScores: rag.showRawScores,
+    colbertEnabled: rag.colbertEnabled,
+    colbertCandidateLimit: rag.colbertCandidateLimit,
+    colbertTimeoutMs: rag.colbertTimeoutMs,
+    colbertMinScore: rag.colbertMinScore,
+    colbertFailMode: rag.colbertFailMode,
+    semanticFactsInContext: rag.semanticFactsInContext,
+    includeAttachments: rag.includeAttachments,
+    includeSemanticHeader: rag.includeSemanticHeader,
+    ...overrides,
+  });
+}
+
+export async function getDefaultRetrievalProfiles(): Promise<RetrievalProfile[]> {
+  const rag = await getRagAdminConfig();
+  const now = new Date().toISOString();
+  const base = (id: string, name: string, description: string, overrides: Partial<RetrievalProfileOverrides>, tags: string[]): RetrievalProfile => ({
+    id,
+    name,
+    description,
+    enabled: true,
+    apiEnabled: true,
+    mcpEnabled: true,
+    anonymousAllowed: false,
+    maxTopK: 20,
+    tags,
+    config: retrievalProfileConfigFromRag(rag, overrides),
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  return [
+    base('current_hybrid', 'Current hybrid stack', 'Qdrant dense search plus the current SQLite/Postgres BM25 and optional trigram lexical layer.', {
+      searchMode: 'hybrid',
+      rerankMode: 'none',
+      lexicalBackend: 'sqlite_fts',
+      vectorWeight: 0.65,
+      lexicalWeight: 0.35,
+      lexicalGateMode: 'when_bm25_available',
+      lexicalMinMatchedTerms: 2,
+      colbertEnabled: false,
+      colbertFailMode: 'fallback_current',
+    }, ['current', 'qdrant', 'bm25']),
+    base('current_hybrid_colbert', 'Current hybrid + ColBERT', 'Current Qdrant/BM25 stack with ColBERT rerank. Use when the production contour requires ColBERT.', {
+      searchMode: 'hybrid_colbert',
+      rerankMode: 'colbert_v2',
+      lexicalBackend: 'sqlite_fts',
+      vectorWeight: 0.65,
+      lexicalWeight: 0.35,
+      lexicalGateMode: 'when_bm25_available',
+      lexicalMinMatchedTerms: 2,
+      colbertEnabled: true,
+      colbertFailMode: 'fail_search',
+    }, ['current', 'hybrid', 'colbert']),
+    base('opensearch_hybrid', 'OpenSearch hybrid stack', 'Qdrant dense search plus OpenSearch relevance layer for language analyzers, fuzzy matching and highlights.', {
+      searchMode: 'hybrid',
+      rerankMode: 'none',
+      lexicalBackend: 'opensearch',
+      vectorWeight: 0.55,
+      lexicalWeight: 0.45,
+      lexicalGateMode: 'when_bm25_available',
+      lexicalMinMatchedTerms: 1,
+      vectorOnlyFallbackEnabled: true,
+      colbertEnabled: false,
+      colbertFailMode: 'fallback_current',
+    }, ['opensearch', 'hybrid']),
+    base('opensearch_hybrid_colbert', 'OpenSearch hybrid + ColBERT', 'OpenSearch relevance layer with ColBERT rerank for production-grade expert retrieval.', {
+      searchMode: 'hybrid_colbert',
+      rerankMode: 'colbert_v2',
+      lexicalBackend: 'opensearch',
+      vectorWeight: 0.55,
+      lexicalWeight: 0.45,
+      lexicalGateMode: 'when_bm25_available',
+      lexicalMinMatchedTerms: 1,
+      colbertEnabled: true,
+      colbertFailMode: 'fail_search',
+    }, ['opensearch', 'hybrid', 'colbert']),
+    base('prod_hybrid_colbert', 'Production hybrid + ColBERT', 'BM25 gate, dense semantic search and ColBERT rerank for production-facing scenarios.', {
+      searchMode: 'hybrid_colbert',
+      rerankMode: 'colbert_v2',
+      lexicalBackend: 'sqlite_fts',
+      vectorWeight: 0.65,
+      lexicalWeight: 0.35,
+      lexicalGateMode: 'when_bm25_available',
+      lexicalMinMatchedTerms: 2,
+      colbertEnabled: true,
+      colbertFailMode: 'fail_search',
+    }, ['production', 'hybrid', 'colbert']),
+    base('lexical_exact', 'Exact lexical / BM25', 'BM25-first profile for exact system names, terms, titles and instructions.', {
+      searchMode: 'hybrid',
+      rerankMode: 'none',
+      lexicalBackend: 'sqlite_fts',
+      vectorWeight: 0.25,
+      lexicalWeight: 0.75,
+      lexicalGateMode: 'when_bm25_available',
+      lexicalMinMatchedTerms: 2,
+      vectorOnlyFallbackEnabled: false,
+      colbertEnabled: false,
+      colbertFailMode: 'fallback_current',
+    }, ['bm25', 'exact']),
+    base('semantic_broad', 'Broad semantic hybrid', 'Dense-vector leaning profile for broad exploratory questions with BM25 as a weaker signal.', {
+      searchMode: 'hybrid',
+      rerankMode: 'none',
+      lexicalBackend: 'sqlite_fts',
+      vectorWeight: 0.8,
+      lexicalWeight: 0.2,
+      lexicalGateMode: 'off',
+      lexicalMinMatchedTerms: 1,
+      vectorOnlyFallbackEnabled: true,
+      colbertEnabled: false,
+      colbertFailMode: 'fallback_current',
+    }, ['semantic', 'hybrid']),
+    base('typo_tolerant_experimental', 'Typo tolerant experimental', 'BM25 profile with editDistance enabled; trigram can be enabled after trigram backfill readiness.', {
+      searchMode: 'hybrid',
+      rerankMode: 'none',
+      lexicalBackend: 'sqlite_fts',
+      vectorWeight: 0.45,
+      lexicalWeight: 0.55,
+      lexicalGateMode: 'when_bm25_available',
+      lexicalEditDistanceEnabled: true,
+      trigramIndexEnabled: rag.trigramIndexEnabled,
+      colbertEnabled: false,
+      colbertFailMode: 'fallback_current',
+    }, ['experimental', 'typo']),
+    base('colbert_full_strict', 'Strict ColBERT full search', 'ColBERT-first profile for expert comparison and late-interaction index checks.', {
+      searchMode: 'colbert_full',
+      rerankMode: 'none',
+      lexicalBackend: 'sqlite_fts',
+      colbertEnabled: true,
+      colbertFailMode: 'fail_search',
+      vectorOnlyFallbackEnabled: false,
+    }, ['colbert', 'strict']),
+  ];
+}
+
+function normalizeRetrievalProfile(profile: RetrievalProfile): RetrievalProfile {
+  const configRecord = profile.config as unknown as Record<string, unknown>;
+  return {
+    ...profile,
+    tags: profile.tags ?? [],
+    config: retrievalProfileConfigSchema.parse({
+      ...configRecord,
+      lexicalBackend: typeof configRecord.lexicalBackend === 'string'
+        ? configRecord.lexicalBackend
+        : 'sqlite_fts',
+    }),
+  };
+}
+
+export async function getRetrievalProfiles(): Promise<RetrievalProfile[]> {
+  const stored = await getAdminStore().getJson<RetrievalProfile[]>(RETRIEVAL_PROFILE_AREA, DEFAULT_KEY);
+  if (stored && stored.length > 0) return stored.map(normalizeRetrievalProfile);
+  return getDefaultRetrievalProfiles();
+}
+
+export async function upsertRetrievalProfile(input: unknown, actor?: string): Promise<RetrievalProfile> {
+  const parsed = retrievalProfileInputSchema.parse(input);
+  const profiles = await getRetrievalProfiles();
+  const now = new Date().toISOString();
+  const id = parsed.id ?? profileIdFromName(parsed.name);
+  const existing = profiles.find((profile) => profile.id === id);
+  const profile: RetrievalProfile = {
+    id,
+    name: parsed.name,
+    description: parsed.description ?? existing?.description ?? '',
+    enabled: parsed.enabled ?? existing?.enabled ?? true,
+    apiEnabled: parsed.apiEnabled ?? existing?.apiEnabled ?? true,
+    mcpEnabled: parsed.mcpEnabled ?? existing?.mcpEnabled ?? true,
+    anonymousAllowed: parsed.anonymousAllowed ?? existing?.anonymousAllowed ?? false,
+    maxTopK: parsed.maxTopK ?? existing?.maxTopK ?? 20,
+    tags: parsed.tags ?? existing?.tags ?? [],
+    config: parsed.config,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+  };
+  const updatedProfiles = [
+    ...profiles.filter((item) => item.id !== id),
+    profile,
+  ].sort((a, b) => a.name.localeCompare(b.name));
+
+  await getAdminStore().setJson(RETRIEVAL_PROFILE_AREA, DEFAULT_KEY, updatedProfiles, {
+    actor,
+    action: existing ? 'retrieval-profile.update' : 'retrieval-profile.create',
+    entityType: RETRIEVAL_PROFILE_AREA,
+  });
+
+  return profile;
+}
+
+export async function restoreDefaultRetrievalProfiles(actor?: string): Promise<RetrievalProfile[]> {
+  const profiles = await getDefaultRetrievalProfiles();
+  await getAdminStore().setJson(RETRIEVAL_PROFILE_AREA, DEFAULT_KEY, profiles, {
+    actor,
+    action: 'retrieval-profile.restore-defaults',
+    entityType: RETRIEVAL_PROFILE_AREA,
+  });
+  return profiles;
 }
 
 export async function getWebhookAdminConfig(): Promise<WebhookAdminConfig> {

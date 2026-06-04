@@ -9,6 +9,7 @@ import {
   getChatRetentionAdminConfig,
   getRagAdminConfig,
   type ChatRetentionConfig,
+  type RagAdminConfig,
 } from './admin-platform-config.js';
 import { applyTrustPolicyToChunks } from './trust-runtime.js';
 import { buildConflictInstruction, detectConflictsForChat } from './conflict-detection.js';
@@ -29,6 +30,11 @@ import { principalSessionHash } from './principal-auth.js';
 import { RuntimeHttpError } from './runtime-errors.js';
 import { logOperationalError } from './logging.js';
 import { AuthenticatedPrincipal, SearchChunk } from '../types/index.js';
+import {
+  resolveRuntimeRetrievalProfile,
+  type RetrievalProfileSurface,
+  type ResolvedRetrievalProfile,
+} from './retrieval-profiles.js';
 
 type RetrievalHistoryMessage = { role: string; content: string };
 type LlmMessage = { role: string; content: string };
@@ -41,6 +47,8 @@ export interface RuntimeChatInput {
   topK?: number;
   maxTopK?: number;
   aclMode?: PrincipalAclMode;
+  retrievalProfileId?: string;
+  retrievalProfileSurface?: RetrievalProfileSurface;
 }
 
 export interface RuntimeChatSource {
@@ -62,6 +70,7 @@ export interface PreparedRuntimeChat {
   messages: LlmMessage[];
   sources: RuntimeChatSource[];
   conflict: Awaited<ReturnType<typeof detectConflictsForChat>>;
+  retrievalDiagnostics: Record<string, unknown>;
 }
 
 export interface RuntimeChatCompletionResponse {
@@ -69,6 +78,7 @@ export interface RuntimeChatCompletionResponse {
   message: string;
   sources?: RuntimeChatSource[];
   conflict?: PreparedRuntimeChat['conflict'];
+  diagnostics?: Record<string, unknown>;
   llmAvailable?: boolean;
 }
 
@@ -104,6 +114,13 @@ export function buildChatRetrievalQuery(
   return result.length <= maxChars ? result : result.slice(0, maxChars).trimEnd();
 }
 
+function countRetrievalHistoryMessages(history: RetrievalHistoryMessage[]): number {
+  return history
+    .filter((historyMessage) => historyMessage.role === 'user' || historyMessage.role === 'assistant')
+    .slice(-4)
+    .length;
+}
+
 function clampTopK(topK: number | undefined, maxTopK: number | undefined): number | undefined {
   if (topK === undefined) return undefined;
   const normalized = Math.max(1, Math.trunc(topK));
@@ -120,13 +137,19 @@ function chunkToSource(chunk: SearchChunk, wikiUrlOptions: WikiPageUrlOptions): 
   };
 }
 
-async function runCurrentSearch(query: string, topK: number | undefined, fallbackTopK: number): Promise<RagSearchResult> {
+async function runCurrentSearch(
+  query: string,
+  topK: number | undefined,
+  fallbackTopK: number,
+  config?: RagAdminConfig
+): Promise<RagSearchResult> {
   const embedding = await getEmbedding(query);
   return searchRagChunks({
     query,
     vector: embedding,
     topK,
     fallbackTopK,
+    ...(config ? { config } : {}),
   });
 }
 
@@ -134,10 +157,11 @@ async function runSearchWithColbertFallback(input: {
   query: string;
   topK?: number;
   fallbackTopK: number;
+  config?: RagAdminConfig;
 }): Promise<RagSearchResult | Awaited<ReturnType<typeof searchColbertIndex>>> {
-  const ragConfig = await getRagAdminConfig();
+  const ragConfig = input.config ?? await getRagAdminConfig();
   if (!isColbertFullSearchEnabled(ragConfig)) {
-    return runCurrentSearch(input.query, input.topK, input.fallbackTopK);
+    return runCurrentSearch(input.query, input.topK, input.fallbackTopK, input.config);
   }
 
   try {
@@ -154,7 +178,16 @@ async function runSearchWithColbertFallback(input: {
         message: err instanceof Error ? err.message : 'Unknown ColBERT search error',
       });
     }
-    return runCurrentSearch(input.query, input.topK, input.fallbackTopK);
+    const fallback = await runCurrentSearch(input.query, input.topK, input.fallbackTopK, input.config);
+    return {
+      ...fallback,
+      diagnostics: {
+        ...fallback.diagnostics,
+        colbertIndexApplied: false,
+        colbertFallbackUsed: true,
+        colbertError: err instanceof Error ? err.message : 'Unknown ColBERT search error',
+      },
+    };
   }
 }
 
@@ -170,6 +203,19 @@ async function filterRuntimeReadableChunks(input: {
   return filterReadableChunksForPrincipal(input.chunks, input.principal, input.limit, input.aclMode);
 }
 
+function profileDiagnostics(selection: ResolvedRetrievalProfile | undefined): Record<string, unknown> {
+  if (!selection) return { retrievalProfileId: null };
+  return {
+    retrievalProfileId: selection.profile.id,
+    retrievalProfileReadiness: selection.readiness.status,
+    retrievalProfileReasons: selection.readiness.reasons,
+    retrievalProfileRequiredIndexTargets: selection.readiness.requiredIndexTargets ?? [],
+    retrievalProfileMissingIndexTargets: selection.readiness.missingIndexTargets ?? [],
+    effectiveSearchMode: selection.effectiveConfig.searchMode,
+    effectiveLexicalBackend: selection.effectiveConfig.lexicalBackend,
+  };
+}
+
 export async function prepareRuntimeChat(input: RuntimeChatInput): Promise<PreparedRuntimeChat> {
   const message = input.message.trim();
   const convId = input.conversationId ?? `${input.principal.userId}-${Date.now()}`;
@@ -177,6 +223,10 @@ export async function prepareRuntimeChat(input: RuntimeChatInput): Promise<Prepa
   const runtime = await getRuntimeConfig();
   const chatRetention = await getChatRetentionAdminConfig();
   const chatTtlSeconds = calculateChatRetentionRedisTtlSeconds(chatRetention);
+  const profileSelection = await resolveRuntimeRetrievalProfile(
+    input.retrievalProfileId,
+    input.retrievalProfileSurface ?? 'api'
+  );
 
   const sqlHistory = await getSqlChatHistory(sessionHash, convId, input.principal.userId);
   const fullHistory = sqlHistory.length > 0 ? sqlHistory : await getChatHistory(sessionHash, convId);
@@ -202,12 +252,17 @@ export async function prepareRuntimeChat(input: RuntimeChatInput): Promise<Prepa
     logOperationalError('chat.sql_user_history_write_error', err);
   }
 
-  const ragConfig = await getRagAdminConfig();
-  const topK = clampTopK(input.topK, input.maxTopK);
+  const ragConfig = profileSelection?.effectiveConfig ?? await getRagAdminConfig();
+  const topKLimit = profileSelection
+    ? Math.min(input.maxTopK ?? profileSelection.profile.maxTopK, profileSelection.profile.maxTopK)
+    : input.maxTopK;
+  const topK = clampTopK(input.topK, topKLimit);
+  const fallbackTopK = profileSelection?.effectiveConfig.topK ?? runtime.topK;
   const search = await runSearchWithColbertFallback({
     query: retrievalQuery,
     topK,
-    fallbackTopK: runtime.topK,
+    fallbackTopK,
+    config: profileSelection?.effectiveConfig,
   });
   const aclMode = input.aclMode ?? 'mediawiki_check';
   const readableChunks = await filterRuntimeReadableChunks({
@@ -230,6 +285,12 @@ export async function prepareRuntimeChat(input: RuntimeChatInput): Promise<Prepa
 
   const sources = verifiedChunks.map((chunk) => chunkToSource(chunk, input.wikiUrlOptions ?? {}));
   const conflict = await detectConflictsForChat(retrievalQuery, verifiedChunks);
+  const diagnostics = isColbertFullSearchEnabled(ragConfig)
+    ? search.diagnostics
+    : {
+      ...search.diagnostics,
+      ...reranked.diagnostics,
+    };
 
   await appendChatMessage(sessionHash, convId, { role: 'user', content: message }, chatTtlSeconds);
 
@@ -253,6 +314,22 @@ export async function prepareRuntimeChat(input: RuntimeChatInput): Promise<Prepa
     messages,
     sources,
     conflict,
+    retrievalDiagnostics: {
+      ...diagnostics,
+      ...profileDiagnostics(profileSelection),
+      aclMode,
+      authMode: input.principal.authMode,
+      originalMessage: message,
+      retrievalQuery,
+      historyMessagesUsed: countRetrievalHistoryMessages(history),
+      requestedTopK: input.topK ?? null,
+      effectiveTopK: topK ?? fallbackTopK,
+      searchMode: search.mode,
+      rawChunks: search.chunks.length,
+      readableChunks: readableChunks.length,
+      trustedChunks: trustedChunks.length,
+      finalSources: sources.length,
+    },
   };
 }
 
@@ -288,6 +365,7 @@ export async function completeRuntimeChat(prepared: PreparedRuntimeChat): Promis
       message: content,
       sources: prepared.runtime.showSources ? prepared.sources : undefined,
       conflict: prepared.conflict ?? undefined,
+      diagnostics: prepared.retrievalDiagnostics,
     };
   } catch (err) {
     logOperationalError('chat.non_streaming_error', err);
@@ -297,6 +375,7 @@ export async function completeRuntimeChat(prepared: PreparedRuntimeChat): Promis
       message: 'AI model temporarily unavailable. Here are the found documents:',
       sources: prepared.sources,
       conflict: prepared.conflict ?? undefined,
+      diagnostics: prepared.retrievalDiagnostics,
     };
   }
 }
@@ -313,6 +392,8 @@ export async function streamRuntimeChat(
     if (prepared.conflict) {
       writeEvent({ type: 'conflict', conflict: prepared.conflict });
     }
+
+    writeEvent({ type: 'diagnostics', diagnostics: prepared.retrievalDiagnostics });
 
     for await (const chunk of streamChatCompletion(
       prepared.messages,

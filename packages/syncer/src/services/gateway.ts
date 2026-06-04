@@ -47,6 +47,9 @@ export interface SearchIndexChunkNotification {
   totalChunks: number;
   sourceType?: string;
   attachmentFilename?: string;
+  mimeType?: string;
+  processingMode?: string;
+  contentType?: string;
 }
 
 export interface SearchIndexPageNotification {
@@ -56,6 +59,9 @@ export interface SearchIndexPageNotification {
   allowedGroups: string[];
   lastModified: string;
   replacePage?: boolean;
+  indexTargets?: string[];
+  colbertModel?: string;
+  colbertCollection?: string;
   chunks: SearchIndexChunkNotification[];
 }
 
@@ -278,6 +284,11 @@ export async function fetchEffectiveEmbeddingConfig(): Promise<EffectiveEmbeddin
   const body = await fetchGatewayJson<{ values?: EffectiveEmbeddingConfigResult }>('/api/internal/embedding/config');
   if (!body.values) throw new Error('Gateway embedding config response is empty');
   return body.values;
+}
+
+export async function fetchIndexingProfiles(): Promise<unknown[]> {
+  const body = await fetchGatewayJson<{ values?: unknown }>('/api/internal/indexing-profiles');
+  return Array.isArray(body.values) ? body.values : [];
 }
 
 export async function fetchGatewayEmbedding(text: string): Promise<GatewayEmbeddingResult> {

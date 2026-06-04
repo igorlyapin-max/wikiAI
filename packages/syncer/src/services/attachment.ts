@@ -1,5 +1,6 @@
 import { DocumentProcessingConfig, getMimeProcessingRule, MimeProcessingRule } from './document-policy.js';
 import { logOperationalError } from './logging.js';
+import { extractOfficeAttachmentText, isOfficeTextMimeType } from './office-extractor.js';
 
 export interface AttachmentResult {
   text: string;
@@ -7,8 +8,11 @@ export interface AttachmentResult {
 }
 
 export function getMetadataText(filename: string, mimeType: string, metadata: Record<string, unknown>): string {
-  const size = typeof metadata.size === 'number' ? `, ${metadata.size} bytes` : '';
-  return `Attachment metadata: ${filename} (${mimeType}${size})`;
+  const size = typeof metadata.size === 'number' ? `${metadata.size} bytes` : 'unknown size';
+  const mode = typeof metadata.mode === 'string' ? metadata.mode : 'metadata';
+  const format = typeof metadata.format === 'string' ? `, format: ${metadata.format}` : '';
+  const error = typeof metadata.error === 'string' ? `, processing error: ${metadata.error}` : '';
+  return `Attachment metadata: ${filename}; MIME: ${mimeType}; size: ${size}; processing mode: ${mode}${format}${error}`;
 }
 
 export async function processAttachment(
@@ -27,6 +31,19 @@ export async function processAttachment(
 
   if (rule.maxBytes !== undefined && buffer.length > rule.maxBytes) {
     return { text: '', metadata: { ...metadata, error: 'max_bytes_exceeded' } };
+  }
+
+  if (rule.mode === 'text' && isOfficeTextMimeType(mimeType)) {
+    try {
+      const result = extractOfficeAttachmentText(buffer, mimeType);
+      return {
+        text: result.text,
+        metadata: { ...metadata, ...result.metadata },
+      };
+    } catch (err) {
+      logOperationalError('attachment.office_extract_error', err, { filename, mimeType });
+      return { text: '', metadata: { ...metadata, error: 'office_extract_failed' } };
+    }
   }
 
   if (mimeType === 'application/pdf' && rule.mode === 'text') {

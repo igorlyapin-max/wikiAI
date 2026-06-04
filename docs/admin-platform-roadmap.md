@@ -34,6 +34,7 @@
 - [x] Сохранить объединенный roadmap в `docs/admin-platform-roadmap.md`.
 - [x] Добавить `DATABASE_URL` с default `sqlite://./state/wiki-ai.sqlite`.
 - [x] Добавить SQLite/Postgres-compatible DAL interfaces.
+- [x] Реализовать Postgres adapter для admin/chat/config state и internal Syncer profile lookup через Gateway API.
 - [x] Добавить миграции для базовых admin tables.
 - [x] Подключить audit log для реализованных admin mutations.
 - [x] Оставить Redis fallback для уже существующих runtime settings.

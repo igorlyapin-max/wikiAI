@@ -1,5 +1,10 @@
 import { z } from 'zod';
-import { getAdminSqliteDatabase, getAdminStore } from '../db/admin-store.js';
+import {
+  getAdminPostgresStore,
+  getAdminSqliteDatabase,
+  getAdminStore,
+  isPostgresDatabase,
+} from '../db/admin-store.js';
 import { callLiteLLM } from './litellm.js';
 import { getOntologyProperties, OntologyProperty } from './ontology-vectors.js';
 
@@ -186,7 +191,7 @@ function rowToRecord(row: {
   confidence: number | null;
   reason: string | null;
   evidence: string | null;
-  updated_at: string;
+  updated_at: Date | string;
 }): SemanticAutofillFieldRecord {
   return {
     pageId: row.page_id,
@@ -200,7 +205,7 @@ function rowToRecord(row: {
     confidence: row.confidence ?? undefined,
     reason: row.reason ?? undefined,
     evidence: row.evidence ?? undefined,
-    updatedAt: row.updated_at,
+    updatedAt: row.updated_at instanceof Date ? row.updated_at.toISOString() : row.updated_at,
   };
 }
 
@@ -293,6 +298,20 @@ function buildExtractionPrompt(input: {
 }
 
 async function loadFieldState(pageId: number): Promise<Map<string, SemanticAutofillFieldRecord>> {
+  if (isPostgresDatabase()) {
+    const pg = await getAdminPostgresStore();
+    const rows = (await pg.query<Parameters<typeof rowToRecord>[0]>(
+      `SELECT page_id, title, property_name, state, current_value, last_ai_value,
+              last_ai_revision_id, last_user_revision_id, confidence, reason, evidence, updated_at
+         FROM ai_smw_autofill_fields
+        WHERE page_id = $1`,
+      [pageId]
+    )).rows;
+    return new Map(rows.map((row) => {
+      const record = rowToRecord(row);
+      return [record.property, record];
+    }));
+  }
   const db = getAdminSqliteDatabase();
   const rows = db
     .prepare(
@@ -308,7 +327,56 @@ async function loadFieldState(pageId: number): Promise<Map<string, SemanticAutof
   }));
 }
 
-function upsertFieldState(input: UpsertFieldStateInput): SemanticAutofillFieldRecord {
+async function upsertFieldState(input: UpsertFieldStateInput): Promise<SemanticAutofillFieldRecord> {
+  if (isPostgresDatabase()) {
+    const pg = await getAdminPostgresStore();
+    const updatedAt = nowIso();
+    await pg.query(
+      `INSERT INTO ai_smw_autofill_fields
+         (page_id, property_name, title, state, current_value, last_ai_value,
+          last_ai_revision_id, last_user_revision_id, confidence, reason, evidence, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       ON CONFLICT(page_id, property_name) DO UPDATE SET
+         title = excluded.title,
+         state = excluded.state,
+         current_value = excluded.current_value,
+         last_ai_value = COALESCE(excluded.last_ai_value, ai_smw_autofill_fields.last_ai_value),
+         last_ai_revision_id = COALESCE(excluded.last_ai_revision_id, ai_smw_autofill_fields.last_ai_revision_id),
+         last_user_revision_id = COALESCE(excluded.last_user_revision_id, ai_smw_autofill_fields.last_user_revision_id),
+         confidence = excluded.confidence,
+         reason = excluded.reason,
+         evidence = excluded.evidence,
+         updated_at = excluded.updated_at`,
+      [
+        input.pageId,
+        input.property,
+        input.title,
+        input.state,
+        input.currentValue ?? null,
+        input.lastAiValue ?? null,
+        input.lastAiRevisionId ?? null,
+        input.lastUserRevisionId ?? null,
+        input.confidence ?? null,
+        input.reason ?? null,
+        input.evidence ?? null,
+        updatedAt,
+      ]
+    );
+    return {
+      pageId: input.pageId,
+      title: input.title,
+      property: input.property,
+      state: input.state,
+      currentValue: input.currentValue,
+      lastAiValue: input.lastAiValue,
+      lastAiRevisionId: input.lastAiRevisionId,
+      lastUserRevisionId: input.lastUserRevisionId,
+      confidence: input.confidence,
+      reason: input.reason,
+      evidence: input.evidence,
+      updatedAt,
+    };
+  }
   const db = getAdminSqliteDatabase();
   const updatedAt = nowIso();
   db.prepare(
@@ -400,19 +468,50 @@ export async function getSemanticAutofillStatus(input?: unknown): Promise<Semant
   const conditions: string[] = [];
   const params: Array<string | number> = [];
   if (parsed?.state) {
-    conditions.push('state = ?');
+    conditions.push(isPostgresDatabase() ? `state = $${params.length + 1}` : 'state = ?');
     params.push(parsed.state);
   }
   if (parsed?.property) {
-    conditions.push('property_name = ?');
+    conditions.push(isPostgresDatabase() ? `property_name = $${params.length + 1}` : 'property_name = ?');
     params.push(parsed.property);
   }
   if (parsed?.title) {
-    conditions.push('title LIKE ?');
+    conditions.push(isPostgresDatabase() ? `title ILIKE $${params.length + 1}` : 'title LIKE ?');
     params.push(`%${parsed.title}%`);
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  if (isPostgresDatabase()) {
+    const pg = await getAdminPostgresStore();
+    const limitParam = params.length + 1;
+    const records = (await pg.query<Parameters<typeof rowToRecord>[0]>(
+      `SELECT page_id, title, property_name, state, current_value, last_ai_value,
+              last_ai_revision_id, last_user_revision_id, confidence, reason, evidence, updated_at
+         FROM ai_smw_autofill_fields
+         ${where}
+        ORDER BY updated_at DESC
+        LIMIT $${limitParam}`,
+      [...params, limit]
+    )).rows;
+    const summaryRows = (await pg.query<{ state: string; count: string | number }>(
+      'SELECT state, COUNT(*) AS count FROM ai_smw_autofill_fields GROUP BY state'
+    )).rows;
+    const summary: Record<SemanticAutofillFieldState, number> = {
+      auto: 0,
+      user: 0,
+      suggested: 0,
+      disabled: 0,
+    };
+    for (const row of summaryRows) {
+      if (isFieldState(row.state)) summary[row.state] = Number(row.count);
+    }
+
+    return {
+      summary,
+      total: summary.auto + summary.user + summary.suggested + summary.disabled,
+      records: records.map(rowToRecord),
+    };
+  }
   const db = getAdminSqliteDatabase();
   const records = db
     .prepare(
@@ -453,16 +552,35 @@ export async function resetSemanticAutofillOwnership(input: unknown, actor?: str
   const conditions: string[] = [];
   const params: Array<string | number> = [];
   if (parsed.pageId) {
-    conditions.push('page_id = ?');
+    conditions.push(isPostgresDatabase() ? `page_id = $${params.length + 2}` : 'page_id = ?');
     params.push(parsed.pageId);
   }
   if (parsed.title) {
-    conditions.push('title = ?');
+    conditions.push(isPostgresDatabase() ? `title = $${params.length + 2}` : 'title = ?');
     params.push(parsed.title);
   }
   if (parsed.property) {
-    conditions.push('property_name = ?');
+    conditions.push(isPostgresDatabase() ? `property_name = $${params.length + 2}` : 'property_name = ?');
     params.push(parsed.property);
+  }
+
+  if (isPostgresDatabase()) {
+    const pg = await getAdminPostgresStore();
+    const result = await pg.query(
+      `UPDATE ai_smw_autofill_fields
+          SET state = 'auto',
+              last_ai_value = COALESCE(last_ai_value, current_value),
+              reason = 'ownership_reset',
+              updated_at = $1
+        WHERE ${conditions.join(' AND ')}`,
+      [nowIso(), ...params]
+    );
+    const updated = Number(result.rowCount ?? 0);
+    await saveAudit('smw-autofill.ownership.reset', parsed.property ?? parsed.title ?? String(parsed.pageId), {
+      ...parsed,
+      updated,
+    }, actor);
+    return { updated };
   }
 
   const db = getAdminSqliteDatabase();
@@ -584,7 +702,7 @@ export async function evaluateSemanticAutofill(input: unknown): Promise<Semantic
     }
 
     if (currentValue && (!state?.lastAiValue || currentValue !== state.lastAiValue)) {
-      const record = upsertFieldState({
+      const record = await upsertFieldState({
         pageId: parsed.pageId,
         title: parsed.title,
         property: property.name,
@@ -599,7 +717,7 @@ export async function evaluateSemanticAutofill(input: unknown): Promise<Semantic
     }
 
     if (!currentValue && state?.lastAiValue) {
-      const record = upsertFieldState({
+      const record = await upsertFieldState({
         pageId: parsed.pageId,
         title: parsed.title,
         property: property.name,
@@ -662,7 +780,7 @@ export async function evaluateSemanticAutofill(input: unknown): Promise<Semantic
         state: 'suggested',
       };
       suggestions.push(suggestion);
-      upsertFieldState({
+      await upsertFieldState({
         pageId: parsed.pageId,
         title: parsed.title,
         property: field.property,
@@ -718,7 +836,7 @@ export async function evaluateSemanticAutofill(input: unknown): Promise<Semantic
 export async function recordSemanticAutofillApplied(input: unknown): Promise<{ updated: number }> {
   const parsed = appliedInputSchema.parse(input);
   for (const field of parsed.fields) {
-    upsertFieldState({
+    await upsertFieldState({
       pageId: parsed.pageId,
       title: parsed.title,
       property: field.property,

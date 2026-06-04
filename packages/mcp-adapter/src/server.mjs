@@ -1,8 +1,6 @@
 #!/usr/bin/env node
 
-const gatewayUrl = (process.env.WIKIAI_GATEWAY_URL || 'http://127.0.0.1:3000').replace(/\/+$/, '');
-const accessToken = process.env.WIKIAI_ACCESS_TOKEN || '';
-const cookie = process.env.WIKIAI_COOKIE || '';
+import { fileURLToPath } from 'node:url';
 
 let inputBuffer = Buffer.alloc(0);
 
@@ -33,11 +31,15 @@ function toolResult(value) {
   };
 }
 
-async function requestGateway(path, method = 'GET', body) {
+export async function requestGateway(path, method = 'GET', body) {
+  const gatewayUrl = (process.env.WIKIAI_GATEWAY_URL || 'http://127.0.0.1:3000').replace(/\/+$/, '');
+  const accessToken = process.env.WIKIAI_ACCESS_TOKEN || '';
+  const cookie = process.env.WIKIAI_COOKIE || '';
   const headers = { Accept: 'application/json' };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
   if (cookie) headers.Cookie = cookie;
+  headers['X-WikiAI-Client'] = 'mcp';
 
   const response = await fetch(`${gatewayUrl}${path}`, {
     method,
@@ -52,7 +54,7 @@ async function requestGateway(path, method = 'GET', body) {
   return payload;
 }
 
-function listTools() {
+export function listTools() {
   return {
     tools: [
       {
@@ -73,6 +75,7 @@ function listTools() {
             query: { type: 'string', minLength: 1 },
             topK: { type: 'number', minimum: 1, maximum: 50 },
             format: { type: 'string', enum: ['compact', 'full'] },
+            retrievalProfileId: { type: 'string', minLength: 1, maxLength: 120 },
           },
           required: ['query'],
           additionalProperties: false,
@@ -87,6 +90,7 @@ function listTools() {
             message: { type: 'string', minLength: 1 },
             conversationId: { type: 'string' },
             topK: { type: 'number', minimum: 1, maximum: 50 },
+            retrievalProfileId: { type: 'string', minLength: 1, maxLength: 120 },
           },
           required: ['message'],
           additionalProperties: false,
@@ -96,7 +100,7 @@ function listTools() {
   };
 }
 
-async function callTool(name, args) {
+export async function callTool(name, args) {
   const input = args && typeof args === 'object' && !Array.isArray(args) ? args : {};
   if (name === 'wikiai_capabilities') {
     return toolResult(await requestGateway('/api/v1/capabilities'));
@@ -109,6 +113,7 @@ async function callTool(name, args) {
       query: input.query,
       topK: typeof input.topK === 'number' ? input.topK : undefined,
       format: typeof input.format === 'string' ? input.format : undefined,
+      retrievalProfileId: typeof input.retrievalProfileId === 'string' ? input.retrievalProfileId : undefined,
     }));
   }
   if (name === 'wikiai_chat') {
@@ -119,13 +124,14 @@ async function callTool(name, args) {
       message: input.message,
       conversationId: typeof input.conversationId === 'string' ? input.conversationId : undefined,
       topK: typeof input.topK === 'number' ? input.topK : undefined,
+      retrievalProfileId: typeof input.retrievalProfileId === 'string' ? input.retrievalProfileId : undefined,
       stream: false,
     }));
   }
   throw new Error(`Unknown tool: ${name}`);
 }
 
-async function handleMessage(message) {
+export async function handleMessage(message) {
   const { id, method, params } = message || {};
   if (typeof method !== 'string') return;
 
@@ -175,13 +181,19 @@ function readNextMessage() {
   return JSON.parse(body);
 }
 
-process.stdin.on('data', (chunk) => {
-  inputBuffer = Buffer.concat([inputBuffer, chunk]);
-  let message = readNextMessage();
-  while (message !== undefined) {
-    void handleMessage(message);
-    message = readNextMessage();
-  }
-});
+export function startStdioServer() {
+  process.stdin.on('data', (chunk) => {
+    inputBuffer = Buffer.concat([inputBuffer, chunk]);
+    let message = readNextMessage();
+    while (message !== undefined) {
+      void handleMessage(message);
+      message = readNextMessage();
+    }
+  });
 
-process.stdin.resume();
+  process.stdin.resume();
+}
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  startStdioServer();
+}

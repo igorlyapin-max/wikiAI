@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import SearchTab from './components/SearchTab';
 import ChatTab from './components/ChatTab';
+import './assistant.css';
 
 interface AppProps {
   gatewayUrl: string;
@@ -10,37 +11,36 @@ export default function App({ gatewayUrl }: AppProps) {
   const [tab, setTab] = useState<'search' | 'chat'>('search');
 
   return (
-    <div style={{ maxWidth: 800, margin: '0 auto', padding: 16 }}>
-      <h1>AI-помощник</h1>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+    <div className="ai-assistant">
+      <header className="ai-assistant__header">
+        <div>
+          <h1>AI-помощник</h1>
+          <p>Поиск по базе знаний и диалоги с источниками</p>
+        </div>
+      </header>
+      <div className="ai-assistant__tabs" role="tablist" aria-label="AI-помощник">
         <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'search'}
           onClick={() => setTab('search')}
-          style={{
-            padding: '8px 16px',
-            background: tab === 'search' ? '#4a90d9' : '#f0f0f0',
-            color: tab === 'search' ? '#fff' : '#333',
-            border: 'none',
-            borderRadius: 4,
-            cursor: 'pointer',
-          }}
+          className={tab === 'search' ? 'ai-assistant__tab ai-assistant__tab--active' : 'ai-assistant__tab'}
         >
           Поиск
         </button>
         <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'chat'}
           onClick={() => setTab('chat')}
-          style={{
-            padding: '8px 16px',
-            background: tab === 'chat' ? '#4a90d9' : '#f0f0f0',
-            color: tab === 'chat' ? '#fff' : '#333',
-            border: 'none',
-            borderRadius: 4,
-            cursor: 'pointer',
-          }}
+          className={tab === 'chat' ? 'ai-assistant__tab ai-assistant__tab--active' : 'ai-assistant__tab'}
         >
           Чат
         </button>
       </div>
-      {tab === 'search' ? <SearchTab gatewayUrl={gatewayUrl} /> : <ChatTab gatewayUrl={gatewayUrl} />}
+      <section className="ai-assistant__surface">
+        {tab === 'search' ? <SearchTab gatewayUrl={gatewayUrl} /> : <ChatTab gatewayUrl={gatewayUrl} />}
+      </section>
     </div>
   );
 }

@@ -2,6 +2,10 @@ import Fastify, { FastifyInstance } from 'fastify';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { externalRoutes } from '../external.js';
 import { resetAdminStoreForTests } from '../../db/admin-store.js';
+import {
+  getDefaultRetrievalProfiles,
+  upsertRetrievalProfile,
+} from '../../services/admin-platform-config.js';
 import { setExternalApiConfig } from '../../services/external-api-config.js';
 import { SearchChunk } from '../../types/index.js';
 import { fetchUserInfo } from '../../services/mediawiki.js';
@@ -158,6 +162,55 @@ describe('external routes', () => {
     await app.close();
   });
 
+  it('applies an admin retrieval profile when external search passes retrievalProfileId', async () => {
+    await setExternalApiConfig({
+      enabled: true,
+      anonymousSearchAllowed: true,
+      maxTopK: 50,
+      aclMode: 'mediawiki_check',
+    });
+    const template = (await getDefaultRetrievalProfiles()).find((profile) => profile.id === 'semantic_broad');
+    if (!template) throw new Error('semantic_broad retrieval profile template is missing');
+    await upsertRetrievalProfile({
+      id: 'api_vector_profile',
+      name: 'API vector profile',
+      description: 'Test profile',
+      enabled: true,
+      apiEnabled: true,
+      mcpEnabled: true,
+      anonymousAllowed: true,
+      maxTopK: 3,
+      tags: ['test'],
+      config: {
+        ...template.config,
+        searchMode: 'vector_only',
+        colbertEnabled: false,
+      },
+    });
+
+    const app = await makeApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/search',
+      payload: { query: 'public faq', topK: 20, retrievalProfileId: 'api_vector_profile' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      diagnostics: {
+        retrievalProfileId: 'api_vector_profile',
+        retrievalProfileReadiness: 'limited_ready',
+        effectiveSearchMode: 'vector_only',
+      },
+    });
+    expect(searchRagChunks).toHaveBeenCalledWith(expect.objectContaining({
+      topK: 3,
+      config: expect.objectContaining({ searchMode: 'vector_only' }),
+    }));
+
+    await app.close();
+  });
+
   it('rejects external search while the API is disabled', async () => {
     const app = await makeApp();
     const res = await app.inject({
@@ -184,6 +237,43 @@ describe('external routes', () => {
     expect(res.statusCode).toBe(400);
     expect(res.json()).toMatchObject({ error: 'Invalid search request' });
     expect(searchRagChunks).not.toHaveBeenCalled();
+
+    await app.close();
+  });
+
+  it('accepts cmdbdynamicpages context without trusting it for auth', async () => {
+    await setExternalApiConfig({
+      enabled: true,
+      anonymousSearchAllowed: true,
+      maxTopK: 2,
+    });
+
+    const app = await makeApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/search',
+      payload: {
+        query: 'assets',
+        context: {
+          sourceApp: 'cmdbdynamicpages',
+          title: 'Asset Page',
+          dynamicBlocks: [{
+            sourceApp: 'cmdbdynamicpages',
+            templateCode: 'Assets',
+            status: 'snapshot_hit',
+          }],
+        },
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      authMode: 'anonymous',
+      user: 'anonymous',
+    });
+    expect(searchRagChunks).toHaveBeenCalledWith(expect.objectContaining({
+      query: 'assets',
+    }));
 
     await app.close();
   });

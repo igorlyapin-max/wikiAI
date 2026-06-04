@@ -1,0 +1,20 @@
+services:
+  wikiai-edge:
+    image: nginx:1.27-alpine
+    ports:
+      - "${WIKIAI_EDGE_PORT:-8084}:8080"
+    volumes:
+      - ./config/nginx.wikiai-ui.example.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./packages/wiki-ui/dist:/var/www/ai:ro
+    networks:
+      - wikiai
+      - mediawiki
+    restart: unless-stopped
+
+networks:
+  wikiai:
+    external: true
+    name: wikiai_default
+  mediawiki:
+    external: true
+    name: mediawiki_default

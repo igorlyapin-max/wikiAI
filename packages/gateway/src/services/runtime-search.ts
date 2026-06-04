@@ -17,6 +17,12 @@ import {
 } from './colbert-reranker.js';
 import { RuntimeHttpError } from './runtime-errors.js';
 import { AuthenticatedPrincipal, SearchChunk } from '../types/index.js';
+import {
+  resolveRuntimeRetrievalProfile,
+  type RetrievalProfileSurface,
+  type ResolvedRetrievalProfile,
+} from './retrieval-profiles.js';
+import type { RagAdminConfig } from './admin-platform-config.js';
 
 export interface RuntimeSearchInput {
   query: string;
@@ -25,6 +31,8 @@ export interface RuntimeSearchInput {
   wikiUrlOptions?: WikiPageUrlOptions;
   maxTopK?: number;
   aclMode?: PrincipalAclMode;
+  retrievalProfileId?: string;
+  retrievalProfileSurface?: RetrievalProfileSurface;
 }
 
 export interface RuntimeSearchResponse {
@@ -64,13 +72,19 @@ export function formatSearchResult(
   return publicResult;
 }
 
-async function runCurrentSearch(query: string, topK: number | undefined, fallbackTopK: number): Promise<RagSearchResult> {
+async function runCurrentSearch(
+  query: string,
+  topK: number | undefined,
+  fallbackTopK: number,
+  config?: RagAdminConfig
+): Promise<RagSearchResult> {
   const embedding = await getEmbedding(query);
   return searchRagChunks({
     query,
     vector: embedding,
     topK,
     fallbackTopK,
+    ...(config ? { config } : {}),
   });
 }
 
@@ -78,10 +92,11 @@ async function runSearchWithColbertFallback(input: {
   query: string;
   topK?: number;
   fallbackTopK: number;
+  config?: RagAdminConfig;
 }): Promise<RagSearchResult | Awaited<ReturnType<typeof searchColbertIndex>>> {
-  const ragConfig = await getRagAdminConfig();
+  const ragConfig = input.config ?? await getRagAdminConfig();
   if (!isColbertFullSearchEnabled(ragConfig)) {
-    return runCurrentSearch(input.query, input.topK, input.fallbackTopK);
+    return runCurrentSearch(input.query, input.topK, input.fallbackTopK, input.config);
   }
 
   try {
@@ -98,7 +113,7 @@ async function runSearchWithColbertFallback(input: {
         message: err instanceof Error ? err.message : 'Unknown ColBERT search error',
       });
     }
-    const fallback = await runCurrentSearch(input.query, input.topK, input.fallbackTopK);
+    const fallback = await runCurrentSearch(input.query, input.topK, input.fallbackTopK, input.config);
     return {
       ...fallback,
       diagnostics: {
@@ -123,15 +138,37 @@ async function filterRuntimeReadableChunks(input: {
   return filterReadableChunksForPrincipal(input.chunks, input.principal, input.limit, input.aclMode);
 }
 
+function profileDiagnostics(selection: ResolvedRetrievalProfile | undefined): Record<string, unknown> {
+  if (!selection) return { retrievalProfileId: null };
+  return {
+    retrievalProfileId: selection.profile.id,
+    retrievalProfileReadiness: selection.readiness.status,
+    retrievalProfileReasons: selection.readiness.reasons,
+    retrievalProfileRequiredIndexTargets: selection.readiness.requiredIndexTargets ?? [],
+    retrievalProfileMissingIndexTargets: selection.readiness.missingIndexTargets ?? [],
+    effectiveSearchMode: selection.effectiveConfig.searchMode,
+    effectiveLexicalBackend: selection.effectiveConfig.lexicalBackend,
+  };
+}
+
 export async function executeRuntimeSearch(input: RuntimeSearchInput): Promise<RuntimeSearchResponse> {
   const query = input.query.trim();
   const runtime = await getRuntimeConfig();
-  const ragConfig = await getRagAdminConfig();
-  const topK = clampTopK(input.topK, input.maxTopK);
+  const profileSelection = await resolveRuntimeRetrievalProfile(
+    input.retrievalProfileId,
+    input.retrievalProfileSurface ?? 'api'
+  );
+  const ragConfig = profileSelection?.effectiveConfig ?? await getRagAdminConfig();
+  const topKLimit = profileSelection
+    ? Math.min(input.maxTopK ?? profileSelection.profile.maxTopK, profileSelection.profile.maxTopK)
+    : input.maxTopK;
+  const topK = clampTopK(input.topK, topKLimit);
+  const fallbackTopK = profileSelection?.effectiveConfig.topK ?? runtime.topK;
   const search = await runSearchWithColbertFallback({
     query,
     topK,
-    fallbackTopK: runtime.topK,
+    fallbackTopK,
+    config: profileSelection?.effectiveConfig,
   });
   const aclMode = input.aclMode ?? 'mediawiki_check';
   const readableChunks = await filterRuntimeReadableChunks({
@@ -171,8 +208,18 @@ export async function executeRuntimeSearch(input: RuntimeSearchInput): Promise<R
     showRawScores: search.showRawScores,
     diagnostics: {
       ...diagnostics,
+      ...profileDiagnostics(profileSelection),
       aclMode,
       authMode: input.principal.authMode,
+      query,
+      retrievalQuery: query,
+      requestedTopK: input.topK ?? null,
+      effectiveTopK: topK ?? fallbackTopK,
+      searchMode: search.mode,
+      rawChunks: search.chunks.length,
+      readableChunks: readableChunks.length,
+      trustedChunks: trustedChunks.length,
+      finalResults: results.length,
     },
     results,
   };

@@ -12,6 +12,7 @@
     "test": "vitest run",
     "test:integration:local": "node scripts/integration-local.mjs",
     "test:smoke:llm": "node scripts/smoke-litellm.mjs",
+    "migrate:postgres": "node scripts/migrate-sqlite-to-postgres.mjs",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
   },
@@ -24,11 +25,13 @@
     "@qdrant/js-client-rest": "^1.12.0",
     "fastify": "^5.8.5",
     "ioredis": "^5.4.1",
+    "pg": "^8.21.0",
     "undici": "^6.19.8",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
+    "@types/pg": "^8.20.0",
     "@typescript-eslint/eslint-plugin": "^7.18.0",
     "@typescript-eslint/parser": "^7.18.0",
     "@vitest/coverage-v8": "^4.1.7",

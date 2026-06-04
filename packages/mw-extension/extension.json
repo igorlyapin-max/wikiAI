@@ -49,6 +49,18 @@
       "scripts": [
         "resources/ai-assistant/dist/index.js"
       ],
+      "styles": [
+        "resources/ai-assistant/dist/index.css"
+      ],
+      "targets": [
+        "desktop",
+        "mobile"
+      ]
+    },
+    "ext.aiadmin": {
+      "scripts": [
+        "resources/ai-admin/dist/index.js"
+      ],
       "targets": [
         "desktop",
         "mobile"

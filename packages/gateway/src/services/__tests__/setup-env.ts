@@ -1,7 +1,7 @@
 process.env.LITELLM_BASE_URL ??= 'http://localhost:4000/v1';
 process.env.LITELLM_API_KEY ??= 'test-key';
 process.env.LITELLM_MODEL ??= 'test-model';
-process.env.REDIS_URL ??= 'redis://localhost:16379/1';
+process.env.REDIS_URL ??= 'memory://test';
 process.env.DATABASE_URL ??= 'sqlite://:memory:';
 process.env.QDRANT_URL ??= 'http://localhost:6333';
 process.env.QDRANT_COLLECTION ??= 'test_chunks';

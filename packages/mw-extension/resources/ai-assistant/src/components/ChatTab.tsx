@@ -1,4 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
+import {
+  ChatRetrievalDiagnostics,
+  normalizeRetrievalDiagnostics,
+  type RetrievalDiagnostics,
+} from './RetrievalDiagnostics';
 
 interface ChatTabProps {
   gatewayUrl: string;
@@ -24,8 +30,15 @@ interface ConflictDetectionResult {
 interface Message {
   role: 'user' | 'assistant';
   content: string;
-  sources?: Array<{ title: string; pageId: number; pageUrl?: string }>;
+  sources?: MessageSource[];
   conflict?: ConflictDetectionResult;
+  retrievalDiagnostics?: RetrievalDiagnostics;
+}
+
+interface MessageSource {
+  title: string;
+  pageId: number;
+  pageUrl?: string;
 }
 
 interface ChatSessionSummary {
@@ -43,7 +56,7 @@ interface StoredChatMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
-  sources?: Array<{ title: string; pageId: number; pageUrl?: string }>;
+  sources?: MessageSource[];
   createdAt: string;
 }
 
@@ -61,7 +74,7 @@ function readNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
-function readSource(value: unknown): { title: string; pageId: number; pageUrl?: string } | undefined {
+function readSource(value: unknown): MessageSource | undefined {
   if (!isRecord(value)) return undefined;
   const title = readString(value.title);
   if (!title) return undefined;
@@ -72,9 +85,9 @@ function readSource(value: unknown): { title: string; pageId: number; pageUrl?: 
   };
 }
 
-function readSources(value: unknown): Array<{ title: string; pageId: number; pageUrl?: string }> | undefined {
+function readSources(value: unknown): MessageSource[] | undefined {
   if (!Array.isArray(value)) return undefined;
-  const sources = value.map(readSource).filter((item): item is { title: string; pageId: number; pageUrl?: string } => Boolean(item));
+  const sources = value.map(readSource).filter((item): item is MessageSource => Boolean(item));
   return sources.length > 0 ? sources : undefined;
 }
 
@@ -159,41 +172,58 @@ function getConflictWarningTitle(conflict: ConflictDetectionResult): string {
   return 'Надежность источников требует проверки';
 }
 
-const SPINNER_KEYFRAMES = '@keyframes ai-assistant-spin { to { transform: rotate(360deg); } }';
-
 function ProcessingIndicator({ label }: { label: string }) {
   return (
-    <div
-      role="status"
-      aria-live="polite"
-      style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 8,
-        marginTop: 4,
-        padding: '8px 10px',
-        border: '1px solid #ddd',
-        borderRadius: 4,
-        color: '#111827',
-        background: '#f9fafb',
-        fontSize: 13,
-      }}
-    >
-      <span
-        aria-hidden="true"
-        style={{
-          width: 14,
-          height: 14,
-          border: '2px solid #d1d5db',
-          borderTopColor: '#111827',
-          borderRadius: '50%',
-          animation: 'ai-assistant-spin 0.8s linear infinite',
-          flex: '0 0 auto',
-        }}
-      />
+    <div className="ai-assistant__status" role="status" aria-live="polite">
+      <span aria-hidden="true" className="ai-assistant__spinner" />
       <span>{label}</span>
     </div>
   );
+}
+
+function renderAssistantContent(content: string, sources: MessageSource[] | undefined): ReactNode {
+  if (!sources || sources.length === 0) return content;
+
+  const parts: ReactNode[] = [];
+  const citationPattern = /\[(\d+)\]/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = citationPattern.exec(content)) !== null) {
+    const [raw, rawNumber] = match;
+    const citationNumber = Number(rawNumber);
+    const source = Number.isInteger(citationNumber) ? sources[citationNumber - 1] : undefined;
+
+    if (match.index > lastIndex) {
+      parts.push(content.slice(lastIndex, match.index));
+    }
+
+    if (source?.pageUrl) {
+      parts.push(
+        <a
+          key={`${match.index}-${raw}`}
+          href={source.pageUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="ai-assistant__citation"
+          aria-label={`Открыть источник ${citationNumber}: ${source.title}`}
+          title={source.title}
+        >
+          {raw}
+        </a>
+      );
+    } else {
+      parts.push(raw);
+    }
+
+    lastIndex = match.index + raw.length;
+  }
+
+  if (lastIndex < content.length) {
+    parts.push(content.slice(lastIndex));
+  }
+
+  return parts.length > 0 ? parts : content;
 }
 
 export default function ChatTab({ gatewayUrl }: ChatTabProps) {
@@ -338,8 +368,9 @@ export default function ChatTab({ gatewayUrl }: ChatTabProps) {
       const decoder = new TextDecoder();
       let buffer = '';
       let assistantText = '';
-      let sources: Array<{ title: string; pageId: number; pageUrl?: string }> = [];
+      let sources: MessageSource[] = [];
       let conflict: ConflictDetectionResult | undefined;
+      let retrievalDiagnostics: RetrievalDiagnostics | undefined;
 
       setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
 
@@ -378,6 +409,14 @@ export default function ChatTab({ gatewayUrl }: ChatTabProps) {
                 if (last && last.role === 'assistant') last.conflict = conflict;
                 return copy;
               });
+            } else if (data.type === 'diagnostics') {
+              retrievalDiagnostics = normalizeRetrievalDiagnostics(data.diagnostics);
+              setMessages((prev) => {
+                const copy = [...prev];
+                const last = copy[copy.length - 1];
+                if (last && last.role === 'assistant') last.retrievalDiagnostics = retrievalDiagnostics;
+                return copy;
+              });
             } else if (data.type === 'sources') {
               sources = data.sources || [];
             }
@@ -392,6 +431,7 @@ export default function ChatTab({ gatewayUrl }: ChatTabProps) {
         const last = copy[copy.length - 1];
         if (last && last.role === 'assistant') last.sources = sources;
         if (last && last.role === 'assistant') last.conflict = conflict;
+        if (last && last.role === 'assistant') last.retrievalDiagnostics = retrievalDiagnostics;
         return copy;
       });
       if (sessionFilter !== 'active') {
@@ -411,109 +451,100 @@ export default function ChatTab({ gatewayUrl }: ChatTabProps) {
   };
 
   return (
-    <>
-    <style>{SPINNER_KEYFRAMES}</style>
-    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, minHeight: 560 }}>
-      <aside style={{ flex: '0 1 220px', border: '1px solid #ddd', borderRadius: 4, padding: 10, overflowY: 'auto', maxHeight: 560 }}>
-        <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
-          <button type="button" onClick={handleNewChat} style={{ padding: '6px 10px', flex: 1 }}>
-            Новый чат
+    <div className="ai-assistant__chat">
+      <aside className="ai-assistant__sidebar">
+        <div className="ai-assistant__toolbar" aria-label="Управление чатами">
+          <button
+            type="button"
+            onClick={handleNewChat}
+            className="ai-assistant__icon-button ai-assistant__icon-button--primary"
+            title="Новый чат"
+            aria-label="Новый чат"
+          >
+            ＋
           </button>
-        </div>
-        <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
           <button
             type="button"
             onClick={() => handleSessionFilterChange('active')}
-            style={{ padding: '5px 8px', flex: 1, background: sessionFilter === 'active' ? '#111827' : '#f0f0f0', color: sessionFilter === 'active' ? '#fff' : '#333' }}
+            className={sessionFilter === 'active'
+              ? 'ai-assistant__icon-button ai-assistant__icon-button--active'
+              : 'ai-assistant__icon-button'}
+            title="Актив"
+            aria-label="Актив"
           >
-            Актив
+            ●
           </button>
           <button
             type="button"
             onClick={() => handleSessionFilterChange('archived')}
-            style={{ padding: '5px 8px', flex: 1, background: sessionFilter === 'archived' ? '#111827' : '#f0f0f0', color: sessionFilter === 'archived' ? '#fff' : '#333' }}
+            className={sessionFilter === 'archived'
+              ? 'ai-assistant__icon-button ai-assistant__icon-button--active'
+              : 'ai-assistant__icon-button'}
+            title="Архив"
+            aria-label="Архив"
           >
-            Архив
+            ◷
           </button>
-        </div>
-        {sessionFilter === 'archived' && (
-          <button
-            type="button"
-            onClick={handleExportArchive}
-            disabled={sessionsLoading}
-            style={{ padding: '6px 10px', width: '100%', marginBottom: 8 }}
-          >
-            Выгрузить архив
-          </button>
-        )}
-        {historyError && <div style={{ color: '#DC2626', fontSize: 12, marginBottom: 8 }}>{historyError}</div>}
-        {sessionsLoading && <div style={{ color: '#666', fontSize: 12 }}>Загрузка...</div>}
-        {!sessionsLoading && sessions.length === 0 && (
-          <div style={{ color: '#666', fontSize: 12 }}>Чатов нет</div>
-        )}
-        {sessions.map((session) => (
-          <div
-            key={session.id}
-            style={{
-              border: activeSessionId === session.id ? '1px solid #111827' : '1px solid #ddd',
-              borderRadius: 4,
-              padding: 8,
-              marginBottom: 8,
-              background: activeSessionId === session.id ? '#f9fafb' : '#fff',
-            }}
-          >
+          {sessionFilter === 'archived' && (
             <button
               type="button"
-              onClick={() => handleSelectSession(session)}
-              style={{ display: 'block', width: '100%', textAlign: 'left', border: 'none', background: 'transparent', padding: 0, cursor: 'pointer' }}
-              title={session.title}
+              onClick={handleExportArchive}
+              disabled={sessionsLoading}
+              className="ai-assistant__icon-button"
+              title="Выгрузить архив"
+              aria-label="Выгрузить архив"
             >
-              <div style={{ fontWeight: 700, color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{session.title}</div>
-              <div style={{ color: '#666', fontSize: 12 }}>{session.messageCount} сообщений</div>
-              <div style={{ color: '#666', fontSize: 12 }}>{formatDate(session.lastMessageAt || session.createdAt)}</div>
+              ⇩
             </button>
-          </div>
-        ))}
+          )}
+        </div>
+        {historyError && <div className="ai-assistant__error">{historyError}</div>}
+        {sessionsLoading && <div className="ai-assistant__empty">Загрузка...</div>}
+        {!sessionsLoading && sessions.length === 0 && (
+          <div className="ai-assistant__empty">Чатов нет</div>
+        )}
+        <div className="ai-assistant__session-list">
+          {sessions.map((session) => (
+            <div
+              key={session.id}
+              className={activeSessionId === session.id
+                ? 'ai-assistant__session-card ai-assistant__session-card--active'
+                : 'ai-assistant__session-card'}
+            >
+              <button
+                type="button"
+                onClick={() => handleSelectSession(session)}
+                className="ai-assistant__session-button"
+                title={session.title}
+              >
+                <div className="ai-assistant__session-title">{session.title}</div>
+                <div className="ai-assistant__session-meta">{session.messageCount} сообщений</div>
+                <div className="ai-assistant__session-meta">{formatDate(session.lastMessageAt || session.createdAt)}</div>
+              </button>
+            </div>
+          ))}
+        </div>
       </aside>
 
-      <section style={{ display: 'flex', flex: '1 1 320px', flexDirection: 'column', minWidth: 0, height: 560 }}>
-        <div style={{ flex: 1, overflowY: 'auto', border: '1px solid #ddd', borderRadius: 4, padding: 12 }}>
+      <section className="ai-assistant__conversation" aria-label="Диалог">
+        <div className="ai-assistant__messages">
           {messages.map((m, i) => (
-            <div key={i} style={{ marginBottom: 12, textAlign: m.role === 'user' ? 'right' : 'left' }}>
-              <div
-                style={{
-                  display: 'inline-block',
-                  padding: '8px 12px',
-                  borderRadius: 12,
-                  background: m.role === 'user' ? '#4a90d9' : '#f0f0f0',
-                  color: m.role === 'user' ? '#fff' : '#333',
-                  maxWidth: '80%',
-                  whiteSpace: 'pre-wrap',
-                  overflowWrap: 'anywhere',
-                }}
-              >
-                {m.content}
+            <div
+              key={i}
+              className={m.role === 'user'
+                ? 'ai-assistant__message ai-assistant__message--user'
+                : 'ai-assistant__message ai-assistant__message--assistant'}
+            >
+              <div className="ai-assistant__bubble">
+                {m.role === 'assistant' ? renderAssistantContent(m.content, m.sources) : m.content}
               </div>
               {m.conflict && (
-                <div
-                  style={{
-                    marginTop: 6,
-                    display: 'inline-block',
-                    maxWidth: '80%',
-                    padding: '8px 10px',
-                    border: '1px solid #d97706',
-                    borderRadius: 4,
-                    background: '#fff7ed',
-                    color: '#7c2d12',
-                    fontSize: 12,
-                    textAlign: 'left',
-                  }}
-                >
-                  <div style={{ fontWeight: 700, marginBottom: 4 }}>
+                <div className="ai-assistant__conflict">
+                  <div className="ai-assistant__conflict-title">
                     {getConflictWarningTitle(m.conflict)}
                   </div>
                   {m.conflict.summary && <div>{m.conflict.summary}</div>}
-                  <div style={{ marginTop: 4 }}>
+                  <div>
                     Уверенность детектора: {Math.round((m.conflict.confidence || 0) * 100)}%
                   </div>
                   {m.conflict.hasConflict && m.conflict.recommendedSourceTitle && (
@@ -521,7 +552,7 @@ export default function ChatTab({ gatewayUrl }: ChatTabProps) {
                   )}
                   {m.conflict.lowTrustReason && <div>{m.conflict.lowTrustReason}</div>}
                   {m.conflict.conflictingSources.length > 0 && (
-                    <ul style={{ margin: '6px 0 0 18px', padding: 0 }}>
+                    <ul>
                       {m.conflict.conflictingSources.map((source, sourceIndex) => {
                         const trustScore = formatOptionalScore(source.trustScore, 2);
                         return (
@@ -537,13 +568,14 @@ export default function ChatTab({ gatewayUrl }: ChatTabProps) {
                 </div>
               )}
               {m.sources && m.sources.length > 0 && (
-                <div style={{ fontSize: 12, color: '#666', marginTop: 4 }}>
+                <div className="ai-assistant__sources">
                   Источники:{' '}
                   {m.sources.map((s, sourceIndex) => (
                     <span key={`${s.pageId}-${s.title}`}>
                       {sourceIndex > 0 ? ', ' : ''}
+                      [{sourceIndex + 1}]{' '}
                       {s.pageUrl ? (
-                        <a href={s.pageUrl} target="_blank" rel="noreferrer" style={{ color: '#4a90d9' }}>
+                        <a href={s.pageUrl} target="_blank" rel="noreferrer" className="ai-assistant__source-link">
                           {s.title}
                         </a>
                       ) : (
@@ -553,27 +585,38 @@ export default function ChatTab({ gatewayUrl }: ChatTabProps) {
                   ))}
                 </div>
               )}
+              {m.role === 'assistant' && m.retrievalDiagnostics && (
+                <ChatRetrievalDiagnostics diagnostics={m.retrievalDiagnostics} />
+              )}
             </div>
           ))}
           {loading && <ProcessingIndicator label="Запрос обрабатывается..." />}
           <div ref={bottomRef} />
         </div>
-        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+        <div className="ai-assistant__composer">
           <input
+            className="ai-assistant__input"
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void handleSend();
+            }}
             placeholder={archiveReadOnly ? 'Архивный чат доступен только для чтения' : 'Введите сообщение...'}
             disabled={loading || archiveReadOnly}
-            style={{ flex: 1, padding: 8, fontSize: 16, minWidth: 0 }}
           />
-          <button onClick={handleSend} disabled={loading || archiveReadOnly} style={{ padding: '8px 16px' }}>
-            {loading ? 'Обработка...' : 'Отправить'}
+          <button
+            type="button"
+            onClick={() => void handleSend()}
+            disabled={loading || archiveReadOnly}
+            className="ai-assistant__icon-button ai-assistant__icon-button--primary"
+            title={loading ? 'Запрос обрабатывается' : 'Отправить'}
+            aria-label="Отправить"
+          >
+            {loading ? '…' : '➤'}
           </button>
         </div>
       </section>
     </div>
-    </>
   );
 }

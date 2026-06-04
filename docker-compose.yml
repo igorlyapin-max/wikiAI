@@ -53,6 +53,43 @@ services:
       - colbert_models:/models
     restart: unless-stopped
 
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["postgres"]
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-15433}:5432"
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-wikiai}
+      - POSTGRES_USER=${POSTGRES_USER:-wikiai}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-wikiai-dev-password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-wikiai} -d ${POSTGRES_DB:-wikiai}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  opensearch:
+    image: opensearchproject/opensearch:2
+    profiles: ["opensearch"]
+    ports:
+      - "127.0.0.1:${OPENSEARCH_PORT:-9200}:9200"
+    environment:
+      - discovery.type=single-node
+      - plugins.security.disabled=true
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_INITIAL_ADMIN_PASSWORD:-WikiAI-OpenSearch-Dev-1!}
+      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD", "bash", "-lc", ": >/dev/tcp/127.0.0.1/9200"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
   gateway:
     build:
       context: ./packages/gateway
@@ -63,7 +100,7 @@ services:
       - NODE_ENV=production
       - GATEWAY_PORT=3000
       - REDIS_URL=redis://host.docker.internal:16379/0
-      - DATABASE_URL=sqlite:///app/state/wiki-ai.sqlite
+      - DATABASE_URL=${DATABASE_URL:-sqlite:///app/state/wiki-ai.sqlite}
       - LITELLM_BASE_URL=http://host.docker.internal:4000/v1
       - LITELLM_API_KEY=${LITELLM_API_KEY:?Set LITELLM_API_KEY in your environment}
       - LITELLM_MODEL=${LITELLM_MODEL:-corp-openai-gpt-4.1-mini}
@@ -76,6 +113,20 @@ services:
       - COLBERT_BASE_URL=${COLBERT_BASE_URL:-http://colbert:8080}
       - COLBERT_MODEL=${COLBERT_MODEL:-antoinelouis/colbert-xm}
       - COLBERT_COLLECTION=${COLBERT_COLLECTION:-wiki_colbert_chunks}
+      - OPENSEARCH_ENABLED=${OPENSEARCH_ENABLED:-false}
+      - OPENSEARCH_BASE_URL=${OPENSEARCH_BASE_URL:-http://opensearch:9200}
+      - OPENSEARCH_INDEX_NAME=${OPENSEARCH_INDEX_NAME:-wikiai_chunks}
+      - OPENSEARCH_USERNAME=${OPENSEARCH_USERNAME:-}
+      - OPENSEARCH_PASSWORD=${OPENSEARCH_PASSWORD:-}
+      - OPENSEARCH_API_KEY=${OPENSEARCH_API_KEY:-}
+      - OPENSEARCH_TIMEOUT_MS=${OPENSEARCH_TIMEOUT_MS:-5000}
+      - OPENSEARCH_TLS_REJECT_UNAUTHORIZED=${OPENSEARCH_TLS_REJECT_UNAUTHORIZED:-true}
+      - OPENSEARCH_ANALYZER=${OPENSEARCH_ANALYZER:-russian}
+      - OPENSEARCH_FUZZY_ENABLED=${OPENSEARCH_FUZZY_ENABLED:-true}
+      - OPENSEARCH_HIGHLIGHT_ENABLED=${OPENSEARCH_HIGHLIGHT_ENABLED:-true}
+      - OPENSEARCH_TITLE_BOOST=${OPENSEARCH_TITLE_BOOST:-2}
+      - OPENSEARCH_TEXT_BOOST=${OPENSEARCH_TEXT_BOOST:-1}
+      - OPENSEARCH_CANDIDATE_LIMIT=${OPENSEARCH_CANDIDATE_LIMIT:-50}
       - MW_BASE_URL=http://host.docker.internal:8082
       - MW_PUBLIC_BASE_URL=${MW_PUBLIC_BASE_URL:-http://127.0.0.1:8082}
       - MW_API_PATH=/api.php
@@ -131,7 +182,7 @@ services:
       - PAMPIN=${PAMPIN:-}
       - PAMTIMEOUTMS=${PAMTIMEOUTMS:-10000}
       - REDIS_URL=redis://host.docker.internal:16379/0
-      - DATABASE_URL=sqlite:///app/state/wiki-ai.sqlite
+      - DATABASE_URL=${DATABASE_URL:-sqlite:///app/state/wiki-ai.sqlite}
       - QDRANT_URL=http://qdrant:6333
       - QDRANT_COLLECTION=wiki_chunks
       - GATEWAY_BASE_URL=http://gateway:3000
@@ -163,3 +214,5 @@ volumes:
   qdrant_storage:
   ollama_data:
   colbert_models:
+  postgres_data:
+  opensearch_data:

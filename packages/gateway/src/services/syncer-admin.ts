@@ -2,6 +2,10 @@ import { config } from '../config.js';
 
 export interface StartReindexRequest {
   profileId?: string;
+  indexTargets?: string[];
+  source?: 'mediawiki' | 'qdrant_payload';
+  colbertModel?: string;
+  colbertCollection?: string;
   attachmentsEnabled?: boolean;
   semanticFactsEnabled?: boolean;
   smwProperties?: string[];
@@ -24,6 +28,7 @@ export interface StartReindexRequest {
   llmEnrichmentEnabled?: boolean;
   llmEnrichmentModel?: string;
   llmEnrichmentMaxChars?: number;
+  cmdbDynamicPagesEnabled?: boolean;
 }
 
 export interface SyncerMediaWikiServiceAuthStatus {

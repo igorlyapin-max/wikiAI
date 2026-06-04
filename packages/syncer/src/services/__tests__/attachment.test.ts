@@ -23,6 +23,54 @@ vi.mock('tesseract.js', () => ({
   })),
 }));
 
+function createStoredZip(entries: Array<{ name: string; content: string }>): Buffer {
+  const localParts: Buffer[] = [];
+  const centralParts: Buffer[] = [];
+  let offset = 0;
+
+  for (const entry of entries) {
+    const name = Buffer.from(entry.name, 'utf8');
+    const data = Buffer.from(entry.content, 'utf8');
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(0, 6);
+    local.writeUInt16LE(0, 8);
+    local.writeUInt32LE(0, 14);
+    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(name.length, 26);
+    local.writeUInt16LE(0, 28);
+    localParts.push(local, name, data);
+
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(0, 8);
+    central.writeUInt16LE(0, 10);
+    central.writeUInt32LE(0, 16);
+    central.writeUInt32LE(data.length, 20);
+    central.writeUInt32LE(data.length, 24);
+    central.writeUInt16LE(name.length, 28);
+    central.writeUInt16LE(0, 30);
+    central.writeUInt16LE(0, 32);
+    central.writeUInt32LE(offset, 42);
+    centralParts.push(central, name);
+    offset += local.length + name.length + data.length;
+  }
+
+  const centralOffset = offset;
+  const centralDirectory = Buffer.concat(centralParts);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(entries.length, 8);
+  eocd.writeUInt16LE(entries.length, 10);
+  eocd.writeUInt32LE(centralDirectory.length, 12);
+  eocd.writeUInt32LE(centralOffset, 16);
+  return Buffer.concat([...localParts, centralDirectory, eocd]);
+}
+
 describe('attachment processing', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -106,5 +154,60 @@ describe('attachment processing', () => {
       mode: 'ocr',
     });
     expect(terminate).toHaveBeenCalled();
+  });
+
+  it('extracts DOCX text from office XML packages', async () => {
+    const policy = normalizeDocumentProcessingConfig({});
+    const buffer = createStoredZip([
+      {
+        name: 'word/document.xml',
+        content: '<w:document><w:body><w:p><w:r><w:t>Human control</w:t></w:r></w:p><w:p><w:t>RAG protocol</w:t></w:p></w:body></w:document>',
+      },
+    ]);
+
+    const result = await processAttachment(
+      buffer,
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'brief.docx',
+      policy
+    );
+
+    expect(result.text).toContain('Human control');
+    expect(result.text).toContain('RAG protocol');
+    expect(result.metadata).toMatchObject({
+      filename: 'brief.docx',
+      mode: 'text',
+      format: 'docx',
+      zipEntries: 1,
+    });
+  });
+
+  it('extracts ODT text from content.xml', async () => {
+    const policy = normalizeDocumentProcessingConfig({});
+    const buffer = createStoredZip([
+      {
+        name: 'content.xml',
+        content: '<office:document-content><office:body><text:p>Русский текст ODT</text:p></office:body></office:document-content>',
+      },
+    ]);
+
+    const result = await processAttachment(
+      buffer,
+      'application/vnd.oasis.opendocument.text',
+      'manual.odt',
+      policy
+    );
+
+    expect(result.text).toContain('Русский текст ODT');
+    expect(result.metadata.format).toBe('odt');
+  });
+
+  it('keeps archives metadata-only and searchable by processing mode', async () => {
+    const policy = normalizeDocumentProcessingConfig({});
+    const result = await processAttachment(Buffer.from('PK'), 'application/zip', 'archive.zip', policy);
+
+    expect(result.text).toBe('');
+    expect(result.metadata.mode).toBe('metadata');
+    expect(getMetadataText('archive.zip', 'application/zip', result.metadata)).toContain('processing mode: metadata');
   });
 });

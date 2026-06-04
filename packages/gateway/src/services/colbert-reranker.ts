@@ -48,6 +48,12 @@ interface ColbertResponseResult {
   source_type?: string;
   attachmentFilename?: string;
   attachment_filename?: string;
+  attachmentMime?: string;
+  attachment_mime?: string;
+  attachmentProcessingMode?: string;
+  attachment_processing_mode?: string;
+  contentType?: string;
+  content_type?: string;
   payload?: Record<string, unknown>;
 }
 
@@ -195,6 +201,15 @@ function colbertResultToChunk(result: ColbertResponseResult): SearchChunk | null
     attachmentFilename: readString(result.attachmentFilename)
       ?? readString(result.attachment_filename)
       ?? readString(payload.attachment_filename),
+    attachmentMime: readString(result.attachmentMime)
+      ?? readString(result.attachment_mime)
+      ?? readString(payload.attachment_mime),
+    attachmentProcessingMode: readString(result.attachmentProcessingMode)
+      ?? readString(result.attachment_processing_mode)
+      ?? readString(payload.attachment_processing_mode),
+    contentType: readString(result.contentType)
+      ?? readString(result.content_type)
+      ?? readString(payload.content_type),
   };
 }
 
@@ -388,7 +403,12 @@ export async function syncColbertIndexPage(
   input: SearchIndexPageInput,
   configOverride?: RagAdminConfig
 ): Promise<ColbertIndexWriteResult> {
-  const config = configOverride ?? await getRagAdminConfig();
+  const baseConfig = configOverride ?? await getRagAdminConfig();
+  const config: RagAdminConfig = {
+    ...baseConfig,
+    colbertModel: input.colbertModel?.trim() || baseConfig.colbertModel,
+    colbertCollection: input.colbertCollection?.trim() || baseConfig.colbertCollection,
+  };
   if (!config.colbertEnabled || config.colbertBaseUrl.trim().length === 0) {
     return colbertDisabledWriteResult('/index/page');
   }

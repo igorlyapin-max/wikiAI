@@ -8,8 +8,13 @@ const fetchPageCategories = vi.hoisted(() => vi.fn());
 const fetchSemanticFacts = vi.hoisted(() => vi.fn());
 const getMediaWikiServiceAuthStatus = vi.hoisted(() => vi.fn());
 const upsertChunks = vi.hoisted(() => vi.fn());
+const upsertCmdbDynamicSnapshotChunks = vi.hoisted(() => vi.fn());
+const syncSearchIndexFromQdrantPayload = vi.hoisted(() => vi.fn());
 const fetchEffectiveEmbeddingConfig = vi.hoisted(() => vi.fn());
+const fetchIndexingProfiles = vi.hoisted(() => vi.fn());
 const enrichPageForReindex = vi.hoisted(() => vi.fn());
+const extractCmdbDynamicSources = vi.hoisted(() => vi.fn());
+const fetchCmdbDynamicSnapshotChunks = vi.hoisted(() => vi.fn());
 
 vi.mock('../mediawiki.js', () => ({
   fetchAllPages,
@@ -27,8 +32,15 @@ vi.mock('../mediawiki.js', () => ({
 
 vi.mock('../qdrant.js', () => ({
   upsertChunks,
+  upsertCmdbDynamicSnapshotChunks,
   upsertAttachmentChunks: vi.fn(),
   upsertAttachmentMetadata: vi.fn(),
+  syncSearchIndexFromQdrantPayload,
+}));
+
+vi.mock('../cmdbdynamicpages.js', () => ({
+  extractCmdbDynamicSources,
+  fetchCmdbDynamicSnapshotChunks,
 }));
 
 vi.mock('../document-policy.js', () => ({
@@ -38,14 +50,18 @@ vi.mock('../document-policy.js', () => ({
 
 vi.mock('../gateway.js', () => ({
   fetchEffectiveEmbeddingConfig,
+  fetchIndexingProfiles,
   enrichPageForReindex,
 }));
 
 describe('runReindex', () => {
   let previousDatabaseUrl: string;
+  let previousCmdbDynamicPagesEnabled: boolean;
 
   beforeEach(() => {
     previousDatabaseUrl = config.databaseUrl;
+    previousCmdbDynamicPagesEnabled = config.cmdbDynamicPagesEnabled;
+    config.cmdbDynamicPagesEnabled = false;
     fetchAllPages.mockReset();
     fetchPageContent.mockReset();
     fetchPageCategories.mockReset();
@@ -61,7 +77,18 @@ describe('runReindex', () => {
       deprecatedCookieConfigured: false,
     });
     upsertChunks.mockReset();
+    upsertCmdbDynamicSnapshotChunks.mockReset();
+    syncSearchIndexFromQdrantPayload.mockReset();
+    syncSearchIndexFromQdrantPayload.mockResolvedValue({
+      qdrantPoints: 2,
+      pages: 1,
+      groups: 1,
+      chunks: 2,
+      failed: 0,
+    });
     fetchEffectiveEmbeddingConfig.mockReset();
+    fetchIndexingProfiles.mockReset();
+    fetchIndexingProfiles.mockResolvedValue([]);
     fetchEffectiveEmbeddingConfig.mockResolvedValue({
       provider: 'ollama',
       baseUrl: 'http://localhost:11434',
@@ -70,10 +97,15 @@ describe('runReindex', () => {
       apiKeyConfigured: false,
     });
     enrichPageForReindex.mockReset();
+    extractCmdbDynamicSources.mockReset();
+    fetchCmdbDynamicSnapshotChunks.mockReset();
+    extractCmdbDynamicSources.mockReturnValue([]);
+    fetchCmdbDynamicSnapshotChunks.mockResolvedValue([]);
   });
 
   afterEach(() => {
     config.databaseUrl = previousDatabaseUrl;
+    config.cmdbDynamicPagesEnabled = previousCmdbDynamicPagesEnabled;
   });
 
   it('reindexes requested pages with semantic facts and without attachments by default', async () => {
@@ -253,6 +285,85 @@ describe('runReindex', () => {
     expect(upsertChunks).not.toHaveBeenCalled();
   });
 
+  it('supports BM25 and ColBERT targets without dense embedding calls', async () => {
+    fetchEffectiveEmbeddingConfig.mockResolvedValueOnce({
+      provider: 'openai_compatible',
+      baseUrl: 'http://litellm:4000/v1',
+      model: 'text-embedding-3-small',
+      dimensions: 768,
+      apiKeyConfigured: true,
+    });
+    fetchAllPages.mockResolvedValueOnce([
+      { pageid: 1, ns: 0, title: 'Public' },
+    ]);
+    fetchPageContent.mockResolvedValueOnce({
+      pageid: 1,
+      ns: 0,
+      title: 'Public',
+      content: 'Mermaid diagram ```mermaid\\ngraph TD; A-->B;\\n```',
+    });
+
+    const summary = await runReindex({
+      maxPages: 1,
+      semanticFactsEnabled: false,
+      indexTargets: ['bm25', 'colbert', 'opensearch'],
+      colbertModel: 'candidate-model',
+      colbertCollection: 'candidate_collection',
+    });
+
+    expect(summary).toMatchObject({
+      indexTargets: ['bm25', 'colbert', 'opensearch'],
+      embeddingCalls: 0,
+      estimatedPaidCalls: 0,
+    });
+    expect(upsertChunks).toHaveBeenCalledWith(
+      1,
+      'Public',
+      0,
+      expect.any(Array),
+      expect.any(Array),
+      expect.any(String),
+      {},
+      undefined,
+      expect.objectContaining({
+        denseEnabled: false,
+        searchIndexTargets: ['bm25', 'colbert', 'opensearch'],
+        colbertModel: 'candidate-model',
+        colbertCollection: 'candidate_collection',
+      })
+    );
+  });
+
+  it('rebuilds search targets from Qdrant payload without MediaWiki fetch or embeddings', async () => {
+    const summary = await runReindex({
+      source: 'qdrant_payload',
+      indexTargets: ['colbert', 'opensearch'],
+      maxPages: 5,
+      dryRun: true,
+      colbertModel: 'candidate-model',
+      colbertCollection: 'candidate_collection',
+    });
+
+    expect(summary).toMatchObject({
+      dryRun: true,
+      namespaces: [],
+      matchedPages: 1,
+      processed: 1,
+      totalChunks: 2,
+      embeddingCalls: 0,
+      indexTargets: ['colbert', 'opensearch'],
+    });
+    expect(fetchAllPages).not.toHaveBeenCalled();
+    expect(upsertChunks).not.toHaveBeenCalled();
+    expect(syncSearchIndexFromQdrantPayload).toHaveBeenCalledWith({
+      dryRun: true,
+      maxPages: 5,
+      searchIndexTargets: ['colbert', 'opensearch'],
+      colbertModel: 'candidate-model',
+      colbertCollection: 'candidate_collection',
+    });
+  });
+
   it('adds optional LLM enrichment to indexed text and payload', async () => {
     fetchEffectiveEmbeddingConfig.mockResolvedValueOnce({
       provider: 'openai_compatible',
@@ -302,6 +413,73 @@ describe('runReindex', () => {
     expect(summary.llmEnrichmentCalls).toBe(1);
     expect(summary.embeddingCalls).toBe(summary.totalChunks);
     expect(summary.estimatedPaidCalls).toBe(summary.totalChunks + 1);
+  });
+
+  it('indexes cmdbdynamicpages anonymous static snapshots as additional page chunks', async () => {
+    config.cmdbDynamicPagesEnabled = true;
+    fetchAllPages.mockResolvedValueOnce([
+      { pageid: 1, ns: 0, title: 'Asset Page' },
+    ]);
+    fetchPageContent.mockResolvedValueOnce({
+      pageid: 1,
+      ns: 0,
+      title: 'Asset Page',
+      content: '{{#cmdb: |template=Assets |city=city49 }}',
+      lastModified: '2026-06-04T10:00:00Z',
+    });
+    extractCmdbDynamicSources.mockReturnValueOnce([{
+      sourceId: 'source-1',
+      markerType: 'parser_function',
+      templateCode: 'Assets',
+      params: { city: 'city49' },
+      allowAnonymousSnapshot: true,
+    }]);
+    fetchCmdbDynamicSnapshotChunks.mockResolvedValueOnce([{
+      text: 'CMDB dynamic snapshot: Assets\nsrv-01',
+      source: {
+        sourceId: 'source-1',
+        markerType: 'parser_function',
+        templateCode: 'Assets',
+        params: { city: 'city49' },
+        allowAnonymousSnapshot: true,
+      },
+      status: 'snapshot_hit',
+      paramsHash: 'params-hash',
+      snapshotFound: true,
+    }]);
+
+    const summary = await runReindex({
+      maxPages: 1,
+      semanticFactsEnabled: false,
+      indexTargets: ['bm25'],
+    });
+
+    expect(extractCmdbDynamicSources).toHaveBeenCalledWith(
+      '{{#cmdb: |template=Assets |city=city49 }}',
+      'Asset Page'
+    );
+    expect(fetchCmdbDynamicSnapshotChunks).toHaveBeenCalledTimes(1);
+    expect(upsertCmdbDynamicSnapshotChunks).toHaveBeenCalledWith(
+      1,
+      'Asset Page',
+      0,
+      [expect.objectContaining({
+        text: 'CMDB dynamic snapshot: Assets\nsrv-01',
+        snapshotFound: true,
+      })],
+      ['*'],
+      '2026-06-04T10:00:00Z',
+      expect.objectContaining({
+        denseEnabled: false,
+        searchIndexTargets: ['bm25'],
+      })
+    );
+    expect(summary).toMatchObject({
+      dynamicBlocksMatched: 1,
+      dynamicSnapshotsIndexed: 1,
+      dynamicSnapshotsMissed: 0,
+      dynamicSnapshotsFailed: 0,
+    });
   });
 
   it('does not require SQLite profile storage when Gateway sends resolved profile options', async () => {

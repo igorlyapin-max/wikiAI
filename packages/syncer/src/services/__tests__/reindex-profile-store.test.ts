@@ -1,7 +1,3 @@
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const fetchAllPages = vi.hoisted(() => vi.fn());
@@ -11,6 +7,7 @@ const fetchSemanticFacts = vi.hoisted(() => vi.fn());
 const getMediaWikiServiceAuthStatus = vi.hoisted(() => vi.fn());
 const upsertChunks = vi.hoisted(() => vi.fn());
 const fetchEffectiveEmbeddingConfig = vi.hoisted(() => vi.fn());
+const fetchIndexingProfiles = vi.hoisted(() => vi.fn());
 const enrichPageForReindex = vi.hoisted(() => vi.fn());
 
 vi.mock('../mediawiki.js', () => ({
@@ -40,13 +37,11 @@ vi.mock('../document-policy.js', () => ({
 
 vi.mock('../gateway.js', () => ({
   fetchEffectiveEmbeddingConfig,
+  fetchIndexingProfiles,
   enrichPageForReindex,
 }));
 
-describe('runReindex profile SQL storage', () => {
-  let previousDatabaseUrl: string | undefined;
-  let tempDir: string | undefined;
-
+describe('runReindex profile Gateway storage', () => {
   beforeEach(() => {
     vi.resetModules();
     fetchAllPages.mockReset();
@@ -72,6 +67,8 @@ describe('runReindex profile SQL storage', () => {
       dimensions: 768,
       apiKeyConfigured: false,
     });
+    fetchIndexingProfiles.mockReset();
+    fetchIndexingProfiles.mockResolvedValue([]);
     enrichPageForReindex.mockReset();
     enrichPageForReindex.mockResolvedValue({
       summary: 'Profile enrichment summary',
@@ -79,36 +76,15 @@ describe('runReindex profile SQL storage', () => {
       model: 'profile-enricher',
       inputChars: 20,
     });
-    previousDatabaseUrl = process.env.DATABASE_URL;
-    tempDir = mkdtempSync(path.join(tmpdir(), 'wikiai-syncer-profile-'));
   });
 
   afterEach(() => {
-    if (previousDatabaseUrl === undefined) {
-      delete process.env.DATABASE_URL;
-    } else {
-      process.env.DATABASE_URL = previousDatabaseUrl;
-    }
-    if (tempDir) rmSync(tempDir, { recursive: true, force: true });
+    vi.restoreAllMocks();
   });
 
-  it('loads indexing profile defaults from shared admin SQLite storage', async () => {
-    const dbPath = path.join(tempDir ?? tmpdir(), 'admin.sqlite');
-    process.env.DATABASE_URL = `sqlite://${dbPath}`;
-    const db = new DatabaseSync(dbPath);
-    db.exec(`
-      CREATE TABLE ai_admin_config (
-        area TEXT NOT NULL,
-        key TEXT NOT NULL,
-        value_json TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        updated_by TEXT,
-        PRIMARY KEY (area, key)
-      )
-    `);
-    db
-      .prepare('INSERT INTO ai_admin_config (area, key, value_json, updated_at) VALUES (?, ?, ?, ?)')
-      .run('indexing-profiles', 'default', JSON.stringify([{
+  it('loads indexing profile defaults from Gateway admin storage', async () => {
+    fetchIndexingProfiles.mockResolvedValueOnce([
+      {
         id: 'sql-profile',
         enabled: true,
         namespaces: [3030],
@@ -123,8 +99,8 @@ describe('runReindex profile SQL storage', () => {
         chunkSeparators: [' '],
         dryRunDefault: false,
         maxPagesDefault: 10,
-      }]), new Date().toISOString());
-    db.close();
+      },
+    ]);
 
     fetchAllPages.mockResolvedValueOnce([
       { pageid: 1, ns: 3030, title: 'CorpIT:VPN FAQ' },

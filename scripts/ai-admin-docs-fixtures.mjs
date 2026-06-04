@@ -334,6 +334,28 @@ Gateway проверяет <code>RS256</code> подпись через JWKS, <c
 
 <code>groups_only</code> - явный fallback. Gateway доверяет <code>allowed_groups</code>, которые были записаны в индекс при reindex. Используйте его только если MediaWiki не умеет проверять readable по Bearer для вашего IdP.
 
+== Retrieval profiles ==
+
+Retrieval profile - это готовый режим поиска, который администратор включает для внешних клиентов. Внешняя система не передает флаги BM25, ColBERT, trigram или editDistance напрямую. Она выбирает только <code>retrievalProfileId</code>.
+
+Пример:
+
+<syntaxhighlight lang="json">
+{
+  "query": "ошибка VPN после смены пароля",
+  "topK": 5,
+  "retrievalProfileId": "prod_hybrid_colbert"
+}
+</syntaxhighlight>
+
+<code>GET /api/v1/capabilities</code> возвращает список профилей и их готовность:
+
+* <code>prod_ready</code> - профиль готов для production-сценариев, включая ColBERT.
+* <code>limited_ready</code> - профиль можно использовать для ограниченных сценариев, например точный BM25 или широкий semantic search.
+* <code>not_ready</code> - профиль требует неготовый индекс или сервис. Если такой профиль явно запрошен, Gateway возвращает <code>409 retrieval_profile_not_ready</code>.
+
+Базовые примеры: <code>prod_hybrid_colbert</code>, <code>lexical_exact</code>, <code>semantic_broad</code>, <code>typo_tolerant_experimental</code>, <code>colbert_full_strict</code>. Они не запускают reindex сами; они только выбирают поведение retrieval по уже построенным индексам.
+
 == MCP adapter ==
 
 MCP adapter не читает Qdrant, Redis, SQLite или MediaWiki напрямую. Он вызывает только Gateway external API:
@@ -530,6 +552,20 @@ RAG и индексация - это две половины одного про
 |-
 | <code>lexicalGateMode</code> || <code>when_bm25_available</code> || Если BM25 нашел кандидатов, итоговая выдача строится только из этих chunks; vector score используется как дополнительный вес.
 |-
+| <code>lexicalNormalizationMode</code> || <code>simple_stem</code> || Базовая эвристика окончаний. <code>raw_prefix</code> оставляет только короткий prefix без снятия окончаний.
+|-
+| <code>lexicalSynonymsEnabled</code> || <code>false</code> || Experimental query-time синонимы. Формат в UI: <code>тикет=заявка,инцидент</code>. Индекс не меняется.
+|-
+| <code>lexicalTransliterationEnabled</code> || <code>false</code> || Experimental расширение латиница/кириллица: <code>server</code>/<code>сервер</code>, <code>router</code>/<code>роутер</code>. Индекс не меняется.
+|-
+| <code>lexicalEditDistanceEnabled</code> || <code>false</code> || Experimental tolerance для коротких опечаток. Gateway добавляет укороченный prefix и проверяет расстояние до 1.
+|-
+| <code>trigramIndexEnabled</code> || <code>false</code> || Experimental fallback по отдельному trigram index, если BM25 не дал пригодных chunks. Включается только после 100% покрытия trigram index.
+|-
+| <code>trigramCandidateLimit</code> || <code>50</code> || Сколько trigram-кандидатов брать до ACL/trust.
+|-
+| <code>trigramMinQueryLength</code> || <code>4</code> || Минимальная длина запроса для trigram fallback.
+|-
 | <code>vectorOnlyFallbackEnabled</code> || <code>true</code> || Разрешать чистый vector search, когда BM25 не нашел ни одного кандидата.
 |-
 | <code>vectorOnlyFallbackMinScore</code> || <code>0.78</code> || Минимальная semantic-похожесть для vector-only fallback.
@@ -573,6 +609,10 @@ RAG и индексация - это две половины одного про
 * <code>vectorCandidateLimit</code> и <code>lexicalCandidateLimit</code>: 5-200.
 * <code>lexicalMinMatchedTerms</code>: 1-6.
 * <code>lexicalGateMode</code>: <code>when_bm25_available</code> или <code>off</code>.
+* <code>lexicalNormalizationMode</code>: <code>simple_stem</code> или <code>raw_prefix</code>.
+* <code>lexicalSynonyms</code>: до 100 правил, в каждом 1-24 синонима.
+* <code>trigramCandidateLimit</code>: 5-200.
+* <code>trigramMinQueryLength</code>: 3-32.
 * <code>vectorOnlyFallbackMinScore</code>: 0-1.
 * <code>minFinalScore</code>: 0-1.
 * <code>searchMode</code>: <code>hybrid</code>, <code>vector_only</code>, <code>colbert_full</code> или <code>hybrid_colbert</code>.
@@ -597,6 +637,27 @@ Hybrid search нужен, чтобы не полагаться только на
 Если BM25 ничего не нашел, включается <code>vectorOnlyFallbackEnabled</code>. Тогда Gateway возвращает только vector-кандидатов выше отдельного порога <code>vectorOnlyFallbackMinScore</code>. Это нужно для запросов с синонимами или формулировками, которых нет в тексте буквально.
 
 Если FTS нашел raw BM25-кандидатов, но все они совпали только по одному слишком широкому слову и были отфильтрованы <code>lexicalMinMatchedTerms</code>, vector-only fallback не включается. Это сделано специально: лучше показать пустую или узкую выдачу, чем вернуть случайные semantic-only страницы.
+
+== BM25 совсем просто ==
+
+BM25 - это не AI. Это как искать карточки в коробке по словам.
+
+# Gateway берет запрос пользователя и режет его на слова из букв/цифр длиной от 2 символов.
+# Все слова приводятся к нижнему регистру.
+# В базовом режиме <code>simple_stem</code> у русских слов снимаются частые окончания: <code>ами</code>, <code>ями</code>, <code>ого</code>, <code>ему</code>, <code>ыми</code>, <code>ими</code>, <code>ий</code>, <code>ый</code>, <code>ой</code>, <code>ая</code>, <code>ое</code>, <code>ее</code>, <code>ые</code>, <code>ие</code>, <code>ую</code>, <code>юю</code>, <code>ым</code>, <code>им</code>, <code>ом</code>, <code>ем</code>, <code>ах</code>, <code>ях</code>, <code>а</code>, <code>я</code>, <code>ы</code>, <code>и</code>, <code>у</code>, <code>ю</code>, <code>е</code>, <code>о</code>.
+# Если после снятия окончания осталось меньше 4 символов, слово откатывается к исходному варианту.
+# После этого берутся первые 5 символов. Поэтому <code>кухня</code>, <code>кухню</code>, <code>кухней</code> становятся <code>кухн*</code>; <code>администрирование</code> становится <code>админ*</code>.
+# SQLite FTS5 ищет chunks по <code>term*</code>. Несколько слов соединяются через <code>OR</code>.
+# Gateway проверяет, сколько разных термов реально совпало в найденном chunk. Если меньше <code>lexicalMinMatchedTerms</code>, chunk выкидывается.
+
+Experimental features добавляют термы к поиску:
+
+* <code>synonyms</code>: <code>тикет=заявка,инцидент</code> заставляет запрос <code>тикет</code> искать еще <code>заявк*</code> и <code>инцид*</code>.
+* <code>transliteration</code>: <code>сервер</code> ищет еще <code>serve*</code>, а <code>router</code> ищет еще <code>роут*</code>.
+* <code>editDistance</code>: для длинного терма добавляется более короткий prefix, а потом Gateway проверяет, что отличие не больше одной правки.
+* <code>trigram</code>: если BM25 не дал пригодных chunks, запрос разбивается на кусочки по 3 символа и ищется по отдельному trigram index.
+
+Soundex и rsoundex не используются: для русско-английской корпоративной вики они дают слишком много фонетического шума. Базовый режим остается эвристикой окончаний; experimental-переключатели включаются администратором по одному и проверяются на реальных запросах.
 
 == ColBERT index ==
 
@@ -630,6 +691,7 @@ ColBERT index - это отдельный on-prem late-interaction индекс.
 # Gateway берет lexical-кандидатов из SQLite FTS5.
 # Gateway отбрасывает lexical-кандидатов, где найдено меньше <code>lexicalMinMatchedTerms</code> слов запроса.
 # Если BM25 нашел кандидатов и включен BM25 gate, Gateway оставляет только lexical-кандидатов и добавляет им vector score при совпадении chunk id.
+# Если BM25 не дал пригодных chunks и включен <code>trigramIndexEnabled</code>, Gateway пробует trigram fallback.
 # Если FTS вообще не нашел raw BM25-кандидатов, Gateway может использовать vector-only fallback с отдельным высоким порогом.
 # Итоговый score считается по весам <code>vectorWeight</code> и <code>lexicalWeight</code>.
 # Затем MediaWiki ACL и trust model отбрасывают недоступные или недоверенные chunks.
@@ -637,9 +699,9 @@ ColBERT index - это отдельный on-prem late-interaction индекс.
 
 <code>showRawScores=false</code> скрывает score от пользователя. Это правильно: score показывает место chunk в сортировке, но не говорит "ответ надежный". Надежность источника отдельно рассчитывается во вкладке <code>Модель доверия</code>.
 
-SQLite FTS5 и ColBERT index наполняются Syncer-ом при webhook и reindex через Gateway internal search-index endpoint. После включения hybrid или ColBERT search старые chunks не появятся в новых индексах сами по себе: нужен один full reindex.
+SQLite FTS5, trigram index и ColBERT index наполняются Syncer-ом при webhook и reindex через Gateway internal search-index endpoint. После включения hybrid, trigram или ColBERT search старые chunks не появятся в новых индексах сами по себе: нужен один full reindex или отдельный backfill.
 
-Статус BM25-индекса в админке показывает страницы, chunks, FTS chunks и признак необходимости backfill. Если backfill нужен, hybrid search будет чаще уходить в vector-only fallback.
+Статус BM25-индекса в админке показывает страницы, chunks, FTS chunks и признак необходимости backfill. Статус trigram показывает chunks, FTS chunks и признак необходимости backfill. Если backfill нужен, hybrid search будет чаще уходить в vector-only fallback, а trigram fallback не будет покрывать старые chunks. Переключатель <code>trigramIndexEnabled</code> остается заблокированным, пока <code>trigramPopulated=false</code>.
 
 Если нужно заполнить BM25 без повторного построения embeddings, можно использовать backfill из существующего Qdrant payload:
 
@@ -649,7 +711,55 @@ GATEWAY_BASE_URL=http://127.0.0.1:3000 \\
 node scripts/backfill-search-index-from-qdrant.mjs
 </syntaxhighlight>
 
-Этот скрипт не вызывает LLM/OpenAI и не строит embeddings. Он только читает payload chunks из Qdrant и пишет их в SQLite FTS через внутренний Gateway endpoint.
+Trigram backfill не строит embeddings и не вызывает LLM. Он запускается как async job и пересобирает 3-граммы из уже сохраненных <code>ai_search_chunks</code>:
+
+<syntaxhighlight lang="bash">
+curl -s -X POST http://127.0.0.1:3000/api/admin/search-index/trigram/backfill \\
+  -H 'Cookie: <admin-mediawiki-cookie>'
+</syntaxhighlight>
+
+API сразу возвращает <code>202 Accepted</code> и статус job. Ход выполнения читается отдельно:
+
+<syntaxhighlight lang="bash">
+curl -s http://127.0.0.1:3000/api/admin/search-index/trigram/backfill/status \\
+  -H 'Cookie: <admin-mediawiki-cookie>'
+</syntaxhighlight>
+
+Если backfill мешает staging или обслуживанию, его можно остановить:
+
+<syntaxhighlight lang="bash">
+curl -s -X POST http://127.0.0.1:3000/api/admin/search-index/trigram/backfill/cancel \\
+  -H 'Cookie: <admin-mediawiki-cookie>'
+</syntaxhighlight>
+
+Готовность считается строгой: <code>chunks &gt; 0</code>, <code>trigramChunks &gt;= chunks</code> и <code>trigramFtsChunks &gt;= chunks</code>. До этого <code>POST /api/admin/rag/config</code> с <code>trigramIndexEnabled=true</code> возвращает ошибку <code>trigram_index_not_ready</code>.
+
+Стоимость trigram - дополнительное SQLite-хранилище и FTS-запросы. Для каждого слова длиной <code>N</code> создается <code>N-2</code> коротких термов. Это не добавляет embedding calls, OpenAI calls или ColBERT reindex, но требует disk I/O и backfill на уже проиндексированном корпусе.
+
+Для staging-проверки используйте benchmark. Он может сам запустить backfill, дождаться завершения, сравнить размер SQLite до/после и прогнать контрольные запросы:
+
+<syntaxhighlight lang="bash">
+DATABASE_URL=sqlite://./state/admin.db \\
+WIKIAI_ADMIN_COOKIE='<admin-mediawiki-cookie>' \\
+node scripts/benchmark-trigram-readiness.mjs \\
+  --base-url http://127.0.0.1:3000 \\
+  --queries ./trigram-queries.txt \\
+  --start-backfill \\
+  --poll-ms 1000 \\
+  --p95-threshold-ms 200
+</syntaxhighlight>
+
+Скрипт печатает JSON с <code>readiness.passed</code>, <code>readiness.reasons</code>, покрытием индекса, статусом job, размером БД и p50/p95/p99 latency. Нормальный критерий для включения в production: <code>readiness.passed=true</code>, backfill <code>completed</code>, покрытие 100%, <code>failed=0</code>, p95 trigram stage не выше 200 мс на representative queries.
+
+Метрики Gateway в <code>/metrics</code>:
+
+* <code>wikiai_search_trigram_queries_total{result}</code> - сколько trigram-поисков завершилось <code>hit</code>, <code>filtered</code>, <code>miss</code>, <code>skipped</code> или <code>error</code>.
+* <code>wikiai_search_trigram_last_latency_ms</code> - latency последнего trigram stage.
+* <code>wikiai_search_trigram_raw_candidates_total</code> - суммарные raw candidates из trigram.
+* <code>wikiai_trigram_backfill_jobs_total{status}</code> - счетчик backfill jobs по статусам.
+* <code>wikiai_trigram_backfill_progress_chunks</code> - последний processed chunk count.
+
+BM25/ColBERT backfill и trigram backfill не вызывают LLM/OpenAI и не строят embeddings: BM25/ColBERT читает payload chunks из Qdrant, а trigram читает уже сохраненные <code>ai_search_chunks</code>.
 
 == Как влияет на стоимость ==
 

@@ -14,6 +14,7 @@ function oidcConfig(patch: Partial<ExternalApiConfig['oidc']> = {}): ExternalApi
     mcpEnabled: true,
     anonymousSearchAllowed: false,
     maxTopK: 10,
+    defaultRetrievalProfileId: '',
     aclMode: 'mediawiki_check',
     oidc: {
       issuer: 'https://issuer.example',

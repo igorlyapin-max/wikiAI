@@ -183,6 +183,19 @@ describe('chat routes', () => {
     expect(res.json()).toMatchObject({
       conversationId: 'conv-retention',
       message: 'Use MFA for VPN.',
+      diagnostics: {
+        originalMessage: 'Как подключить VPN?',
+        retrievalQuery: 'Как подключить VPN?',
+        historyMessagesUsed: 0,
+        requestedTopK: null,
+        effectiveTopK: 4,
+        searchMode: 'hybrid',
+        retrievalProfileId: null,
+        rawChunks: 1,
+        readableChunks: 1,
+        trustedChunks: 1,
+        finalSources: 1,
+      },
       sources: [
         {
           pageId: 10,
@@ -279,6 +292,11 @@ describe('chat routes', () => {
     expect(ragQuery).toContain('Еще раз про кухню?');
     expect(ragQuery).toContain('Расскажи про молекулярную гастрономию');
     expect(ragQuery).toContain('Молекулярная гастрономия использует научные методы');
+    expect(res.json().diagnostics).toMatchObject({
+      originalMessage: 'Еще раз про кухню?',
+      historyMessagesUsed: 2,
+    });
+    expect(res.json().diagnostics.retrievalQuery).toContain('Расскажи про молекулярную гастрономию');
     const llmMessages = callLiteLLM.mock.calls[0][0] as Array<{ role: string; content: string }>;
     expect(llmMessages[llmMessages.length - 1]).toEqual({ role: 'user', content: 'Еще раз про кухню?' });
 
@@ -358,10 +376,14 @@ describe('chat routes', () => {
     expect(res.payload).toContain('"type":"conversation"');
     expect(res.payload).toContain('"conversationId":"conv-stream-conflict"');
     expect(res.payload).toContain('"type":"conflict"');
+    expect(res.payload).toContain('"type":"diagnostics"');
+    expect(res.payload).toContain('"originalMessage":"Можно ли VPN без MFA?"');
+    expect(res.payload).toContain('"historyMessagesUsed":0');
     expect(res.payload).toContain('"type":"sources"');
     expect(res.payload).toContain('"pageUrl":"http://127.0.0.1:8082/index.php/CorpIT:FAQ_VPN"');
     expect(res.payload.indexOf('"type":"conversation"')).toBeLessThan(res.payload.indexOf('"type":"conflict"'));
-    expect(res.payload.indexOf('"type":"conflict"')).toBeLessThan(res.payload.indexOf('"type":"sources"'));
+    expect(res.payload.indexOf('"type":"conflict"')).toBeLessThan(res.payload.indexOf('"type":"diagnostics"'));
+    expect(res.payload.indexOf('"type":"diagnostics"')).toBeLessThan(res.payload.indexOf('"type":"sources"'));
     await app.close();
   });
 

@@ -203,7 +203,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
       ],
     },
     async (request, reply) => {
-      const { message, conversationId, stream: requestedStream } = request.body;
+      const { message, conversationId, stream: requestedStream, topK, retrievalProfileId } = request.body;
       const stream = requestedStream ?? true;
       const mwUser = (request as AuthenticatedRequest).mwUser!;
       const cookie = (request as AuthenticatedRequest).sessionCookie;
@@ -217,6 +217,8 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
         const prepared = await prepareRuntimeChat({
           message,
           conversationId,
+          topK,
+          retrievalProfileId,
           principal: principalFromMwUser(mwUser, cookie),
           wikiUrlOptions: wikiUrlOptionsFromRequest(request),
           aclMode: 'mediawiki_check',

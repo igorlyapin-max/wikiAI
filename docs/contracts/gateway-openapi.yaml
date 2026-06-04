@@ -58,6 +58,20 @@ paths:
             text/plain:
               schema:
                 type: string
+  /api/internal/indexing-profiles:
+    get:
+      summary: Internal Syncer lookup for admin indexing profiles.
+      security:
+        - internalAdminToken: []
+      responses:
+        "200":
+          description: Stored or default indexing profiles.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IndexingProfilesResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
   /api/search:
     post:
       summary: Search allowed MediaWiki content.
@@ -116,6 +130,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SearchResponse"
+        "409":
+          description: Requested retrieval profile is not ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "403":
           $ref: "#/components/responses/Forbidden"
   /api/v1/chat:
@@ -130,6 +150,12 @@ paths:
       responses:
         "200":
           description: External chat response.
+        "409":
+          description: Requested retrieval profile is not ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "403":
           $ref: "#/components/responses/Forbidden"
   /api/admin/reindex:
@@ -158,6 +184,126 @@ paths:
       responses:
         "200":
           description: Reindex status.
+  /api/admin/search-index/status:
+    get:
+      summary: Return BM25/trigram search-index readiness.
+      security:
+        - mediaWikiSession: []
+      responses:
+        "200":
+          description: Search-index status and readiness.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchIndexStatusResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/admin/opensearch/status:
+    get:
+      summary: Return OpenSearch service and index readiness.
+      security:
+        - mediaWikiSession: []
+      responses:
+        "200":
+          description: OpenSearch status.
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/admin/opensearch/analyze:
+    post:
+      summary: Analyze a query with the configured OpenSearch analyzer.
+      security:
+        - mediaWikiSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query:
+                  type: string
+      responses:
+        "200":
+          description: Analyzer tokens or disabled fallback tokens.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/admin/opensearch/search-preview:
+    post:
+      summary: Preview OpenSearch candidates and diagnostics for an admin query.
+      security:
+        - mediaWikiSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query:
+                  type: string
+                limit:
+                  type: integer
+                  minimum: 1
+                  maximum: 200
+      responses:
+        "200":
+          description: OpenSearch search-preview diagnostics and chunks.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/admin/search-index/trigram/backfill:
+    post:
+      summary: Start asynchronous trigram backfill from stored search chunks.
+      security:
+        - mediaWikiSession: []
+      responses:
+        "202":
+          description: Trigram backfill job accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrigramBackfillJobResponse"
+        "409":
+          description: A trigram backfill job is already running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/admin/search-index/trigram/backfill/status:
+    get:
+      summary: Return latest trigram backfill job.
+      security:
+        - mediaWikiSession: []
+      responses:
+        "200":
+          description: Latest trigram backfill job or null.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrigramBackfillJobResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/admin/search-index/trigram/backfill/cancel:
+    post:
+      summary: Request cancellation of the running trigram backfill job.
+      security:
+        - mediaWikiSession: []
+      responses:
+        "200":
+          description: Latest trigram backfill job after cancel request or null.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrigramBackfillJobResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
 components:
   securitySchemes:
     mediaWikiSession:
@@ -168,6 +314,10 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+    internalAdminToken:
+      type: apiKey
+      in: header
+      name: x-wikiai-admin-token
   responses:
     BadRequest:
       description: Invalid request.
@@ -230,6 +380,11 @@ components:
         topK:
           type: integer
           minimum: 1
+        retrievalProfileId:
+          type: string
+          description: Optional admin-defined retrieval profile id. Raw BM25/ColBERT/trigram flags are not accepted by the public API.
+        context:
+          $ref: "#/components/schemas/ExternalContext"
     SearchChunk:
       type: object
       required: [title, text, score]
@@ -270,6 +425,57 @@ components:
           type: string
         stream:
           type: boolean
+        topK:
+          type: integer
+          minimum: 1
+        retrievalProfileId:
+          type: string
+          description: Optional admin-defined retrieval profile id. Raw BM25/ColBERT/trigram flags are not accepted by the public API.
+        context:
+          $ref: "#/components/schemas/ExternalContext"
+    ExternalContext:
+      type: object
+      description: Optional caller context for embedded integrations. Gateway validates shape but derives auth server-side.
+      properties:
+        sourceApp:
+          type: string
+        objectType:
+          type: string
+        objectId:
+          type: string
+        title:
+          type: string
+        url:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        params:
+          type: object
+          additionalProperties: true
+        attributes:
+          type: object
+          additionalProperties: true
+        dynamicBlocks:
+          type: array
+          items:
+            $ref: "#/components/schemas/DynamicBlockContext"
+    DynamicBlockContext:
+      type: object
+      properties:
+        sourceApp:
+          type: string
+          enum: [cmdbdynamicpages]
+        templateCode:
+          type: string
+        status:
+          type: string
+          enum: [snapshot_hit, snapshot_miss, auth_runtime_hit, auth_required, permission_denied, runtime_error, unresolved_params]
+        title:
+          type: string
+        url:
+          type: string
     Capabilities:
       type: object
       required: [searchEnabled, mcpEnabled, anonymousSearchAllowed, aclMode]
@@ -283,16 +489,210 @@ components:
         aclMode:
           type: string
           enum: [mediawiki_check, groups_only]
+        defaultRetrievalProfileId:
+          type: string
+        retrievalProfiles:
+          type: array
+          items:
+            $ref: "#/components/schemas/RetrievalProfileCapability"
+    RetrievalProfileReadiness:
+      type: object
+      required: [status, reasons]
+      properties:
+        status:
+          type: string
+          enum: [prod_ready, limited_ready, not_ready]
+        reasons:
+          type: array
+          items:
+            type: string
+        requiredIndexTargets:
+          type: array
+          items:
+            type: string
+        missingIndexTargets:
+          type: array
+          items:
+            type: string
+    RetrievalProfileCapability:
+      type: object
+      required: [id, name, enabled, apiEnabled, mcpEnabled, maxTopK, readiness]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        enabled:
+          type: boolean
+        apiEnabled:
+          type: boolean
+        mcpEnabled:
+          type: boolean
+        anonymousAllowed:
+          type: boolean
+        maxTopK:
+          type: integer
+        tags:
+          type: array
+          items:
+            type: string
+        searchMode:
+          type: string
+          enum: [vector_only, hybrid, colbert_full, hybrid_colbert]
+        lexicalBackend:
+          type: string
+          enum: [sqlite_fts, opensearch]
+        rerankMode:
+          type: string
+          enum: [none, colbert_v2]
+        readiness:
+          $ref: "#/components/schemas/RetrievalProfileReadiness"
     ReindexRequest:
       type: object
       properties:
         profileId:
           type: string
+        indexTargets:
+          type: array
+          items:
+            type: string
+            enum: [dense, bm25, colbert, opensearch, attachments, semanticFacts, ontologyVectors]
+        source:
+          type: string
+          enum: [mediawiki, qdrant_payload]
         maxPages:
           type: integer
           minimum: 1
         dryRun:
           type: boolean
+        cmdbDynamicPagesEnabled:
+          type: boolean
+          description: Per-run override for cmdbdynamicpages marker processing.
+    DatabaseDiagnostics:
+      type: object
+      required: [url, dialect, connectionStatus, migrationStatus]
+      properties:
+        url:
+          type: string
+          description: Redacted DATABASE_URL.
+        dialect:
+          type: string
+          enum: [sqlite, postgres]
+        connectionStatus:
+          type: string
+          enum: [ok, error]
+        migrationStatus:
+          type: string
+          enum: [ok, error]
+        error:
+          type: string
+    IndexingProfilesResponse:
+      type: object
+      required: [values]
+      properties:
+        values:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    SearchIndexStatusResponse:
+      type: object
+      properties:
+        values:
+          $ref: "#/components/schemas/SearchIndexStatus"
+    SearchIndexStatus:
+      type: object
+      required: [chunks, ftsChunks, trigramChunks, trigramFtsChunks, pages, populated, backfillRecommended, trigramPopulated, trigramBackfillRecommended, readiness]
+      properties:
+        chunks:
+          type: integer
+          minimum: 0
+        ftsChunks:
+          type: integer
+          minimum: 0
+        trigramChunks:
+          type: integer
+          minimum: 0
+        trigramFtsChunks:
+          type: integer
+          minimum: 0
+        pages:
+          type: integer
+          minimum: 0
+        latestUpdatedAt:
+          type: string
+          format: date-time
+        populated:
+          type: boolean
+        backfillRecommended:
+          type: boolean
+        trigramPopulated:
+          type: boolean
+          description: True only when chunks > 0 and trigram tables cover every stored chunk.
+        trigramBackfillRecommended:
+          type: boolean
+        readiness:
+          $ref: "#/components/schemas/SearchReadiness"
+        colbertHealth:
+          type: object
+          additionalProperties: true
+    SearchReadiness:
+      type: object
+      required: [status, reasons]
+      properties:
+        status:
+          type: string
+          enum: [prod_ready, limited_ready, not_ready]
+        reasons:
+          type: array
+          items:
+            type: string
+    TrigramBackfillJobResponse:
+      type: object
+      properties:
+        values:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/TrigramBackfillJob"
+    TrigramBackfillJob:
+      type: object
+      required: [id, type, status, totalChunks, processedChunks, writtenChunks, grams, startedAt, updatedAt]
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [trigram]
+        status:
+          type: string
+          enum: [queued, running, completed, failed, canceled]
+        totalChunks:
+          type: integer
+          minimum: 0
+        processedChunks:
+          type: integer
+          minimum: 0
+        writtenChunks:
+          type: integer
+          minimum: 0
+        grams:
+          type: integer
+          minimum: 0
+        requestedBy:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        finishedAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        error:
+          type: string
     ErrorResponse:
       type: object
       properties:

@@ -1,4 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import {
+  SearchRetrievalDiagnostics,
+  normalizeRetrievalDiagnostics,
+  type RetrievalDiagnostics,
+} from './RetrievalDiagnostics';
 
 interface SearchTabProps {
   gatewayUrl: string;
@@ -11,6 +16,18 @@ interface SearchResult {
   pageUrl?: string;
   text?: string;
 }
+
+interface AssistantUiConfig {
+  searchHistoryEnabled: boolean;
+  searchHistoryLimit: number;
+}
+
+const DEFAULT_UI_CONFIG: AssistantUiConfig = {
+  searchHistoryEnabled: true,
+  searchHistoryLimit: 8,
+};
+
+const SEARCH_HISTORY_KEY = 'wikiai:searchHistory:v1';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -46,6 +63,50 @@ function normalizeSearchResults(value: unknown): SearchResult[] {
     : [];
 }
 
+function normalizeUiConfig(value: unknown): AssistantUiConfig {
+  const values = isRecord(value) && isRecord(value.values) ? value.values : {};
+  const limit = readNumber(values.searchHistoryLimit);
+  return {
+    searchHistoryEnabled: typeof values.searchHistoryEnabled === 'boolean'
+      ? values.searchHistoryEnabled
+      : DEFAULT_UI_CONFIG.searchHistoryEnabled,
+    searchHistoryLimit: limit && Number.isInteger(limit) && limit >= 1 && limit <= 20
+      ? limit
+      : DEFAULT_UI_CONFIG.searchHistoryLimit,
+  };
+}
+
+function readStoredHistory(limit: number): string[] {
+  try {
+    const raw = window.localStorage.getItem(SEARCH_HISTORY_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+      .map((item) => item.trim())
+      .slice(0, limit);
+  } catch {
+    return [];
+  }
+}
+
+function writeStoredHistory(values: string[]): void {
+  try {
+    window.localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(values));
+  } catch {
+    // Ignore browser storage failures; search itself must remain usable.
+  }
+}
+
+function clearStoredHistory(): void {
+  try {
+    window.localStorage.removeItem(SEARCH_HISTORY_KEY);
+  } catch {
+    // Ignore browser storage failures.
+  }
+}
+
 async function readGatewayError(res: Response): Promise<string> {
   try {
     const data = (await res.clone().json()) as { error?: unknown; message?: unknown };
@@ -60,38 +121,10 @@ async function readGatewayError(res: Response): Promise<string> {
   return `Ошибка Gateway (${res.status})`;
 }
 
-const SPINNER_KEYFRAMES = '@keyframes ai-assistant-spin { to { transform: rotate(360deg); } }';
-
 function ProcessingIndicator({ label }: { label: string }) {
   return (
-    <div
-      role="status"
-      aria-live="polite"
-      style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 8,
-        marginTop: 12,
-        padding: '8px 10px',
-        border: '1px solid #ddd',
-        borderRadius: 4,
-        color: '#111827',
-        background: '#f9fafb',
-        fontSize: 13,
-      }}
-    >
-      <span
-        aria-hidden="true"
-        style={{
-          width: 14,
-          height: 14,
-          border: '2px solid #d1d5db',
-          borderTopColor: '#111827',
-          borderRadius: '50%',
-          animation: 'ai-assistant-spin 0.8s linear infinite',
-          flex: '0 0 auto',
-        }}
-      />
+    <div className="ai-assistant__status" role="status" aria-live="polite">
+      <span aria-hidden="true" className="ai-assistant__spinner" />
       <span>{label}</span>
     </div>
   );
@@ -103,9 +136,61 @@ export default function SearchTab({ gatewayUrl }: SearchTabProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searched, setSearched] = useState(false);
+  const [uiConfig, setUiConfig] = useState<AssistantUiConfig>(DEFAULT_UI_CONFIG);
+  const [history, setHistory] = useState<string[]>(() => readStoredHistory(DEFAULT_UI_CONFIG.searchHistoryLimit));
+  const [diagnostics, setDiagnostics] = useState<RetrievalDiagnostics | undefined>();
 
-  const handleSearch = async () => {
-    if (!query.trim()) return;
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadConfig = async (): Promise<void> => {
+      try {
+        const res = await fetch(`${gatewayUrl}/api/ui/config`, { credentials: 'include' });
+        if (!res.ok) throw new Error(await readGatewayError(res));
+        const nextConfig = normalizeUiConfig(await res.json());
+        if (cancelled) return;
+        setUiConfig(nextConfig);
+        if (nextConfig.searchHistoryEnabled) {
+          setHistory(readStoredHistory(nextConfig.searchHistoryLimit));
+        } else {
+          clearStoredHistory();
+          setHistory([]);
+        }
+      } catch {
+        if (!cancelled) {
+          setUiConfig(DEFAULT_UI_CONFIG);
+          setHistory(readStoredHistory(DEFAULT_UI_CONFIG.searchHistoryLimit));
+        }
+      }
+    };
+
+    void loadConfig();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [gatewayUrl]);
+
+  const rememberQuery = (value: string): void => {
+    if (!uiConfig.searchHistoryEnabled) {
+      clearStoredHistory();
+      setHistory([]);
+      return;
+    }
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    const normalized = [
+      trimmed,
+      ...history.filter((item) => item.toLocaleLowerCase('ru-RU') !== trimmed.toLocaleLowerCase('ru-RU')),
+    ].slice(0, uiConfig.searchHistoryLimit);
+    setHistory(normalized);
+    writeStoredHistory(normalized);
+  };
+
+  const handleSearch = async (nextQuery = query): Promise<void> => {
+    const trimmedQuery = nextQuery.trim();
+    if (!trimmedQuery) return;
+    setQuery(trimmedQuery);
     setLoading(true);
     setError(null);
     setSearched(true);
@@ -114,76 +199,115 @@ export default function SearchTab({ gatewayUrl }: SearchTabProps) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ query, topK: 5 }),
+        body: JSON.stringify({ query: trimmedQuery, topK: 5 }),
       });
       if (!res.ok) {
         throw new Error(await readGatewayError(res));
       }
       const data = await res.json();
       setResults(normalizeSearchResults(isRecord(data) ? data.results : undefined));
+      setDiagnostics(normalizeRetrievalDiagnostics(isRecord(data) ? data.diagnostics : undefined));
+      rememberQuery(trimmedQuery);
     } catch (err) {
       console.error('Search error:', err);
       setResults([]);
+      setDiagnostics(undefined);
       setError(err instanceof Error && err.message ? err.message : 'Ошибка поиска.');
     } finally {
       setLoading(false);
     }
   };
 
+  const handleClearHistory = (): void => {
+    clearStoredHistory();
+    setHistory([]);
+  };
+
   return (
-    <div>
-      <style>{SPINNER_KEYFRAMES}</style>
-      <div style={{ display: 'flex', gap: 8 }}>
+    <div className="ai-assistant__search">
+      <div className="ai-assistant__search-bar">
         <input
+          className="ai-assistant__input"
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') void handleSearch();
+          }}
           placeholder="Введите вопрос..."
-          style={{ flex: 1, padding: 8, fontSize: 16 }}
         />
-        <button onClick={handleSearch} disabled={loading} style={{ padding: '8px 16px' }}>
+        <button
+          className="ai-assistant__button ai-assistant__button--primary"
+          type="button"
+          onClick={() => void handleSearch()}
+          disabled={loading}
+        >
           {loading ? 'Обработка...' : 'Найти'}
         </button>
       </div>
+
+      {uiConfig.searchHistoryEnabled && history.length > 0 && (
+        <div className="ai-assistant__history" aria-label="Последние поисковые запросы">
+          <span className="ai-assistant__history-label">Последние:</span>
+          {history.map((item) => (
+            <button
+              key={item}
+              type="button"
+              className="ai-assistant__chip"
+              title={item}
+              aria-label={`Повторить поиск: ${item}`}
+              onClick={() => void handleSearch(item)}
+              disabled={loading}
+            >
+              {item}
+            </button>
+          ))}
+          <button
+            type="button"
+            className="ai-assistant__icon-button ai-assistant__clear-history"
+            title="Очистить историю поиска"
+            aria-label="Очистить историю поиска"
+            onClick={handleClearHistory}
+            disabled={loading}
+          >
+            ×
+          </button>
+        </div>
+      )}
+
       {loading && <ProcessingIndicator label="Запрос обрабатывается..." />}
-      {error && (
-        <div style={{ marginTop: 12, padding: 10, border: '1px solid #DC2626', color: '#DC2626', borderRadius: 4 }}>
-          {error}
-        </div>
-      )}
+      {error && <div className="ai-assistant__error">{error}</div>}
       {!loading && !error && searched && results.length === 0 && (
-        <div style={{ marginTop: 12, padding: 10, border: '1px solid #ddd', color: '#555', borderRadius: 4 }}>
-          Ничего не найдено
-        </div>
+        <div className="ai-assistant__empty">Ничего не найдено</div>
       )}
-      <div style={{ marginTop: 16 }}>
+      {!loading && !error && diagnostics && (
+        <SearchRetrievalDiagnostics diagnostics={diagnostics} resultCount={results.length} />
+      )}
+      <div className="ai-assistant__results">
         {results.map((r) => {
           const text = typeof r.text === 'string' ? r.text : '';
           const title = r.title || `Страница ${r.pageId}`;
           return (
-            <div key={r.id} style={{ marginBottom: 12, padding: 12, border: '1px solid #ddd', borderRadius: 4 }}>
-              <div style={{ fontWeight: 'bold', marginBottom: 4 }}>
-                {r.pageUrl ? (
-                  <a href={r.pageUrl} target="_blank" rel="noreferrer" style={{ color: '#111827' }}>
-                    {title}
-                  </a>
-                ) : (
-                  title
-                )}
-              </div>
-              {text && <div style={{ color: '#555', fontSize: 14 }}>{text.slice(0, 300)}...</div>}
+            <article key={r.id} className="ai-assistant__result">
+              {r.pageUrl ? (
+                <a href={r.pageUrl} target="_blank" rel="noreferrer" className="ai-assistant__result-title">
+                  {title}
+                </a>
+              ) : (
+                <div className="ai-assistant__result-title">{title}</div>
+              )}
+              {text && <p className="ai-assistant__result-text">{text.slice(0, 300)}...</p>}
               {r.pageUrl && (
                 <a
                   href={r.pageUrl}
                   target="_blank"
                   rel="noreferrer"
-                  style={{ display: 'inline-block', marginTop: 6, fontSize: 13, color: '#4a90d9' }}
+                  className="ai-assistant__result-action"
                 >
                   Открыть страницу
                 </a>
               )}
-            </div>
+            </article>
           );
         })}
       </div>

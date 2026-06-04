@@ -12,6 +12,7 @@ export interface ExternalApiConfig {
   mcpEnabled: boolean;
   anonymousSearchAllowed: boolean;
   maxTopK: number;
+  defaultRetrievalProfileId: string;
   aclMode: ExternalAclMode;
   oidc: {
     issuer: string;
@@ -32,6 +33,7 @@ export interface ExternalApiCapabilities {
   streamingSupported: boolean;
   anonymousSearchAllowed: boolean;
   aclMode: ExternalAclMode;
+  defaultRetrievalProfileId?: string;
   oidcConfigured: boolean;
   warnings: string[];
 }
@@ -41,6 +43,7 @@ const configSchema = z.object({
   mcpEnabled: z.boolean().optional(),
   anonymousSearchAllowed: z.boolean().optional(),
   maxTopK: z.number().int().min(1).max(50).optional(),
+  defaultRetrievalProfileId: z.string().trim().max(120).regex(/^[A-Za-z0-9_.-]+$/).or(z.literal('')).optional(),
   aclMode: z.enum(['mediawiki_check', 'groups_only']).optional(),
   oidc: z.object({
     issuer: z.string().trim().max(500).optional(),
@@ -57,6 +60,7 @@ export const DEFAULT_EXTERNAL_API_CONFIG: ExternalApiConfig = {
   mcpEnabled: config.externalMcpEnabled,
   anonymousSearchAllowed: config.externalAnonymousSearchAllowed,
   maxTopK: Math.max(1, Math.min(config.externalMaxTopK, 50)),
+  defaultRetrievalProfileId: '',
   aclMode: config.externalAclMode,
   oidc: {
     issuer: config.oidcIssuer,
@@ -122,6 +126,7 @@ export function toExternalApiCapabilities(configValue: ExternalApiConfig): Exter
     streamingSupported: true,
     anonymousSearchAllowed: configValue.anonymousSearchAllowed,
     aclMode: configValue.aclMode,
+    defaultRetrievalProfileId: configValue.defaultRetrievalProfileId || undefined,
     oidcConfigured,
     warnings,
   };
