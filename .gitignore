@@ -34,6 +34,9 @@ coverage/
 Thumbs.db
 
 # OMK runtime
+.agents/
+.kimi/
+.omk/
 .omk/runs/
 .omk/goals/
 .omk/memory/
