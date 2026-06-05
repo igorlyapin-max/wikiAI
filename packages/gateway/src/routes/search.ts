@@ -5,6 +5,10 @@ import { executeRuntimeSearch } from '../services/runtime-search.js';
 import { RuntimeHttpError } from '../services/runtime-errors.js';
 import { principalFromMwUser } from '../services/principal-auth.js';
 import { getRuntimeConfig } from '../services/config.js';
+import {
+  getMediaWikiProfileConfig,
+  getMediaWikiProfileConfigStatus,
+} from '../services/mediawiki-profile-config.js';
 import { SearchRequest } from '../types/index.js';
 
 function readHeader(value: string | string[] | undefined): string | undefined {
@@ -21,11 +25,18 @@ function wikiUrlOptionsFromRequest(request: FastifyRequest): WikiPageUrlOptions 
 
 export async function searchRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/ui/config', async (_request, reply) => {
-    const runtime = await getRuntimeConfig();
+    const [runtime, profileStatus] = await Promise.all([
+      getRuntimeConfig(),
+      getMediaWikiProfileConfigStatus(),
+    ]);
     reply.send({
       values: {
         searchHistoryEnabled: runtime.searchHistoryEnabled,
         searchHistoryLimit: runtime.searchHistoryLimit,
+        mediaWikiRetrievalProfileId: profileStatus.values.defaultRetrievalProfileId,
+        mediaWikiRetrievalProfileName: profileStatus.selectedProfile?.name,
+        mediaWikiRetrievalProfileReadiness: profileStatus.selectedProfile?.readiness.status,
+        mediaWikiRetrievalProfileReasons: profileStatus.selectedProfile?.readiness.reasons ?? [],
       },
     });
   });
@@ -39,7 +50,7 @@ export async function searchRoutes(app: FastifyInstance): Promise<void> {
       ],
     },
     async (request, reply) => {
-      const { query, topK, retrievalProfileId } = request.body;
+      const { query, topK } = request.body;
       const mwUser = (request as AuthenticatedRequest).mwUser!;
       const cookie = (request as AuthenticatedRequest).sessionCookie;
 
@@ -49,10 +60,12 @@ export async function searchRoutes(app: FastifyInstance): Promise<void> {
       }
 
       try {
+        const mediaWikiProfile = await getMediaWikiProfileConfig();
         reply.send(await executeRuntimeSearch({
           query,
           topK,
-          retrievalProfileId,
+          retrievalProfileId: mediaWikiProfile.defaultRetrievalProfileId,
+          retrievalProfileSurface: 'mediawiki',
           principal: principalFromMwUser(mwUser, cookie),
           wikiUrlOptions: wikiUrlOptionsFromRequest(request),
           aclMode: 'mediawiki_check',

@@ -57,6 +57,16 @@ describe('SpecialAIAdmin UI contract', () => {
     expect(specialPageSource).toContain("'aiadmin-tab-opensearch'");
   });
 
+  it('renders the MediaWiki profile selector panel instead of the legacy composition form', () => {
+    expect(specialPageSource).toContain('data-ai-tab="composition"');
+    expect(specialPageSource).toContain('data-ai-panel="composition"');
+    expect(specialPageSource).toContain('id="aiadmin-mediawiki-profile-config"');
+    expect(specialPageSource).toContain('id="aiadmin-save-mediawiki-profile-config"');
+    expect(specialPageSource).toContain("'aiadmin-tab-composition'");
+    expect(specialPageSource).not.toContain('id="aiadmin-composition-config"');
+    expect(specialPageSource).not.toContain('id="aiadmin-save-composition-config"');
+  });
+
   it('exposes OpenSearch as an indexing target in the admin form', () => {
     expect(specialPageSource).toContain('class="idx-profile-target" value="opensearch"');
     expect(specialPageSource).toContain('OpenSearch');

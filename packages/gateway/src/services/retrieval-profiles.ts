@@ -13,7 +13,7 @@ import { getSearchIndexStatus } from './search-index.js';
 import { RuntimeHttpError } from './runtime-errors.js';
 import { logOperationalEvent } from './logging.js';
 
-export type RetrievalProfileSurface = 'api' | 'mcp';
+export type RetrievalProfileSurface = 'api' | 'mcp' | 'mediawiki';
 
 export interface RetrievalProfileCapability {
   id: string;
@@ -62,6 +62,7 @@ export function applyRetrievalProfileToRagConfig(
 }
 
 function profileAllowedForSurface(profile: RetrievalProfile, surface: RetrievalProfileSurface): boolean {
+  if (surface === 'mediawiki') return true;
   return surface === 'mcp' ? profile.mcpEnabled : profile.apiEnabled;
 }
 

@@ -2,7 +2,14 @@ import Fastify, { FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { searchRoutes } from '../search.js';
 import { resetAdminStoreForTests } from '../../db/admin-store.js';
-import { setRagAdminConfig, upsertTrustEntity, upsertTrustModel } from '../../services/admin-platform-config.js';
+import {
+  getDefaultRetrievalProfiles,
+  setRagAdminConfig,
+  upsertRetrievalProfile,
+  upsertTrustEntity,
+  upsertTrustModel,
+} from '../../services/admin-platform-config.js';
+import { setMediaWikiProfileConfig } from '../../services/mediawiki-profile-config.js';
 import { setRuntimeConfig } from '../../services/config.js';
 import { SearchChunk } from '../../types/index.js';
 
@@ -110,7 +117,52 @@ describe('search routes trust filtering', () => {
     return app;
   }
 
+  async function useMediaWikiVectorProfile(): Promise<void> {
+    const template = (await getDefaultRetrievalProfiles()).find((profile) => profile.id === 'semantic_broad');
+    if (!template) throw new Error('semantic_broad retrieval profile template is missing');
+    await upsertRetrievalProfile({
+      id: 'test_mediawiki_vector',
+      name: 'Test MediaWiki vector',
+      description: 'Test profile',
+      enabled: true,
+      apiEnabled: false,
+      mcpEnabled: false,
+      anonymousAllowed: false,
+      maxTopK: 20,
+      tags: ['test'],
+      config: {
+        ...template.config,
+        searchMode: 'vector_only',
+        rerankMode: 'none',
+        colbertEnabled: false,
+      },
+    });
+    await setMediaWikiProfileConfig({ defaultRetrievalProfileId: 'test_mediawiki_vector' });
+  }
+
+  async function useMediaWikiProfile(id: string, config: Record<string, unknown>): Promise<void> {
+    const template = (await getDefaultRetrievalProfiles()).find((profile) => profile.id === 'semantic_broad');
+    if (!template) throw new Error('semantic_broad retrieval profile template is missing');
+    await upsertRetrievalProfile({
+      id,
+      name: id,
+      description: 'Test profile',
+      enabled: true,
+      apiEnabled: false,
+      mcpEnabled: false,
+      anonymousAllowed: false,
+      maxTopK: 20,
+      tags: ['test'],
+      config: {
+        ...template.config,
+        ...config,
+      },
+    });
+    await setMediaWikiProfileConfig({ defaultRetrievalProfileId: id });
+  }
+
   it('serves only safe UI config values', async () => {
+    await useMediaWikiVectorProfile();
     await setRuntimeConfig({
       searchHistoryEnabled: false,
       searchHistoryLimit: 3,
@@ -124,10 +176,13 @@ describe('search routes trust filtering', () => {
     });
 
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({
+    expect(res.json()).toMatchObject({
       values: {
         searchHistoryEnabled: false,
         searchHistoryLimit: 3,
+        mediaWikiRetrievalProfileId: 'test_mediawiki_vector',
+        mediaWikiRetrievalProfileName: 'Test MediaWiki vector',
+        mediaWikiRetrievalProfileReadiness: 'limited_ready',
       },
     });
     expect(JSON.stringify(res.json())).not.toContain('secret prompt');
@@ -136,6 +191,7 @@ describe('search routes trust filtering', () => {
   });
 
   it('returns only chunks allowed by the active trust policy', async () => {
+    await useMediaWikiVectorProfile();
     await upsertTrustModel({
       id: 'corp-default',
       name: 'Corporate default',
@@ -171,18 +227,19 @@ describe('search routes trust filtering', () => {
         appliedEntityIds: ['approved-doc'],
       },
     });
-    expect(searchRagChunks).toHaveBeenCalledWith({
+    expect(searchRagChunks).toHaveBeenCalledWith(expect.objectContaining({
       query: 'vpn',
       vector: [0.1, 0.2, 0.3],
       topK: 2,
       fallbackTopK: 4,
-    });
+      config: expect.objectContaining({ searchMode: 'vector_only' }),
+    }));
     expect(filterReadableChunks).toHaveBeenCalledWith(chunks, 'mw=1', 10);
     expect(res.json().diagnostics).toMatchObject({
       query: 'vpn',
       retrievalQuery: 'vpn',
       searchMode: 'hybrid',
-      retrievalProfileId: null,
+      retrievalProfileId: 'test_mediawiki_vector',
       requestedTopK: 2,
       effectiveTopK: 2,
       rawChunks: 2,
@@ -200,6 +257,7 @@ describe('search routes trust filtering', () => {
   });
 
   it('allows anonymous search and leaves page visibility to MediaWiki readable checks', async () => {
+    await useMediaWikiVectorProfile();
     filterReadableChunks.mockResolvedValueOnce([chunks[1]]);
 
     const app = await makeApp();
@@ -217,7 +275,7 @@ describe('search routes trust filtering', () => {
         query: 'vpn',
         retrievalQuery: 'vpn',
         searchMode: 'hybrid',
-        retrievalProfileId: null,
+        retrievalProfileId: 'test_mediawiki_vector',
         requestedTopK: 2,
         effectiveTopK: 2,
         rawChunks: 2,
@@ -240,7 +298,31 @@ describe('search routes trust filtering', () => {
     await app.close();
   });
 
+  it('does not let MediaWiki request bodies override the admin-selected retrieval profile', async () => {
+    await useMediaWikiVectorProfile();
+
+    const app = await makeApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/search',
+      headers: { cookie: 'mw=1' },
+      payload: { query: 'vpn', topK: 2, retrievalProfileId: 'colbert_full_strict' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().diagnostics).toMatchObject({
+      retrievalProfileId: 'test_mediawiki_vector',
+      effectiveSearchMode: 'vector_only',
+    });
+    expect(searchRagChunks).toHaveBeenCalledWith(expect.objectContaining({
+      config: expect.objectContaining({ searchMode: 'vector_only' }),
+    }));
+
+    await app.close();
+  });
+
   it('rejects empty search queries before calling embeddings', async () => {
+    await useMediaWikiVectorProfile();
     const app = await makeApp();
     const res = await app.inject({
       method: 'POST',
@@ -263,6 +345,12 @@ describe('search routes trust filtering', () => {
       colbertCandidateLimit: 50,
       colbertTimeoutMs: 2500,
       colbertMinScore: 0,
+      colbertFailMode: 'fallback_current',
+    });
+    await useMediaWikiProfile('test_mediawiki_colbert_rerank', {
+      searchMode: 'vector_only',
+      rerankMode: 'colbert_v2',
+      colbertEnabled: true,
       colbertFailMode: 'fallback_current',
     });
     await upsertTrustModel({
@@ -310,7 +398,7 @@ describe('search routes trust filtering', () => {
       colbertCandidates: 1,
       colbertFallbackUsed: false,
     });
-    const requestBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body ?? '{}'));
+    const requestBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body ?? '{}'));
     expect(requestBody.candidates).toEqual([
       {
         id: 2,
@@ -338,6 +426,13 @@ describe('search routes trust filtering', () => {
       colbertTimeoutMs: 2500,
       colbertMinScore: 0,
       colbertFailMode: 'fallback_current',
+    });
+    await useMediaWikiProfile('test_mediawiki_colbert_full', {
+      searchMode: 'colbert_full',
+      rerankMode: 'none',
+      colbertEnabled: true,
+      colbertFailMode: 'fallback_current',
+      vectorOnlyFallbackEnabled: false,
     });
     filterReadableChunks.mockResolvedValueOnce([chunks[1]]);
     const fetchMock = vi.fn(async () => ({
@@ -409,10 +504,19 @@ describe('search routes trust filtering', () => {
       colbertMinScore: 0,
       colbertFailMode: 'fail_search',
     });
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('bad gateway', {
-      status: 502,
-      statusText: 'Bad Gateway',
-    })));
+    await useMediaWikiProfile('test_mediawiki_colbert_full_fail', {
+      searchMode: 'colbert_full',
+      rerankMode: 'none',
+      colbertEnabled: true,
+      colbertFailMode: 'fail_search',
+      vectorOnlyFallbackEnabled: false,
+    });
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, statusText: 'OK' })
+      .mockResolvedValueOnce(new Response('bad gateway', {
+        status: 502,
+        statusText: 'Bad Gateway',
+      })));
 
     const app = await makeApp();
     const res = await app.inject({

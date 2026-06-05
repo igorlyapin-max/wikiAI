@@ -177,6 +177,7 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-action-refresh-status',
       'aiadmin-action-open',
       'aiadmin-action-opensearch-analyze',
+      'aiadmin-action-rebuild-opensearch-index',
       'aiadmin-action-remove',
       'aiadmin-action-reset',
       'aiadmin-action-duplicate-current-rag',
@@ -230,6 +231,7 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-empty-no-trust-rules',
       'aiadmin-empty-select-trust-entity',
       'aiadmin-error-property-required',
+      'aiadmin-error-opensearch-profile-missing',
       'aiadmin-error-request-timeout',
       'aiadmin-field-active',
       'aiadmin-field-active-days',
@@ -284,6 +286,7 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-field-external-max-top-k',
       'aiadmin-field-external-mcp-enabled',
       'aiadmin-field-default-retrieval-profile',
+      'aiadmin-field-mediawiki-retrieval-profile',
       'aiadmin-field-field',
       'aiadmin-field-flags-csv',
       'aiadmin-field-fragment',
@@ -335,6 +338,8 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-field-mediawiki-api-path',
       'aiadmin-field-mediawiki-base-url',
       'aiadmin-field-mediawiki-webhook-url',
+      'aiadmin-field-required-index-targets',
+      'aiadmin-field-missing-index-targets',
       'aiadmin-field-min-chunk-length',
       'aiadmin-field-min-context-score',
       'aiadmin-field-min-final-score',
@@ -450,6 +455,13 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-help-sensitive-properties',
       'aiadmin-help-hybrid-search',
       'aiadmin-help-opensearch-base-url',
+      'aiadmin-help-opensearch-effective',
+      'aiadmin-help-opensearch-analyzer',
+      'aiadmin-help-opensearch-fuzzy',
+      'aiadmin-help-opensearch-highlight',
+      'aiadmin-help-opensearch-boosts',
+      'aiadmin-help-opensearch-candidate-limit',
+      'aiadmin-help-lexical-backend',
       'aiadmin-help-colbert-index',
       'aiadmin-help-colbert-rerank',
       'aiadmin-help-trust-rule-condition',
@@ -468,6 +480,7 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-message-cache-cleared',
       'aiadmin-message-classification-ready',
       'aiadmin-message-clusterization-ready',
+      'aiadmin-message-opensearch-reindex-started',
       'aiadmin-message-deleted',
       'aiadmin-message-deleted-with-count',
       'aiadmin-message-generating',
@@ -515,7 +528,10 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-status-smw-properties-loaded',
       'aiadmin-status-bm25-index',
       'aiadmin-status-search-readiness',
-      'aiadmin-status-retrieval-profile-readiness',
+      'aiadmin-status-mediawiki-profile-missing',
+      'aiadmin-status-mediawiki-profile-empty',
+      'aiadmin-status-mediawiki-opensearch-profiles-missing',
+      'aiadmin-status-mediawiki-profile-readiness',
       'aiadmin-status-colbert-test',
       'aiadmin-status-external-api-capabilities',
       'aiadmin-status-mediawiki-webhook-match',
@@ -532,6 +548,8 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-section-retrieval-profiles',
       'aiadmin-section-model-assignments',
       'aiadmin-section-opensearch',
+      'aiadmin-section-opensearch-effective',
+      'aiadmin-section-opensearch-index-state',
       'aiadmin-section-assistant-ui',
       'aiadmin-section-trust-entities',
       'aiadmin-section-trust-preview',
@@ -620,11 +638,13 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-table-sensitive',
       'aiadmin-table-staleness-penalty',
       'aiadmin-table-status',
-      'aiadmin-table-api-mcp',
-      'aiadmin-table-readiness',
+      'aiadmin-table-external-api',
+      'aiadmin-table-mcp',
+      'aiadmin-table-unauthenticated',
       'aiadmin-table-source',
       'aiadmin-table-sources',
       'aiadmin-table-role',
+      'aiadmin-table-setting',
       'aiadmin-table-type',
       'aiadmin-table-updated',
       'aiadmin-table-user',
@@ -658,6 +678,9 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-value-system-namespace',
       'aiadmin-value-unknown',
       'aiadmin-value-yes',
+      'aiadmin-value-admin-override',
+      'aiadmin-value-env-default',
+      'aiadmin-value-derived',
     ];
 
     $messages = [];
@@ -860,9 +883,9 @@ class SpecialAIAdmin extends SpecialPage
       </div>
       <div class="ai-admin-card ai-admin-panel" data-ai-panel="composition">
         <h2>' . $this->msgHtml('aiadmin-tab-composition') . '</h2>
-        <form id="aiadmin-composition-config"></form>
-        <button type="button" class="ai-admin-btn ai-admin-btn-primary" id="aiadmin-save-composition-config">' . $this->msgHtml('aiadmin-save') . '</button>
-        <span id="aiadmin-composition-status"></span>
+        <form id="aiadmin-mediawiki-profile-config"></form>
+        <button type="button" class="ai-admin-btn ai-admin-btn-primary" id="aiadmin-save-mediawiki-profile-config">' . $this->msgHtml('aiadmin-save') . '</button>
+        <span id="aiadmin-mediawiki-profile-status"></span>
       </div>
       <div class="ai-admin-card ai-admin-panel" data-ai-panel="documents">
         <h2>' . htmlspecialchars($this->msg('aiadmin-documents')->text()) . '</h2>

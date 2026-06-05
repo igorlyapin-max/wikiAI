@@ -2,7 +2,12 @@ import Fastify, { FastifyInstance } from 'fastify';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { chatRoutes } from '../chat.js';
 import { resetAdminStoreForTests } from '../../db/admin-store.js';
-import { setChatRetentionAdminConfig } from '../../services/admin-platform-config.js';
+import {
+  getDefaultRetrievalProfiles,
+  setChatRetentionAdminConfig,
+  upsertRetrievalProfile,
+} from '../../services/admin-platform-config.js';
+import { setMediaWikiProfileConfig } from '../../services/mediawiki-profile-config.js';
 import { getSqlChatHistory, recordChatMessage, resetChatStoreForTests } from '../../services/chat-store.js';
 import { SearchChunk } from '../../types/index.js';
 
@@ -109,7 +114,7 @@ describe('chat routes', () => {
     },
   ];
 
-  beforeEach(() => {
+  beforeEach(async () => {
     redisStore.clear();
     appendCalls.length = 0;
     resetChatStoreForTests();
@@ -140,6 +145,26 @@ describe('chat routes', () => {
         },
       ],
     });
+    const template = (await getDefaultRetrievalProfiles()).find((profile) => profile.id === 'semantic_broad');
+    if (!template) throw new Error('semantic_broad retrieval profile template is missing');
+    await upsertRetrievalProfile({
+      id: 'test_mediawiki_vector',
+      name: 'Test MediaWiki vector',
+      description: 'Test profile',
+      enabled: true,
+      apiEnabled: false,
+      mcpEnabled: false,
+      anonymousAllowed: false,
+      maxTopK: 20,
+      tags: ['test'],
+      config: {
+        ...template.config,
+        searchMode: 'vector_only',
+        rerankMode: 'none',
+        colbertEnabled: false,
+      },
+    });
+    await setMediaWikiProfileConfig({ defaultRetrievalProfileId: 'test_mediawiki_vector' });
   });
 
   async function makeApp(): Promise<FastifyInstance> {
@@ -190,7 +215,7 @@ describe('chat routes', () => {
         requestedTopK: null,
         effectiveTopK: 4,
         searchMode: 'hybrid',
-        retrievalProfileId: null,
+        retrievalProfileId: 'test_mediawiki_vector',
         rawChunks: 1,
         readableChunks: 1,
         trustedChunks: 1,
@@ -207,11 +232,12 @@ describe('chat routes', () => {
     });
     expect(appendCalls).toHaveLength(2);
     expect(appendCalls.map((call) => call.ttl)).toEqual([2 * 24 * 60 * 60, 2 * 24 * 60 * 60]);
-    expect(searchRagChunks).toHaveBeenCalledWith({
+    expect(searchRagChunks).toHaveBeenCalledWith(expect.objectContaining({
       query: 'Как подключить VPN?',
       vector: [0.1, 0.2, 0.3],
       fallbackTopK: 4,
-    });
+      config: expect.objectContaining({ searchMode: 'vector_only' }),
+    }));
     expect(filterReadableChunks).toHaveBeenCalledWith(chunks, 'mw=1', 20);
     expect(detectConflictsForChat).toHaveBeenCalledWith('Как подключить VPN?', [
       expect.objectContaining({
@@ -300,6 +326,31 @@ describe('chat routes', () => {
     const llmMessages = callLiteLLM.mock.calls[0][0] as Array<{ role: string; content: string }>;
     expect(llmMessages[llmMessages.length - 1]).toEqual({ role: 'user', content: 'Еще раз про кухню?' });
 
+    await app.close();
+  });
+
+  it('does not let MediaWiki chat request bodies override the admin-selected retrieval profile', async () => {
+    const app = await makeApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/chat',
+      headers: { cookie: 'mw=1' },
+      payload: {
+        message: 'Как подключить VPN?',
+        conversationId: 'conv-profile-override',
+        stream: false,
+        retrievalProfileId: 'colbert_full_strict',
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().diagnostics).toMatchObject({
+      retrievalProfileId: 'test_mediawiki_vector',
+      effectiveSearchMode: 'vector_only',
+    });
+    expect(searchRagChunks).toHaveBeenCalledWith(expect.objectContaining({
+      config: expect.objectContaining({ searchMode: 'vector_only' }),
+    }));
     await app.close();
   });
 

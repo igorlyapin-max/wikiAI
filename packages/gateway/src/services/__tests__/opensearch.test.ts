@@ -106,6 +106,22 @@ describe('OpenSearch service', () => {
     );
   });
 
+  it('surfaces the compose OpenSearch URL when disabled with an empty configured URL', async () => {
+    config.opensearchEnabled = false;
+    config.opensearchBaseUrl = '';
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const status = await getOpenSearchStatus();
+
+    expect(status).toMatchObject({
+      status: 'disabled',
+      ready: false,
+      url: 'http://opensearch:9200/',
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('reports invalid enabled OpenSearch URLs without calling fetch', async () => {
     config.opensearchEnabled = true;
     config.opensearchBaseUrl = 'not-a-url';

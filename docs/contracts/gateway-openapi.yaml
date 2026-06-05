@@ -74,7 +74,7 @@ paths:
           $ref: "#/components/responses/Unauthorized"
   /api/search:
     post:
-      summary: Search allowed MediaWiki content.
+      summary: Search allowed MediaWiki content using the admin-selected MediaWiki retrieval profile.
       requestBody:
         required: true
         content:
@@ -90,9 +90,15 @@ paths:
                 $ref: "#/components/schemas/SearchResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "409":
+          description: Admin-selected MediaWiki retrieval profile is not ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/chat:
     post:
-      summary: Chat over allowed MediaWiki content.
+      summary: Chat over allowed MediaWiki content using the admin-selected MediaWiki retrieval profile.
       requestBody:
         required: true
         content:
@@ -104,6 +110,12 @@ paths:
           description: Chat response or SSE stream depending on request.
         "400":
           $ref: "#/components/responses/BadRequest"
+        "409":
+          description: Admin-selected MediaWiki retrieval profile is not ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/v1/capabilities:
     get:
       summary: External API and MCP capabilities.
@@ -196,6 +208,38 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SearchIndexStatusResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/admin/mediawiki-profile/config:
+    get:
+      summary: Return the retrieval profile selected for built-in MediaWiki search and chat.
+      security:
+        - mediaWikiSession: []
+      responses:
+        "200":
+          description: Selected MediaWiki retrieval profile config and readiness.
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      summary: Save the retrieval profile selected for built-in MediaWiki search and chat.
+      security:
+        - mediaWikiSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [defaultRetrievalProfileId]
+              properties:
+                defaultRetrievalProfileId:
+                  type: string
+                  example: opensearch_hybrid_colbert
+      responses:
+        "200":
+          description: Saved MediaWiki retrieval profile config and readiness.
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "403":
           $ref: "#/components/responses/Forbidden"
   /api/admin/opensearch/status:
@@ -382,7 +426,7 @@ components:
           minimum: 1
         retrievalProfileId:
           type: string
-          description: Optional admin-defined retrieval profile id. Raw BM25/ColBERT/trigram flags are not accepted by the public API.
+          description: Optional admin-defined retrieval profile id for /api/v1/* external APIs. Ignored by built-in MediaWiki /api/search, which uses /api/admin/mediawiki-profile/config. Raw BM25/ColBERT/trigram flags are not accepted by the public API.
         context:
           $ref: "#/components/schemas/ExternalContext"
     SearchChunk:
@@ -430,7 +474,7 @@ components:
           minimum: 1
         retrievalProfileId:
           type: string
-          description: Optional admin-defined retrieval profile id. Raw BM25/ColBERT/trigram flags are not accepted by the public API.
+          description: Optional admin-defined retrieval profile id for /api/v1/* external APIs. Ignored by built-in MediaWiki /api/chat, which uses /api/admin/mediawiki-profile/config. Raw BM25/ColBERT/trigram flags are not accepted by the public API.
         context:
           $ref: "#/components/schemas/ExternalContext"
     ExternalContext:

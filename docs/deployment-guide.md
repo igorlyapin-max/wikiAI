@@ -65,7 +65,7 @@ MediaWiki; для заказчика сборка должна быть част
 - `OPENSEARCH_INDEX_NAME` - index для chunks, default `wikiai_chunks`.
 - `OPENSEARCH_USERNAME`, `OPENSEARCH_PASSWORD`, `OPENSEARCH_API_KEY` - optional auth. UI показывает только `authConfigured`.
 - `OPENSEARCH_TIMEOUT_MS`, `OPENSEARCH_TLS_REJECT_UNAUTHORIZED`.
-- `OPENSEARCH_ANALYZER` - analyzer для title/text query, default `russian`.
+- `OPENSEARCH_ANALYZER` - analyzer для title/text mapping и query/analyze, default `russian`. При смене analyzer для существующего индекса нужен rebuild/recreate index.
 - `OPENSEARCH_FUZZY_ENABLED`, `OPENSEARCH_HIGHLIGHT_ENABLED`.
 - `OPENSEARCH_TITLE_BOOST`, `OPENSEARCH_TEXT_BOOST`, `OPENSEARCH_CANDIDATE_LIMIT`.
 - `OLLAMA_BASE_URL`
@@ -169,14 +169,16 @@ docker compose -f docker-compose.yml -f docker-compose.local-servicedesk.yml up 
 OpenSearch включается как отдельный deployment profile:
 
 ```bash
-OPENSEARCH_ENABLED=true docker compose --profile opensearch up -d opensearch gateway syncer
+OPENSEARCH_ENABLED=true OPENSEARCH_BASE_URL=http://opensearch:9200 docker compose --profile opensearch up -d --build opensearch gateway syncer
 ```
 
 После запуска администратор должен:
 
-1. Проверить `Служебная:AI-администрирование -> Сервисы -> OpenSearch`; в поле `OpenSearch URL` для Compose должен быть `http://opensearch:9200`.
-2. Включить target `OpenSearch` в indexing profile.
-3. Запустить reindex или backfill из Qdrant payload:
+1. Проверить `Служебная:AI-администрирование -> OpenSearch`; в поле `OpenSearch URL` для Compose должен быть `http://opensearch:9200`.
+2. Проверить read-only `Effective OpenSearch settings`: `admin override` означает значение из UI, `env/default` - `OPENSEARCH_*` или default Gateway.
+3. В `Профили поиска` выбрать или создать retrieval profile с `lexicalBackend=opensearch`, если OpenSearch должен участвовать в обычном hybrid search.
+4. Включить target `OpenSearch` в indexing profile.
+5. Запустить reindex кнопкой `Перестроить индекс OpenSearch` во вкладке `OpenSearch` или вручную:
 
 ```bash
 curl -s -X POST http://127.0.0.1:3000/api/admin/reindex \
@@ -190,10 +192,34 @@ OpenSearch vector search не является production default в этой в
 layer и может быть усилен ColBERT rerank через profile
 `opensearch_hybrid_colbert`.
 
+Для встроенного MediaWiki поиска и чата default profile после развертывания -
+`opensearch_hybrid_colbert`. Если OpenSearch или ColBERT еще не подняты, либо
+индексы не построены, MediaWiki search/chat вернут readiness-ошибку без
+скрытого fallback. На таком стенде выберите другой MediaWiki profile во вкладке
+`Выбор профиля для MediaWiki` или подготовьте OpenSearch/ColBERT контур.
+
 Если OpenSearch не развернут, оставьте `OPENSEARCH_ENABLED=false`, не выбирайте
 OpenSearch retrieval profiles и используйте `sqlite_fts`/BM25 profiles. Пустой
 URL при включенном OpenSearch в UI будет заменен на compose default
 `http://opensearch:9200`; невалидный URL должен блокировать сохранение.
+Переключение `lexicalBackend=opensearch` в retrieval profile не запускает reindex автоматически:
+индекс наполняется только через indexing profile с target `opensearch`.
+
+Если в UI при analyze/search-preview появляется
+`Route POST:/api/admin/opensearch/analyze not found`, это почти всегда старый
+Gateway container/image. Route регистрируется независимо от готовности
+OpenSearch, поэтому после обновления кода пересоберите Gateway:
+
+```bash
+docker compose build gateway
+docker compose up -d gateway
+```
+
+Проверка live bundle:
+
+```bash
+docker exec wikiai-gateway-1 grep -n "opensearch/analyze" /app/dist/routes/admin.js
+```
 
 ### cmdbdynamicpages Blocks
 

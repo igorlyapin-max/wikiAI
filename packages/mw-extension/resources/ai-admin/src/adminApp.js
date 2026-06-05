@@ -1,7 +1,10 @@
 import {
   activateAIAdminTab,
+  collectMediaWikiProfileConfig as collectMediaWikiProfileSelectorConfig,
   createAIAdminEndpoint,
   getDocumentCapabilitySummary,
+  loadMediaWikiProfilePayload,
+  renderMediaWikiProfileSelector,
 } from './adminHelpers.js';
 
 export function initializeAIAdmin(options = {}) {
@@ -13,7 +16,9 @@ export function initializeAIAdmin(options = {}) {
   } = options;
       let documentPolicy = { attachmentsEnabled: true, mimeTypes: {} };
       let serviceConfig = null;
+      let serviceConfigOverrides = null;
       let externalApiConfig = null;
+      let mediaWikiProfileConfig = null;
       let llmConfig = null;
       let embeddingConfig = null;
       let ragConfig = null;
@@ -352,7 +357,7 @@ export function initializeAIAdmin(options = {}) {
         form.appendChild(row);
         return input;
       };
-      const appendCheckboxRow = (form, id, label, checked) => {
+      const appendCheckboxRow = (form, id, label, checked, options = {}) => {
         const row = document.createElement("div");
         row.className = "ai-admin-row";
         const labelNode = document.createElement("label");
@@ -364,6 +369,12 @@ export function initializeAIAdmin(options = {}) {
         input.type = "checkbox";
         input.checked = Boolean(checked);
         row.append(labelNode, input);
+        if (options.help) {
+          const help = document.createElement("div");
+          help.className = "ai-admin-muted";
+          help.textContent = options.help;
+          row.appendChild(help);
+        }
         form.appendChild(row);
         return input;
       };
@@ -592,11 +603,13 @@ export function initializeAIAdmin(options = {}) {
         statusText("aiadmin-settings-status", formatText("aiadmin-status-llm-test", { status: values.status, detail }), values.status === "ok");
       };
 
-      const refreshServiceConfig = async () => {
-        const data = await request("/api/admin/service-config");
+      const applyServiceConfigResponse = (data = {}) => {
         serviceConfig = data.values || {};
+        serviceConfigOverrides = data.overrides || {};
         return serviceConfig;
       };
+
+      const refreshServiceConfig = async () => applyServiceConfigResponse(await request("/api/admin/service-config"));
 
       const renderServiceConfig = async (values) => {
         serviceConfig = values || await refreshServiceConfig();
@@ -651,8 +664,115 @@ export function initializeAIAdmin(options = {}) {
         appendInputRow(form, "svc-embeddings-apiKeyConfigured", t("aiadmin-field-llm-key-configured"), yesNo(serviceConfig.embeddings?.apiKeyConfigured), { readonly: true });
       };
 
+      const openSearchOverrideSource = (field) => {
+        const overrides = serviceConfigOverrides?.opensearch || {};
+        return Object.prototype.hasOwnProperty.call(overrides, field)
+          ? t("aiadmin-value-admin-override", "admin override")
+          : t("aiadmin-value-env-default", "env/default");
+      };
+
+      const renderOpenSearchEffectiveSettings = (form, openSearch) => {
+        const title = document.createElement("h3");
+        title.textContent = t("aiadmin-section-opensearch-effective", "Effective OpenSearch settings");
+        form.appendChild(title);
+
+        const help = document.createElement("p");
+        help.className = "ai-admin-muted";
+        help.textContent = t(
+          "aiadmin-help-opensearch-effective",
+          "Effective values are resolved by Gateway: saved admin override first, then env/defaults from deployment."
+        );
+        form.appendChild(help);
+
+        const table = document.createElement("table");
+        table.className = "ai-admin-table";
+        table.innerHTML = tableHtml([
+          "aiadmin-table-property",
+          "aiadmin-table-value",
+          "aiadmin-table-source"
+        ]);
+        const rows = [
+          ["enabled", yesNo(openSearch.enabled), openSearchOverrideSource("enabled")],
+          ["baseUrl", openSearch.baseUrl || defaultOpenSearchBaseUrl, openSearchOverrideSource("baseUrl")],
+          ["indexName", openSearch.indexName || "wikiai_chunks", openSearchOverrideSource("indexName")],
+          ["analyzer", openSearch.analyzer || "russian", openSearchOverrideSource("analyzer")],
+          ["fuzzyEnabled", yesNo(openSearch.fuzzyEnabled !== false), openSearchOverrideSource("fuzzyEnabled")],
+          ["highlightEnabled", yesNo(openSearch.highlightEnabled !== false), openSearchOverrideSource("highlightEnabled")],
+          ["titleBoost", openSearch.titleBoost ?? 2, openSearchOverrideSource("titleBoost")],
+          ["textBoost", openSearch.textBoost ?? 1, openSearchOverrideSource("textBoost")],
+          ["candidateLimit", openSearch.candidateLimit ?? 50, openSearchOverrideSource("candidateLimit")],
+          ["timeoutMs", openSearch.timeoutMs || 5000, openSearchOverrideSource("timeoutMs")],
+          ["tlsRejectUnauthorized", yesNo(openSearch.tlsRejectUnauthorized !== false), openSearchOverrideSource("tlsRejectUnauthorized")],
+          ["authConfigured", yesNo(openSearch.authConfigured), t("aiadmin-value-derived", "derived")],
+          ["rag.lexicalBackend", lexicalBackendLabel(ragConfig?.lexicalBackend || "sqlite_fts"), t("aiadmin-value-derived", "derived")]
+        ];
+        const tbody = table.querySelector("tbody");
+        rows.forEach((rowValues) => {
+          const row = document.createElement("tr");
+          rowValues.forEach((cellValue) => {
+            const cell = document.createElement("td");
+            cell.textContent = String(cellValue ?? "");
+            row.appendChild(cell);
+          });
+          tbody.appendChild(row);
+        });
+        form.appendChild(table);
+      };
+
+      const renderOpenSearchIndexState = (values = {}) => {
+        const root = document.getElementById("aiadmin-opensearch-index-state");
+        if (!root) return;
+        root.className = "ai-admin-search-results";
+        root.innerHTML = "";
+        const table = document.createElement("table");
+        table.className = "ai-admin-table";
+        table.innerHTML = tableHtml([
+          "aiadmin-table-property",
+          "aiadmin-table-value"
+        ]);
+        const rows = [
+          ["status", values.status || unknown()],
+          ["ready", yesNo(values.ready)],
+          ["enabled", yesNo(values.enabled)],
+          ["indexName", values.indexName || unknown()],
+          ["documentCount", values.documentCount ?? unknown()],
+          ["analyzer", values.analyzer || unknown()],
+          ["candidateLimit", values.candidateLimit ?? unknown()],
+          ["error", values.error || ""]
+        ];
+        const tbody = table.querySelector("tbody");
+        rows.forEach((rowValues) => {
+          const row = document.createElement("tr");
+          rowValues.forEach((cellValue) => {
+            const cell = document.createElement("td");
+            cell.textContent = String(cellValue ?? "");
+            row.appendChild(cell);
+          });
+          tbody.appendChild(row);
+        });
+        root.appendChild(table);
+      };
+
+      const refreshOpenSearchIndexState = async () => {
+        const root = document.getElementById("aiadmin-opensearch-index-state");
+        if (!root) return;
+        root.className = "ai-admin-search-results";
+        root.textContent = t("aiadmin-loading");
+        try {
+          const data = await request("/api/admin/opensearch/status");
+          renderOpenSearchIndexState(data.values || {});
+        } catch (err) {
+          root.textContent = err.message;
+          root.className = "ai-admin-status-error";
+        }
+      };
+
       const renderOpenSearchConfig = async (values) => {
         serviceConfig = values || serviceConfig || await refreshServiceConfig();
+        if (!ragConfig) {
+          const ragData = await request("/api/admin/rag/config").catch(() => ({ values: null }));
+          ragConfig = ragData.values || ragConfig;
+        }
         const form = document.getElementById("aiadmin-opensearch-config");
         if (!form) return;
         form.innerHTML = "";
@@ -665,7 +785,7 @@ export function initializeAIAdmin(options = {}) {
           form,
           "svc-opensearch-baseUrl",
           t("aiadmin-field-opensearch-base-url", "OpenSearch URL"),
-          openSearch.baseUrl || (openSearch.enabled ? defaultOpenSearchBaseUrl : ""),
+          openSearch.baseUrl || defaultOpenSearchBaseUrl,
           {
             placeholder: defaultOpenSearchBaseUrl,
             help: t("aiadmin-help-opensearch-base-url", "For docker-compose use http://opensearch:9200. Host URL http://127.0.0.1:9200 is only for checks outside the gateway container."),
@@ -673,7 +793,7 @@ export function initializeAIAdmin(options = {}) {
         );
         const updateOpenSearchBaseUrlState = () => {
           baseUrlInput.required = enabledInput.checked;
-          if (enabledInput.checked && !baseUrlInput.value.trim()) {
+          if (!baseUrlInput.value.trim()) {
             baseUrlInput.value = defaultOpenSearchBaseUrl;
           }
         };
@@ -683,12 +803,37 @@ export function initializeAIAdmin(options = {}) {
         appendInputRow(form, "svc-opensearch-authConfigured", t("aiadmin-field-opensearch-auth-configured", "OpenSearch auth configured"), yesNo(openSearch.authConfigured), { readonly: true });
         appendInputRow(form, "svc-opensearch-timeoutMs", t("aiadmin-field-timeout-ms"), openSearch.timeoutMs || 5000, { type: "number", min: 500, max: 120000 });
         appendCheckboxRow(form, "svc-opensearch-tlsRejectUnauthorized", t("aiadmin-field-opensearch-tls", "TLS reject unauthorized"), openSearch.tlsRejectUnauthorized !== false);
-        appendInputRow(form, "svc-opensearch-analyzer", t("aiadmin-field-opensearch-analyzer", "OpenSearch analyzer"), openSearch.analyzer || "russian");
-        appendCheckboxRow(form, "svc-opensearch-fuzzyEnabled", t("aiadmin-field-opensearch-fuzzy", "OpenSearch fuzzy query"), openSearch.fuzzyEnabled !== false);
-        appendCheckboxRow(form, "svc-opensearch-highlightEnabled", t("aiadmin-field-opensearch-highlight", "OpenSearch highlights"), openSearch.highlightEnabled !== false);
-        appendInputRow(form, "svc-opensearch-titleBoost", t("aiadmin-field-opensearch-title-boost", "Title boost"), openSearch.titleBoost ?? 2, { type: "number", min: 0, max: 20, step: "0.1" });
+        appendInputRow(form, "svc-opensearch-analyzer", t("aiadmin-field-opensearch-analyzer", "OpenSearch analyzer"), openSearch.analyzer || "russian", {
+          help: t("aiadmin-help-opensearch-analyzer", "Used by Gateway for title/text mapping and query/analyze; changing it requires index rebuild/recreate for full effect."),
+        });
+        appendCheckboxRow(form, "svc-opensearch-fuzzyEnabled", t("aiadmin-field-opensearch-fuzzy", "OpenSearch fuzzy query"), openSearch.fuzzyEnabled !== false, {
+          help: t("aiadmin-help-opensearch-fuzzy", "Adds fuzzy multi_match query for typo-tolerant lexical candidates."),
+        });
+        appendCheckboxRow(form, "svc-opensearch-highlightEnabled", t("aiadmin-field-opensearch-highlight", "OpenSearch highlights"), openSearch.highlightEnabled !== false, {
+          help: t("aiadmin-help-opensearch-highlight", "Requests title/text highlights from OpenSearch for diagnostics and preview."),
+        });
+        appendInputRow(form, "svc-opensearch-titleBoost", t("aiadmin-field-opensearch-title-boost", "Title boost"), openSearch.titleBoost ?? 2, {
+          type: "number",
+          min: 0,
+          max: 20,
+          step: "0.1",
+          help: t("aiadmin-help-opensearch-boosts", "Query-time field weights: title boost raises title matches; text boost raises body matches."),
+        });
         appendInputRow(form, "svc-opensearch-textBoost", t("aiadmin-field-opensearch-text-boost", "Text boost"), openSearch.textBoost ?? 1, { type: "number", min: 0, max: 20, step: "0.1" });
-        appendInputRow(form, "svc-opensearch-candidateLimit", t("aiadmin-field-opensearch-candidate-limit", "OpenSearch candidate limit"), openSearch.candidateLimit ?? 50, { type: "number", min: 5, max: 200 });
+        appendInputRow(form, "svc-opensearch-candidateLimit", t("aiadmin-field-opensearch-candidate-limit", "OpenSearch candidate limit"), openSearch.candidateLimit ?? 50, {
+          type: "number",
+          min: 5,
+          max: 200,
+          help: t("aiadmin-help-opensearch-candidate-limit", "Maximum lexical candidates returned from OpenSearch before hybrid scoring and ACL filters."),
+        });
+        renderOpenSearchEffectiveSettings(form, openSearch);
+        const indexStateTitle = document.createElement("h3");
+        indexStateTitle.textContent = t("aiadmin-section-opensearch-index-state", "OpenSearch index state");
+        form.appendChild(indexStateTitle);
+        const indexState = document.createElement("div");
+        indexState.id = "aiadmin-opensearch-index-state";
+        indexState.className = "ai-admin-search-results";
+        form.appendChild(indexState);
         const preview = document.createElement("div");
         preview.className = "ai-admin-row";
         preview.innerHTML = [
@@ -696,13 +841,15 @@ export function initializeAIAdmin(options = {}) {
           `<input type="text" id="svc-opensearch-preview-query" value="как там цивилизации" />`,
           `<button type="button" class="ai-admin-btn" id="aiadmin-test-opensearch-status">${t("aiadmin-action-refresh-status")}</button>`,
           `<button type="button" class="ai-admin-btn" id="aiadmin-analyze-opensearch-query">${t("aiadmin-action-opensearch-analyze", "Analyze")}</button>`,
-          `<button type="button" class="ai-admin-btn" id="aiadmin-preview-opensearch-search">${t("aiadmin-action-preview")}</button>`
+          `<button type="button" class="ai-admin-btn" id="aiadmin-preview-opensearch-search">${t("aiadmin-action-preview")}</button>`,
+          `<button type="button" class="ai-admin-btn" id="aiadmin-rebuild-opensearch-index">${t("aiadmin-action-rebuild-opensearch-index", "Rebuild OpenSearch index")}</button>`
         ].join("");
         form.appendChild(preview);
         const previewStatus = document.createElement("div");
         previewStatus.id = "aiadmin-opensearch-preview";
         previewStatus.className = "ai-admin-muted";
         form.appendChild(previewStatus);
+        await refreshOpenSearchIndexState();
       };
 
       const collectOpenSearchConfig = () => {
@@ -763,6 +910,32 @@ export function initializeAIAdmin(options = {}) {
           dimensions: Number(document.getElementById("svc-embeddings-dimensions").value),
         },
       });
+
+      const openSearchIndexingProfile = async () => {
+        const data = await request("/api/admin/indexing-profiles");
+        indexingProfiles = data.values || indexingProfiles;
+        return indexingProfiles.find((profile) => (profile.indexTargets || []).includes("opensearch")) || null;
+      };
+
+      const rebuildOpenSearchIndex = async () => {
+        const profile = await openSearchIndexingProfile();
+        if (!profile) {
+          throw new Error(t(
+            "aiadmin-error-opensearch-profile-missing",
+            "No indexing profile contains target OpenSearch. Open the Indexing tab and enable target OpenSearch first."
+          ));
+        }
+        await request("/api/admin/reindex", {
+          method: "POST",
+          body: JSON.stringify({
+            profileId: profile.id,
+            dryRun: false,
+          }),
+        });
+        await startReindexStatusPolling();
+        await refreshOpenSearchIndexState();
+        return profile;
+      };
 
       const renderOpenSearchPreview = (message, ok = true) => {
         const node = document.getElementById("aiadmin-opensearch-preview");
@@ -861,6 +1034,41 @@ export function initializeAIAdmin(options = {}) {
         ["colbert_v2", t("aiadmin-value-rerank-colbert-v2")]
       ];
 
+      const optionLabel = (options, value, fallback = unknown()) => {
+        const match = options.find((item) => item[0] === value);
+        return match ? match[1] : (value || fallback);
+      };
+
+      const lexicalBackendLabel = (value) => value === "opensearch"
+        ? "OpenSearch"
+        : t("aiadmin-value-lexical-backend-sqlite", "BM25/trigram");
+
+      const retrievalProfileModeLabel = (profile) => {
+        const config = profile.config || {};
+        const lexicalBackend = config.lexicalBackend || profile.lexicalBackend || "sqlite_fts";
+        const searchMode = config.searchMode || profile.searchMode || "hybrid";
+        const rerankMode = config.rerankMode || profile.rerankMode || "none";
+        return [
+          lexicalBackendLabel(lexicalBackend),
+          optionLabel(retrievalModeOptions(), searchMode),
+          optionLabel(rerankModeOptions(), rerankMode)
+        ].join(" / ");
+      };
+
+      const renderMediaWikiProfileConfig = async () => {
+        const data = await loadMediaWikiProfilePayload(request);
+        mediaWikiProfileConfig = data.values || {};
+        retrievalProfiles = data.retrievalProfiles || retrievalProfiles || [];
+        const form = document.getElementById("aiadmin-mediawiki-profile-config");
+        if (!form) return;
+        renderMediaWikiProfileSelector(form, data, {
+          i18n,
+          defaultProfileId: "opensearch_hybrid_colbert"
+        });
+      };
+
+      const collectMediaWikiProfileConfig = () => collectMediaWikiProfileSelectorConfig(document);
+
       const retrievalConfigFrom = (value = {}) => ({
         topK: Number(value.topK ?? 4),
         searchMode: value.searchMode || "hybrid",
@@ -906,21 +1114,20 @@ export function initializeAIAdmin(options = {}) {
           "aiadmin-table-name",
           "aiadmin-table-mode",
           "aiadmin-table-enabled",
-          "aiadmin-table-api-mcp",
-          "aiadmin-table-readiness",
-          "aiadmin-table-details"
+          "aiadmin-table-external-api",
+          "aiadmin-table-mcp",
+          "aiadmin-table-unauthenticated"
         ]);
         const tbody = table.querySelector("tbody");
         retrievalProfiles.forEach((profile) => {
           const row = document.createElement("tr");
           appendTableCell(row, profile.id);
           appendTableCell(row, profile.name);
-          appendTableCell(row, `${profile.config?.lexicalBackend || profile.lexicalBackend || "sqlite_fts"} / ${profile.config?.searchMode || profile.searchMode || unknown()} / ${profile.config?.rerankMode || profile.rerankMode || "none"}`);
+          appendTableCell(row, retrievalProfileModeLabel(profile));
           appendTableCell(row, yesNo(profile.enabled));
-          appendTableCell(row, `API ${yesNo(profile.apiEnabled)}; MCP ${yesNo(profile.mcpEnabled)}; anonymous ${yesNo(profile.anonymousAllowed)}`);
-          const readinessCell = appendTableCell(row, profile.readiness?.status || unknown());
-          readinessCell.className = readinessClass(profile.readiness?.status);
-          appendTableCell(row, (profile.readiness?.reasons || []).join("; ") || t("aiadmin-value-none"));
+          appendTableCell(row, yesNo(profile.apiEnabled));
+          appendTableCell(row, yesNo(profile.mcpEnabled));
+          appendTableCell(row, yesNo(profile.anonymousAllowed));
           tbody.appendChild(row);
         });
         root.appendChild(table);
@@ -945,7 +1152,7 @@ export function initializeAIAdmin(options = {}) {
         appendSelectRow(form, "retrieval-profile-search-mode", t("aiadmin-field-search-mode"), profile.config?.searchMode || "hybrid", retrievalModeOptions());
         appendSelectRow(form, "retrieval-profile-rerank-mode", t("aiadmin-field-rerank-mode"), profile.config?.rerankMode || "none", rerankModeOptions());
         appendSelectRow(form, "retrieval-profile-lexical-backend", t("aiadmin-field-lexical-backend", "Lexical backend"), profile.config?.lexicalBackend || "sqlite_fts", [
-          ["sqlite_fts", t("aiadmin-value-lexical-backend-sqlite", "Current BM25/trigram")],
+          ["sqlite_fts", t("aiadmin-value-lexical-backend-sqlite", "BM25/trigram")],
           ["opensearch", "OpenSearch"]
         ]);
         appendInputRow(form, "retrieval-profile-vector-weight", t("aiadmin-field-vector-weight"), profile.config?.vectorWeight ?? 0.65, { type: "number", min: 0, max: 1, step: "0.01" });
@@ -962,14 +1169,6 @@ export function initializeAIAdmin(options = {}) {
           ["fallback_current", t("aiadmin-value-fallback-current")],
           ["fail_search", t("aiadmin-value-fail-search")]
         ]);
-
-        const readiness = document.createElement("div");
-        readiness.className = readinessClass(profile.readiness?.status);
-        readiness.textContent = formatText("aiadmin-status-retrieval-profile-readiness", {
-          status: profile.readiness?.status || unknown(),
-          reasons: (profile.readiness?.reasons || []).join("; ") || t("aiadmin-value-none")
-        }, "Profile readiness: {status}. {reasons}");
-        form.appendChild(readiness);
 
         const actions = document.createElement("div");
         actions.className = "ai-admin-row";
@@ -1127,10 +1326,9 @@ export function initializeAIAdmin(options = {}) {
           }, 3000);
         }
         const form = document.getElementById("aiadmin-rag-config");
-        const compositionForm = document.getElementById("aiadmin-composition-config") || form;
         const bm25Form = document.getElementById("aiadmin-bm25-config") || form;
         const colbertForm = document.getElementById("aiadmin-colbert-config") || form;
-        [form, compositionForm, bm25Form, colbertForm].forEach((target) => {
+        [form, bm25Form, colbertForm].forEach((target) => {
           target.innerHTML = "";
         });
         appendInputRow(form, "rag-topK", t("aiadmin-field-top-k"), ragConfig.topK, { type: "number", min: 1, max: 20 });
@@ -1142,25 +1340,6 @@ export function initializeAIAdmin(options = {}) {
         appendInputRow(form, "rag-minChunkLength", t("aiadmin-field-min-chunk-length"), ragConfig.minChunkLength, { type: "number", min: 1, max: 1024 });
         appendInputRow(form, "rag-maxChunksPerPage", t("aiadmin-field-max-chunks-per-page"), ragConfig.maxChunksPerPage, { type: "number", min: 1, max: 10000 });
         appendInputRow(form, "rag-chunkSeparators", t("aiadmin-field-chunk-separators-json"), JSON.stringify(ragConfig.chunkSeparators || []), { textarea: true });
-        const readiness = searchIndexStatus.readiness || {};
-        const readinessStatus = document.createElement("div");
-        readinessStatus.className = readiness.status === "prod_ready"
-          ? "ai-admin-status-ok"
-          : readiness.status === "limited_ready" ? "ai-admin-status-warning" : "ai-admin-status-error";
-        readinessStatus.textContent = formatText("aiadmin-status-search-readiness", {
-          status: readiness.status || unknown(),
-          reasons: (readiness.reasons || []).join("; ") || t("aiadmin-value-none")
-        });
-        compositionForm.appendChild(readinessStatus);
-        appendSelectRow(compositionForm, "rag-searchMode", t("aiadmin-field-search-mode"), ragConfig.searchMode || "hybrid", [
-          ["hybrid", t("aiadmin-value-search-mode-hybrid")],
-          ["vector_only", t("aiadmin-value-search-mode-vector-only")],
-          ["colbert_full", t("aiadmin-value-search-mode-colbert-full")],
-          ["hybrid_colbert", t("aiadmin-value-search-mode-hybrid-colbert")]
-        ]);
-        appendCheckboxRow(compositionForm, "rag-semanticFactsInContext", t("aiadmin-field-semantic-facts-in-context"), ragConfig.semanticFactsInContext);
-        appendCheckboxRow(compositionForm, "rag-includeAttachments", t("aiadmin-field-include-attachments"), ragConfig.includeAttachments);
-        appendCheckboxRow(compositionForm, "rag-includeSemanticHeader", t("aiadmin-field-include-semantic-header"), ragConfig.includeSemanticHeader);
         const hybridTitle = document.createElement("h3");
         hybridTitle.textContent = t("aiadmin-section-hybrid-search");
         bm25Form.appendChild(hybridTitle);
@@ -1281,49 +1460,60 @@ export function initializeAIAdmin(options = {}) {
         await renderColbertIndexes();
       };
 
-      const collectRagConfig = () => ({
-        topK: Number(document.getElementById("rag-topK").value),
-        maxContextChunks: Number(document.getElementById("rag-maxContextChunks").value),
-        maxContextChars: Number(document.getElementById("rag-maxContextChars").value),
-        minSearchScore: Number(document.getElementById("rag-minSearchScore").value),
-        searchMode: document.getElementById("rag-searchMode").value,
-        rerankMode: document.getElementById("rag-rerankMode").value,
-        vectorWeight: Number(document.getElementById("rag-vectorWeight").value),
-        lexicalWeight: Number(document.getElementById("rag-lexicalWeight").value),
-        vectorCandidateLimit: Number(document.getElementById("rag-vectorCandidateLimit").value),
-        lexicalCandidateLimit: Number(document.getElementById("rag-lexicalCandidateLimit").value),
-        lexicalMinMatchedTerms: Number(document.getElementById("rag-lexicalMinMatchedTerms").value),
-        lexicalGateMode: document.getElementById("rag-lexicalGateMode").value,
-        lexicalNormalizationMode: document.getElementById("rag-lexicalNormalizationMode").value,
-        lexicalSynonymsEnabled: document.getElementById("rag-lexicalSynonymsEnabled").checked,
-        lexicalSynonyms: parseLexicalSynonyms(document.getElementById("rag-lexicalSynonyms").value),
-        lexicalTransliterationEnabled: document.getElementById("rag-lexicalTransliterationEnabled").checked,
-        lexicalEditDistanceEnabled: document.getElementById("rag-lexicalEditDistanceEnabled").checked,
-        trigramIndexEnabled: document.getElementById("rag-trigramIndexEnabled").checked,
-        trigramCandidateLimit: Number(document.getElementById("rag-trigramCandidateLimit").value),
-        trigramMinQueryLength: Number(document.getElementById("rag-trigramMinQueryLength").value),
-        vectorOnlyFallbackEnabled: document.getElementById("rag-vectorOnlyFallbackEnabled").checked,
-        vectorOnlyFallbackMinScore: Number(document.getElementById("rag-vectorOnlyFallbackMinScore").value),
-        minFinalScore: Number(document.getElementById("rag-minFinalScore").value),
-        showRawScores: document.getElementById("rag-showRawScores").checked,
-        colbertEnabled: ["colbert_full", "hybrid_colbert"].includes(document.getElementById("rag-searchMode").value)
-          || document.getElementById("rag-rerankMode").value === "colbert_v2",
-        colbertBaseUrl: document.getElementById("rag-colbertBaseUrl").value.trim(),
-        colbertModel: document.getElementById("rag-colbertModel").value.trim(),
-        colbertCollection: document.getElementById("rag-colbertCollection").value.trim(),
-        colbertCandidateLimit: Number(document.getElementById("rag-colbertCandidateLimit").value),
-        colbertTimeoutMs: Number(document.getElementById("rag-colbertTimeoutMs").value),
-        colbertMinScore: Number(document.getElementById("rag-colbertMinScore").value),
-        colbertFailMode: document.getElementById("rag-colbertFailMode").value,
-        chunkSize: Number(document.getElementById("rag-chunkSize").value),
-        chunkOverlap: Number(document.getElementById("rag-chunkOverlap").value),
-        minChunkLength: Number(document.getElementById("rag-minChunkLength").value),
-        maxChunksPerPage: Number(document.getElementById("rag-maxChunksPerPage").value),
-        chunkSeparators: JSON.parse(document.getElementById("rag-chunkSeparators").value),
-        semanticFactsInContext: document.getElementById("rag-semanticFactsInContext").checked,
-        includeAttachments: document.getElementById("rag-includeAttachments").checked,
-        includeSemanticHeader: document.getElementById("rag-includeSemanticHeader").checked,
-      });
+      const readFormValue = (id, fallback = "") => document.getElementById(id)?.value ?? fallback;
+      const readFormNumber = (id, fallback = 0) => Number(readFormValue(id, fallback));
+      const readFormChecked = (id, fallback = false) => {
+        const node = document.getElementById(id);
+        return node ? node.checked : Boolean(fallback);
+      };
+
+      const collectRagConfig = () => {
+        const searchMode = readFormValue("rag-searchMode", ragConfig?.searchMode || "hybrid");
+        const rerankMode = readFormValue("rag-rerankMode", ragConfig?.rerankMode || "none");
+        return {
+          topK: readFormNumber("rag-topK", ragConfig?.topK ?? 4),
+          maxContextChunks: readFormNumber("rag-maxContextChunks", ragConfig?.maxContextChunks ?? 4),
+          maxContextChars: readFormNumber("rag-maxContextChars", ragConfig?.maxContextChars ?? 12000),
+          minSearchScore: readFormNumber("rag-minSearchScore", ragConfig?.minSearchScore ?? 0),
+          searchMode,
+          rerankMode,
+          lexicalBackend: readFormValue("rag-lexicalBackend", ragConfig?.lexicalBackend || "sqlite_fts"),
+          vectorWeight: readFormNumber("rag-vectorWeight", ragConfig?.vectorWeight ?? 0.65),
+          lexicalWeight: readFormNumber("rag-lexicalWeight", ragConfig?.lexicalWeight ?? 0.35),
+          vectorCandidateLimit: readFormNumber("rag-vectorCandidateLimit", ragConfig?.vectorCandidateLimit ?? 50),
+          lexicalCandidateLimit: readFormNumber("rag-lexicalCandidateLimit", ragConfig?.lexicalCandidateLimit ?? 50),
+          lexicalMinMatchedTerms: readFormNumber("rag-lexicalMinMatchedTerms", ragConfig?.lexicalMinMatchedTerms ?? 2),
+          lexicalGateMode: readFormValue("rag-lexicalGateMode", ragConfig?.lexicalGateMode || "when_bm25_available"),
+          lexicalNormalizationMode: readFormValue("rag-lexicalNormalizationMode", ragConfig?.lexicalNormalizationMode || "simple_stem"),
+          lexicalSynonymsEnabled: readFormChecked("rag-lexicalSynonymsEnabled", ragConfig?.lexicalSynonymsEnabled),
+          lexicalSynonyms: parseLexicalSynonyms(readFormValue("rag-lexicalSynonyms", formatLexicalSynonyms(ragConfig?.lexicalSynonyms || []))),
+          lexicalTransliterationEnabled: readFormChecked("rag-lexicalTransliterationEnabled", ragConfig?.lexicalTransliterationEnabled),
+          lexicalEditDistanceEnabled: readFormChecked("rag-lexicalEditDistanceEnabled", ragConfig?.lexicalEditDistanceEnabled),
+          trigramIndexEnabled: readFormChecked("rag-trigramIndexEnabled", ragConfig?.trigramIndexEnabled),
+          trigramCandidateLimit: readFormNumber("rag-trigramCandidateLimit", ragConfig?.trigramCandidateLimit ?? 50),
+          trigramMinQueryLength: readFormNumber("rag-trigramMinQueryLength", ragConfig?.trigramMinQueryLength ?? 4),
+          vectorOnlyFallbackEnabled: readFormChecked("rag-vectorOnlyFallbackEnabled", ragConfig?.vectorOnlyFallbackEnabled !== false),
+          vectorOnlyFallbackMinScore: readFormNumber("rag-vectorOnlyFallbackMinScore", ragConfig?.vectorOnlyFallbackMinScore ?? 0.78),
+          minFinalScore: readFormNumber("rag-minFinalScore", ragConfig?.minFinalScore ?? 0),
+          showRawScores: readFormChecked("rag-showRawScores", ragConfig?.showRawScores),
+          colbertEnabled: ["colbert_full", "hybrid_colbert"].includes(searchMode) || rerankMode === "colbert_v2",
+          colbertBaseUrl: readFormValue("rag-colbertBaseUrl", ragConfig?.colbertBaseUrl || "").trim(),
+          colbertModel: readFormValue("rag-colbertModel", ragConfig?.colbertModel || "antoinelouis/colbert-xm").trim(),
+          colbertCollection: readFormValue("rag-colbertCollection", ragConfig?.colbertCollection || "wiki_colbert_chunks").trim(),
+          colbertCandidateLimit: readFormNumber("rag-colbertCandidateLimit", ragConfig?.colbertCandidateLimit ?? 50),
+          colbertTimeoutMs: readFormNumber("rag-colbertTimeoutMs", ragConfig?.colbertTimeoutMs ?? 5000),
+          colbertMinScore: readFormNumber("rag-colbertMinScore", ragConfig?.colbertMinScore ?? 0),
+          colbertFailMode: readFormValue("rag-colbertFailMode", ragConfig?.colbertFailMode || "fallback_current"),
+          chunkSize: readFormNumber("rag-chunkSize", ragConfig?.chunkSize ?? 512),
+          chunkOverlap: readFormNumber("rag-chunkOverlap", ragConfig?.chunkOverlap ?? 80),
+          minChunkLength: readFormNumber("rag-minChunkLength", ragConfig?.minChunkLength ?? 40),
+          maxChunksPerPage: readFormNumber("rag-maxChunksPerPage", ragConfig?.maxChunksPerPage ?? 500),
+          chunkSeparators: JSON.parse(readFormValue("rag-chunkSeparators", JSON.stringify(ragConfig?.chunkSeparators || []))),
+          semanticFactsInContext: readFormChecked("rag-semanticFactsInContext", ragConfig?.semanticFactsInContext !== false),
+          includeAttachments: readFormChecked("rag-includeAttachments", ragConfig?.includeAttachments),
+          includeSemanticHeader: readFormChecked("rag-includeSemanticHeader", ragConfig?.includeSemanticHeader !== false),
+        };
+      };
 
       const renderColbertIndexes = async () => {
         const root = document.getElementById("aiadmin-colbert-indexes");
@@ -4080,7 +4270,7 @@ export function initializeAIAdmin(options = {}) {
 
       const saveServiceConfig = async (statusId) => {
         const data = await request("/api/admin/service-config", { method: "POST", body: JSON.stringify(collectServiceConfig()) });
-        serviceConfig = data.values || {};
+        applyServiceConfigResponse(data);
         await renderServiceConfig(serviceConfig);
         await renderOpenSearchConfig(serviceConfig);
         statusText(statusId, t("aiadmin-message-saved"));
@@ -4114,6 +4304,7 @@ export function initializeAIAdmin(options = {}) {
         try {
           const data = await request("/api/admin/opensearch/status");
           const values = data.values || {};
+          renderOpenSearchIndexState(values);
           renderOpenSearchPreview(`OpenSearch ${values.status || unknown()}; ready=${yesNo(values.ready)}; index=${values.indexName || unknown()}; docs=${values.documentCount ?? unknown()}; ${values.error || ""}`, values.status === "ok");
         } catch (err) {
           renderOpenSearchPreview(err.message, false);
@@ -4151,6 +4342,19 @@ export function initializeAIAdmin(options = {}) {
           renderOpenSearchPreview(err.message, false);
         }
       });
+      document.addEventListener("click", async (event) => {
+        if (event.target?.id !== "aiadmin-rebuild-opensearch-index") return;
+        try {
+          const profile = await rebuildOpenSearchIndex();
+          renderOpenSearchPreview(formatText(
+            "aiadmin-message-opensearch-reindex-started",
+            { profile: profile.id },
+            "OpenSearch reindex started with profile {profile}"
+          ));
+        } catch (err) {
+          renderOpenSearchPreview(err.message, false);
+        }
+      });
       document.getElementById("aiadmin-save-external-api").addEventListener("click", async () => {
         try {
           const data = await request("/api/admin/external-api/config", { method: "POST", body: JSON.stringify(collectExternalApiConfig()) });
@@ -4182,6 +4386,7 @@ export function initializeAIAdmin(options = {}) {
           retrievalProfiles = data.values || [];
           selectedRetrievalProfileId = retrievalProfiles[0]?.id || null;
           await renderExternalApiConfig();
+          await renderMediaWikiProfileConfig();
           statusText("aiadmin-retrieval-profile-status", t("aiadmin-message-saved"));
         } catch (err) {
           statusText("aiadmin-retrieval-profile-status", err.message, false);
@@ -4193,6 +4398,7 @@ export function initializeAIAdmin(options = {}) {
           const data = await request("/api/admin/retrieval-profiles");
           retrievalProfiles = data.values || [];
           renderRetrievalProfiles();
+          await renderMediaWikiProfileConfig();
           statusText("aiadmin-retrieval-profile-status", t("aiadmin-message-refreshed"));
         } catch (err) {
           statusText("aiadmin-retrieval-profile-status", err.message, false);
@@ -4254,6 +4460,7 @@ export function initializeAIAdmin(options = {}) {
           const data = await request("/api/admin/rag/config", { method: "POST", body: JSON.stringify(collectRagConfig()) });
           ragConfig = data.values || {};
           await renderRagConfig();
+          await renderOpenSearchConfig(serviceConfig);
           statusText(statusId, t("aiadmin-message-saved"));
         } catch (err) {
           statusText(statusId, err.message, false);
@@ -4263,10 +4470,47 @@ export function initializeAIAdmin(options = {}) {
         ["aiadmin-save-rag-config", "aiadmin-rag-status"],
         ["aiadmin-save-bm25-config", "aiadmin-bm25-status"],
         ["aiadmin-save-colbert-config", "aiadmin-colbert-status"],
-        ["aiadmin-save-composition-config", "aiadmin-composition-status"],
       ].forEach(([buttonId, statusId]) => {
         const button = document.getElementById(buttonId);
         if (button) button.addEventListener("click", () => saveRagConfig(statusId));
+      });
+      document.getElementById("aiadmin-save-mediawiki-profile-config").addEventListener("click", async () => {
+        try {
+          const data = await request("/api/admin/mediawiki-profile/config", {
+            method: "POST",
+            body: JSON.stringify(collectMediaWikiProfileConfig()),
+          });
+          mediaWikiProfileConfig = data.values || {};
+          retrievalProfiles = data.retrievalProfiles || retrievalProfiles;
+          await renderMediaWikiProfileConfig();
+          statusText("aiadmin-mediawiki-profile-status", t("aiadmin-message-saved"));
+        } catch (err) {
+          statusText("aiadmin-mediawiki-profile-status", err.message, false);
+        }
+      });
+      document.addEventListener("click", async (event) => {
+        if (event.target?.id !== "aiadmin-refresh-mediawiki-profile") return;
+        try {
+          await renderMediaWikiProfileConfig();
+          statusText("aiadmin-mediawiki-profile-status", t("aiadmin-message-refreshed"));
+        } catch (err) {
+          statusText("aiadmin-mediawiki-profile-status", err.message, false);
+        }
+      });
+      document.addEventListener("click", (event) => {
+        if (event.target?.id !== "aiadmin-open-retrieval-profiles") return;
+        activateTab("retrieval-profiles");
+      });
+      document.addEventListener("click", async (event) => {
+        if (event.target?.id !== "aiadmin-restore-mediawiki-retrieval-profiles") return;
+        try {
+          const data = await request("/api/admin/retrieval-profiles/restore-defaults", { method: "POST" });
+          retrievalProfiles = data.values || [];
+          await renderMediaWikiProfileConfig();
+          statusText("aiadmin-mediawiki-profile-status", t("aiadmin-message-saved"));
+        } catch (err) {
+          statusText("aiadmin-mediawiki-profile-status", err.message, false);
+        }
       });
       document.addEventListener("click", async (event) => {
         if (event.target?.id !== "aiadmin-backfill-trigram-index") return;
@@ -4818,6 +5062,7 @@ export function initializeAIAdmin(options = {}) {
       renderServiceConfig().catch((err) => statusText("aiadmin-service-status", err.message, false));
       renderOpenSearchConfig().catch((err) => statusText("aiadmin-opensearch-status", err.message, false));
       renderExternalApiConfig().catch((err) => statusText("aiadmin-external-api-status", err.message, false));
+      renderMediaWikiProfileConfig().catch((err) => statusText("aiadmin-mediawiki-profile-status", err.message, false));
       renderSettings().catch((err) => statusText("aiadmin-settings-status", err.message, false));
       renderEmbeddingConfig().catch((err) => statusText("aiadmin-embedding-status", err.message, false));
       renderRagConfig().catch((err) => statusText("aiadmin-rag-status", err.message, false));

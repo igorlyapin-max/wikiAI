@@ -1,14 +1,21 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   activateAIAdminTab,
   applyAIAdminTranslations,
+  collectMediaWikiProfileConfig,
   createAIAdminEndpoint,
   getDocumentCapabilitySummary,
+  loadMediaWikiProfilePayload,
+  renderMediaWikiProfileSelector,
 } from './adminHelpers.js';
 
 const adminAppSource = fs.readFileSync(path.resolve(process.cwd(), 'src/adminApp.js'), 'utf8');
+const adminHelpersSource = fs.readFileSync(path.resolve(process.cwd(), 'src/adminHelpers.js'), 'utf8');
+const specialAdminSource = fs.readFileSync(path.resolve(process.cwd(), '../../src/SpecialAIAdmin.php'), 'utf8');
+const ruMessages = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), '../../i18n/ru.json'), 'utf8'));
+const enMessages = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), '../../i18n/en.json'), 'utf8'));
 
 describe('AI admin helpers', () => {
   afterEach(() => {
@@ -132,22 +139,258 @@ describe('AI admin helpers', () => {
     expect(adminAppSource).toContain('svc-opensearch-baseUrl');
     expect(adminAppSource).toContain('defaultOpenSearchBaseUrl = "http://opensearch:9200"');
     expect(adminAppSource).toContain('aiadmin-help-opensearch-base-url');
+    expect(adminAppSource).toContain('aiadmin-section-opensearch-effective');
+    expect(adminAppSource).toContain('aiadmin-section-opensearch-index-state');
+    expect(adminAppSource).toContain('aiadmin-help-opensearch-analyzer');
+    expect(adminAppSource).toContain('openSearchOverrideSource');
+    expect(adminAppSource).toContain('serviceConfigOverrides = data.overrides || {}');
+    expect(adminAppSource).toContain('rag.lexicalBackend');
+    expect(adminAppSource).toContain('openSearch.baseUrl || defaultOpenSearchBaseUrl');
+    expect(adminAppSource).toContain('if (!baseUrlInput.value.trim())');
     expect(adminAppSource).toContain('baseUrl: enabled && !baseUrl ? defaultOpenSearchBaseUrl : baseUrl');
     expect(adminAppSource).toContain('collectOpenSearchConfig');
     expect(adminAppSource).toContain('renderOpenSearchConfig');
     expect(adminAppSource).toContain('/api/admin/opensearch/status');
     expect(adminAppSource).toContain('/api/admin/opensearch/analyze');
     expect(adminAppSource).toContain('/api/admin/opensearch/search-preview');
+    expect(adminAppSource).toContain('aiadmin-rebuild-opensearch-index');
+    expect(adminAppSource).toContain('openSearchIndexingProfile');
+    expect(adminAppSource).toContain('indexTargets || []).includes("opensearch")');
+    expect(adminAppSource).toContain('aiadmin-error-opensearch-profile-missing');
+    expect(adminAppSource).toContain('/api/admin/reindex');
+    expect(adminAppSource).toContain('rag-lexicalBackend');
+    expect(adminAppSource).toContain('readFormValue("rag-lexicalBackend"');
     expect(adminAppSource).toContain('retrieval-profile-lexical-backend');
     expect(adminAppSource).toContain('lexicalBackend');
+  });
+
+  it('replaces search composition with the MediaWiki retrieval profile selector', () => {
+    expect(adminAppSource).toContain('/api/admin/mediawiki-profile/config');
+    expect(adminAppSource).toContain('loadMediaWikiProfilePayload(request)');
+    expect(adminAppSource).toContain('renderMediaWikiProfileSelector(form, data');
+    expect(adminHelpersSource).toContain('mediawiki-default-retrieval-profile');
+    expect(adminAppSource).toContain('aiadmin-save-mediawiki-profile-config');
+    expect(adminAppSource).toContain('aiadmin-restore-mediawiki-retrieval-profiles');
+    expect(adminHelpersSource).toContain('aiadmin-status-mediawiki-profile-readiness');
+    expect(adminHelpersSource).toContain('aiadmin-status-mediawiki-opensearch-profiles-missing');
+    expect(adminAppSource).toContain('activateTab("retrieval-profiles")');
+    expect(adminAppSource).not.toContain('aiadmin-composition-config');
+    expect(adminAppSource).not.toContain('aiadmin-save-composition-config');
+    expect(adminAppSource).not.toContain('appendSelectRow(compositionForm, "rag-searchMode"');
+    expect(adminAppSource).not.toContain('appendSelectRow(compositionForm, "rag-lexicalBackend"');
+    expect(specialAdminSource).toContain('aiadmin-mediawiki-profile-config');
+    expect(specialAdminSource).toContain('aiadmin-save-mediawiki-profile-config');
+    expect(ruMessages['aiadmin-tab-composition']).toBe('Выбор профиля для MediaWiki');
+    expect(enMessages['aiadmin-tab-composition']).toBe('MediaWiki profile');
+  });
+
+  it('renders the MediaWiki profile selector with real profile options and readiness details', () => {
+    const root = document.createElement('form');
+
+    renderMediaWikiProfileSelector(root, {
+      values: { defaultRetrievalProfileId: 'opensearch_hybrid_colbert' },
+      selectedProfile: {
+        id: 'opensearch_hybrid_colbert',
+        name: 'OpenSearch hybrid + ColBERT',
+        readiness: {
+          status: 'prod_ready',
+          reasons: ['ready'],
+          requiredIndexTargets: ['dense', 'opensearch', 'colbert'],
+          missingIndexTargets: [],
+        },
+        config: {
+          searchMode: 'hybrid_colbert',
+          lexicalBackend: 'opensearch',
+          rerankMode: 'colbert_v2',
+          colbertEnabled: true,
+          lexicalEditDistanceEnabled: true,
+          trigramIndexEnabled: false,
+          semanticFactsInContext: true,
+          includeAttachments: true,
+          includeSemanticHeader: true,
+        },
+      },
+      retrievalProfiles: [
+        {
+          id: 'opensearch_hybrid_colbert',
+          name: 'OpenSearch hybrid + ColBERT',
+          readiness: { status: 'prod_ready' },
+          config: {
+            searchMode: 'hybrid_colbert',
+            lexicalBackend: 'opensearch',
+            rerankMode: 'colbert_v2',
+          },
+        },
+        {
+          id: 'opensearch_hybrid',
+          name: 'OpenSearch hybrid stack',
+          readiness: { status: 'not_ready', reasons: ['OpenSearch index is not ready'] },
+          config: {
+            searchMode: 'hybrid',
+            lexicalBackend: 'opensearch',
+            rerankMode: 'none',
+          },
+        },
+        {
+          id: 'semantic_broad',
+          name: 'Broad semantic hybrid',
+          readiness: { status: 'limited_ready' },
+          config: {
+            searchMode: 'hybrid',
+            lexicalBackend: 'sqlite_fts',
+            rerankMode: 'none',
+          },
+        },
+      ],
+    }, { i18n: ruMessages });
+
+    const select = root.querySelector('#mediawiki-default-retrieval-profile');
+    expect(select).not.toBeNull();
+    expect(select.value).toBe('opensearch_hybrid_colbert');
+    expect([...select.options].map((option) => option.value)).toEqual([
+      'opensearch_hybrid_colbert',
+      'opensearch_hybrid',
+      'semantic_broad',
+    ]);
+    expect(select.options[0].textContent).toContain('OpenSearch');
+    expect(select.options[0].textContent).toContain('Hybrid + ColBERT');
+    expect(select.options[1].textContent).toContain('not_ready');
+    expect(root.textContent).toContain('Готовность профиля MediaWiki: prod_ready');
+    expect(root.textContent).toContain('OpenSearch hybrid + ColBERT (opensearch_hybrid_colbert)');
+    expect(root.textContent).toContain('hybrid_colbert');
+    expect(root.textContent).toContain('OpenSearch');
+    expect(root.textContent).toContain('colbert_v2');
+    expect(root.textContent).toContain('dense, opensearch, colbert');
+    expect(root.querySelector('#aiadmin-refresh-mediawiki-profile')).not.toBeNull();
+    expect(root.querySelector('#aiadmin-open-retrieval-profiles')).not.toBeNull();
+    expect(root.querySelector('#aiadmin-restore-mediawiki-retrieval-profiles')).toBeNull();
+  });
+
+  it('collects the selected MediaWiki profile for save payloads', () => {
+    const root = document.createElement('form');
+    renderMediaWikiProfileSelector(root, {
+      values: { defaultRetrievalProfileId: 'opensearch_hybrid_colbert' },
+      retrievalProfiles: [
+        {
+          id: 'opensearch_hybrid_colbert',
+          name: 'OpenSearch hybrid + ColBERT',
+          readiness: { status: 'prod_ready' },
+          config: { searchMode: 'hybrid_colbert', lexicalBackend: 'opensearch', rerankMode: 'colbert_v2' },
+        },
+        {
+          id: 'semantic_broad',
+          name: 'Broad semantic hybrid',
+          readiness: { status: 'limited_ready' },
+          config: { searchMode: 'hybrid', lexicalBackend: 'sqlite_fts', rerankMode: 'none' },
+        },
+      ],
+    }, { i18n: ruMessages });
+
+    root.querySelector('#mediawiki-default-retrieval-profile').value = 'semantic_broad';
+
+    expect(collectMediaWikiProfileConfig(root)).toEqual({
+      defaultRetrievalProfileId: 'semantic_broad',
+    });
+  });
+
+  it('falls back to /api/admin/retrieval-profiles when the MediaWiki profile response has no profile list', async () => {
+    const request = vi.fn(async (path) => {
+      if (path === '/api/admin/mediawiki-profile/config') {
+        return {
+          values: { defaultRetrievalProfileId: 'opensearch_hybrid_colbert' },
+          retrievalProfiles: [],
+        };
+      }
+      if (path === '/api/admin/retrieval-profiles') {
+        return {
+          values: [
+            { id: 'opensearch_hybrid_colbert', name: 'OpenSearch hybrid + ColBERT', readiness: { status: 'prod_ready' } },
+          ],
+        };
+      }
+      throw new Error(`Unexpected path ${path}`);
+    });
+
+    const payload = await loadMediaWikiProfilePayload(request);
+
+    expect(request).toHaveBeenCalledWith('/api/admin/mediawiki-profile/config');
+    expect(request).toHaveBeenCalledWith('/api/admin/retrieval-profiles');
+    expect(payload.retrievalProfiles).toEqual([
+      expect.objectContaining({ id: 'opensearch_hybrid_colbert' }),
+    ]);
+  });
+
+  it('warns and offers restore when MediaWiki profile options do not include OpenSearch profiles', () => {
+    const root = document.createElement('form');
+
+    renderMediaWikiProfileSelector(root, {
+      values: { defaultRetrievalProfileId: 'semantic_broad' },
+      selectedProfile: {
+        id: 'semantic_broad',
+        name: 'Broad semantic hybrid',
+        readiness: { status: 'limited_ready', reasons: ['semantic only'] },
+        config: { searchMode: 'hybrid', lexicalBackend: 'sqlite_fts', rerankMode: 'none' },
+      },
+      retrievalProfiles: [
+        {
+          id: 'semantic_broad',
+          name: 'Broad semantic hybrid',
+          readiness: { status: 'limited_ready' },
+          config: { searchMode: 'hybrid', lexicalBackend: 'sqlite_fts', rerankMode: 'none' },
+        },
+      ],
+    }, { i18n: ruMessages });
+
+    const select = root.querySelector('#mediawiki-default-retrieval-profile');
+    expect(select).not.toBeNull();
+    expect([...select.options].map((option) => option.value)).toEqual(['semantic_broad']);
+    expect(root.textContent).toContain('OpenSearch-профили не загружены');
+    expect(root.querySelector('#aiadmin-restore-mediawiki-retrieval-profiles')).not.toBeNull();
+  });
+
+  it('shows an explicit empty-state error instead of a blank profile select', () => {
+    const root = document.createElement('form');
+
+    renderMediaWikiProfileSelector(root, {
+      values: { defaultRetrievalProfileId: 'opensearch_hybrid_colbert' },
+      retrievalProfiles: [],
+    }, { i18n: ruMessages });
+
+    expect(root.querySelector('#mediawiki-default-retrieval-profile')).toBeNull();
+    expect(root.textContent).toContain('Профили поиска не загружены');
+    expect(root.querySelector('#aiadmin-refresh-mediawiki-profile')).not.toBeNull();
+    expect(root.querySelector('#aiadmin-open-retrieval-profiles')).not.toBeNull();
+    expect(root.querySelector('#aiadmin-restore-mediawiki-retrieval-profiles')).not.toBeNull();
+  });
+
+  it('keeps retrieval profile UI free of readiness and raw backend terminology', () => {
+    expect(adminAppSource).toContain('retrievalProfileModeLabel');
+    expect(adminAppSource).toContain('lexicalBackendLabel(ragConfig?.lexicalBackend || "sqlite_fts")');
+    expect(adminAppSource).toContain('"aiadmin-table-external-api"');
+    expect(adminAppSource).toContain('"aiadmin-table-mcp"');
+    expect(adminAppSource).toContain('"aiadmin-table-unauthenticated"');
+    expect(adminAppSource).toContain('t("aiadmin-value-lexical-backend-sqlite", "BM25/trigram")');
+    expect(adminAppSource).not.toContain('"aiadmin-table-api-mcp"');
+    expect(adminAppSource).not.toContain('"aiadmin-table-readiness"');
+    expect(adminAppSource).not.toContain('aiadmin-status-retrieval-profile-readiness');
+    expect(adminAppSource).not.toContain('anonymous ${yesNo(profile.anonymousAllowed)}');
+    expect(ruMessages['aiadmin-field-external-anonymous-search']).toBe('Разрешить поиск без авторизации');
+    expect(ruMessages['aiadmin-table-unauthenticated']).toBe('Без авторизации');
+    expect(ruMessages['aiadmin-value-lexical-backend-sqlite']).toBe('BM25/trigram');
+    expect(enMessages['aiadmin-field-external-anonymous-search']).toBe('Allow unauthenticated search');
+    expect(enMessages['aiadmin-table-unauthenticated']).toBe('Unauthenticated');
+    expect(enMessages['aiadmin-value-lexical-backend-sqlite']).toBe('BM25/trigram');
   });
 
   it('keeps OpenSearch preview actions routed to the Gateway admin API', () => {
     expect(adminAppSource).toContain('if (event.target?.id !== "aiadmin-test-opensearch-status") return');
     expect(adminAppSource).toContain('if (event.target?.id !== "aiadmin-analyze-opensearch-query") return');
     expect(adminAppSource).toContain('if (event.target?.id !== "aiadmin-preview-opensearch-search") return');
+    expect(adminAppSource).toContain('if (event.target?.id !== "aiadmin-rebuild-opensearch-index") return');
     expect(adminAppSource).toContain('ensureOpenSearchBaseUrl();');
+    expect(adminAppSource).toContain('renderOpenSearchIndexState(values)');
     expect(adminAppSource).toContain('renderOpenSearchPreview(`analyzer=');
     expect(adminAppSource).toContain('renderOpenSearchPreview(`hits=');
+    expect(adminAppSource).toContain('rebuildOpenSearchIndex');
   });
 });

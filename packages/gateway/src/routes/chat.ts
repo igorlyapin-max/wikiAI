@@ -23,6 +23,7 @@ import {
 } from '../services/runtime-chat.js';
 import { RuntimeHttpError } from '../services/runtime-errors.js';
 import { principalFromMwUser } from '../services/principal-auth.js';
+import { getMediaWikiProfileConfig } from '../services/mediawiki-profile-config.js';
 import { ChatRequest } from '../types/index.js';
 
 export { buildChatRetrievalQuery };
@@ -203,7 +204,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
       ],
     },
     async (request, reply) => {
-      const { message, conversationId, stream: requestedStream, topK, retrievalProfileId } = request.body;
+      const { message, conversationId, stream: requestedStream, topK } = request.body;
       const stream = requestedStream ?? true;
       const mwUser = (request as AuthenticatedRequest).mwUser!;
       const cookie = (request as AuthenticatedRequest).sessionCookie;
@@ -214,11 +215,13 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
       }
 
       try {
+        const mediaWikiProfile = await getMediaWikiProfileConfig();
         const prepared = await prepareRuntimeChat({
           message,
           conversationId,
           topK,
-          retrievalProfileId,
+          retrievalProfileId: mediaWikiProfile.defaultRetrievalProfileId,
+          retrievalProfileSurface: 'mediawiki',
           principal: principalFromMwUser(mwUser, cookie),
           wikiUrlOptions: wikiUrlOptionsFromRequest(request),
           aclMode: 'mediawiki_check',

@@ -191,6 +191,24 @@ async function runAdminGatewayCheck(label, path, init = {}) {
   return body;
 }
 
+async function assertGatewayAdminRouteRegistered(label, path, init = {}) {
+  const response = await fetchWithTimeout(`${gatewayBaseUrl}${path}`, {
+    ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(init.headers || {}),
+    },
+  });
+  const text = await response.text();
+  if (response.status === 404) {
+    throw new Error(`${label} is not registered in the live Gateway. Rebuild/recreate gateway; response: ${text.slice(0, 160)}`);
+  }
+  if (response.status !== 401) {
+    throw new Error(`${label} expected HTTP 401 without an admin cookie, got HTTP ${response.status}: ${text.slice(0, 160)}`);
+  }
+  record(label, 'pass', `HTTP ${response.status}; route registered`);
+}
+
 async function runLiveChecks() {
   logStep('WikiAI live dev checks');
 
@@ -233,6 +251,11 @@ async function runLiveChecks() {
       'aiadmin-opensearch-config',
       'aiadmin-save-opensearch-config',
       '/api/admin/opensearch/status',
+      'aiadmin-mediawiki-profile-config',
+      'mediawiki-default-retrieval-profile',
+      'aiadmin-restore-mediawiki-retrieval-profiles',
+      '/api/admin/mediawiki-profile/config',
+      'opensearch_hybrid_colbert',
     ]) {
       if (!text.includes(marker)) throw new Error(`ext.aiadmin bundle is missing marker ${marker}`);
     }
@@ -242,6 +265,17 @@ async function runLiveChecks() {
       throw new Error('ext.aiassistant bundle is missing assistant API markers');
     }
   });
+
+  await assertGatewayAdminRouteRegistered('Gateway admin OpenSearch status route registration', '/api/admin/opensearch/status');
+  await assertGatewayAdminRouteRegistered('Gateway admin OpenSearch analyze route registration', '/api/admin/opensearch/analyze', {
+    method: 'POST',
+    body: JSON.stringify({ query: 'как там цивилизации' }),
+  });
+  await assertGatewayAdminRouteRegistered('Gateway admin OpenSearch search-preview route registration', '/api/admin/opensearch/search-preview', {
+    method: 'POST',
+    body: JSON.stringify({ query: 'как там цивилизации', limit: 3 }),
+  });
+  await assertGatewayAdminRouteRegistered('Gateway admin MediaWiki profile route registration', '/api/admin/mediawiki-profile/config');
 
   if (adminCookie) {
     await assertJsonEndpoint('MediaWiki authenticated userinfo', mediaWikiApiUrl({
@@ -264,6 +298,7 @@ async function runLiveChecks() {
         'data-ai-tab="bm25"',
         'data-ai-tab="colbert"',
         'data-ai-tab="composition"',
+        'aiadmin-mediawiki-profile-config',
       ]) {
         if (!text.includes(marker)) throw new Error(`Special:AIAdmin is missing marker ${marker}`);
       }
@@ -271,6 +306,13 @@ async function runLiveChecks() {
 
     await runAdminGatewayCheck('Gateway admin service-config', '/api/admin/service-config');
     await runAdminGatewayCheck('Gateway admin search-index status', '/api/admin/search-index/status');
+    const mediaWikiProfile = await runAdminGatewayCheck('Gateway admin MediaWiki profile config', '/api/admin/mediawiki-profile/config');
+    const profileIds = (mediaWikiProfile?.retrievalProfiles || []).map((profile) => profile.id);
+    for (const expectedProfile of ['opensearch_hybrid', 'opensearch_hybrid_colbert']) {
+      if (!profileIds.includes(expectedProfile)) {
+        throw new Error(`Gateway admin MediaWiki profile config is missing ${expectedProfile}`);
+      }
+    }
   } else {
     record('Authenticated MediaWiki/admin UI checks', 'skip', 'set MW_TEST_COOKIE or WIKIAI_ADMIN_COOKIE');
   }

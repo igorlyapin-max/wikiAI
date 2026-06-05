@@ -66,7 +66,9 @@
 - [ ] `GET /api/admin/search-index/trigram/backfill/status` показывает `processedChunks`, `totalChunks`, `writtenChunks`, `grams`, `status`, `startedAt` и `finishedAt/error` при завершении.
 - [ ] `POST /api/admin/search-index/trigram/backfill/cancel` запрашивает остановку running job и Admin UI отключает/включает кнопки start/cancel по статусу.
 - [ ] `POST /api/admin/rag/config` отклоняет `trigramIndexEnabled=true`, если `trigramPopulated=false`, с ошибкой `trigram_index_not_ready`.
-- [ ] Admin UI разделяет `RAG / Embeddings`, `BM25`, `ColBERT`, `Суперпозиция поиска`, `Распознавание документов` и `Индексация`.
+- [ ] Admin UI разделяет `RAG / Embeddings`, `BM25`, `ColBERT`, `Выбор профиля для MediaWiki`, `Распознавание документов` и `Индексация`.
+- [ ] `GET/POST /api/admin/mediawiki-profile/config` выбирает profile для `/api/search` и `/api/chat`; request body `retrievalProfileId` не переопределяет выбор администратора.
+- [ ] Default MediaWiki profile - `opensearch_hybrid_colbert`; если OpenSearch/ColBERT/index targets не готовы, search/chat возвращают readiness-ошибку без fallback.
 - [ ] `GET /api/admin/search-index/status` показывает `prod_ready`, только если BM25 заполнен и ColBERT health `ok`.
 - [ ] Без ColBERT контур помечается `limited_ready`, а не production-ready.
 - [ ] Пользовательский AI Search не показывает raw score при `showRawScores=false`.

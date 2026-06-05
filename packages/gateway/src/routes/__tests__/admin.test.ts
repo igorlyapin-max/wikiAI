@@ -2,13 +2,13 @@ import Fastify from 'fastify';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { adminRoutes } from '../admin.js';
 import { config } from '../../config.js';
-import { resetAdminStoreForTests } from '../../db/admin-store.js';
+import { getAdminStore, resetAdminStoreForTests } from '../../db/admin-store.js';
 import { resetIndexingProfileSchedulerForTests } from '../../services/indexing-profile-scheduler.js';
 import { resetTrustAutoRecalculationForTests } from '../../services/trust-auto-recalculation.js';
 import { resetTrustRecalculationSchedulerForTests } from '../../services/trust-recalculation-scheduler.js';
 import { recordChatMessage, resetChatStoreForTests } from '../../services/chat-store.js';
 import { searchLexicalChunks, upsertSearchIndexPage } from '../../services/search-index.js';
-import { setRagAdminConfig } from '../../services/admin-platform-config.js';
+import { getDefaultRetrievalProfiles, setRagAdminConfig } from '../../services/admin-platform-config.js';
 
 const userGroups = vi.hoisted(() => ({ groups: ['sysop'] }));
 const store = vi.hoisted(() => new Map<string, string>());
@@ -398,6 +398,31 @@ describe('admin routes', () => {
     await app.close();
   });
 
+  it('serves the compose OpenSearch URL for legacy empty overrides', async () => {
+    await getAdminStore().setJson('service-config', 'default', {
+      opensearch: {
+        enabled: true,
+        baseUrl: '',
+        indexName: 'wikiai_chunks',
+      },
+    });
+    const app = await makeApp();
+
+    const read = await app.inject({
+      method: 'GET',
+      url: '/api/admin/service-config',
+      headers: { cookie: 'mw=1' },
+    });
+
+    expect(read.statusCode).toBe(200);
+    expect(read.json().values.opensearch).toMatchObject({
+      enabled: true,
+      baseUrl: 'http://opensearch:9200/',
+    });
+
+    await app.close();
+  });
+
   it('serves OpenSearch status and analyze preview without exposing secrets', async () => {
     const app = await makeApp();
     const status = await app.inject({
@@ -424,6 +449,22 @@ describe('admin routes', () => {
       tokens: ['как', 'там', 'цивилизации'],
     });
     expect(JSON.stringify(status.json())).not.toContain('test-key');
+    await app.close();
+  });
+
+  it('keeps OpenSearch admin routes registered even without a session cookie', async () => {
+    const app = await makeApp();
+
+    for (const request of [
+      { method: 'GET' as const, url: '/api/admin/opensearch/status' },
+      { method: 'POST' as const, url: '/api/admin/opensearch/analyze', payload: { query: 'как там цивилизации' } },
+      { method: 'POST' as const, url: '/api/admin/opensearch/search-preview', payload: { query: 'как там цивилизации', limit: 3 } },
+    ]) {
+      const response = await app.inject(request);
+      expect(response.statusCode).toBe(401);
+      expect(response.body).not.toContain('Route');
+    }
+
     await app.close();
   });
 
@@ -952,6 +993,7 @@ describe('admin routes', () => {
         maxContextChunks: 7,
         searchMode: 'hybrid',
         rerankMode: 'colbert_v2',
+        lexicalBackend: 'opensearch',
         vectorWeight: 0.6,
         lexicalWeight: 0.4,
         vectorCandidateLimit: 80,
@@ -988,6 +1030,7 @@ describe('admin routes', () => {
       maxContextChunks: 7,
       searchMode: 'hybrid',
       rerankMode: 'colbert_v2',
+      lexicalBackend: 'opensearch',
       vectorWeight: 0.6,
       lexicalWeight: 0.4,
       vectorCandidateLimit: 80,
@@ -1056,6 +1099,102 @@ describe('admin routes', () => {
     });
     expect(restored.statusCode).toBe(200);
     expect(restored.json().values.map((profile: { id: string }) => profile.id)).toContain('colbert_full_strict');
+
+    await app.close();
+  });
+
+  it('merges missing default retrieval profiles into stale stored profile lists', async () => {
+    const defaults = await getDefaultRetrievalProfiles();
+    const semanticBroad = defaults.find((profile) => profile.id === 'semantic_broad');
+    expect(semanticBroad).toBeDefined();
+    await getAdminStore().setJson('retrieval-profiles', 'default', [semanticBroad!]);
+
+    const app = await makeApp();
+    const read = await app.inject({
+      method: 'GET',
+      url: '/api/admin/mediawiki-profile/config',
+      headers: { cookie: 'mw=1' },
+    });
+
+    expect(read.statusCode).toBe(200);
+    const ids = read.json().retrievalProfiles.map((profile: { id: string }) => profile.id);
+    expect(ids).toContain('semantic_broad');
+    expect(ids).toContain('opensearch_hybrid');
+    expect(ids).toContain('opensearch_hybrid_colbert');
+    expect(read.json().selectedProfile).toMatchObject({ id: 'opensearch_hybrid_colbert' });
+
+    const storedAfterRead = await getAdminStore().getJson<Array<{ id: string }>>('retrieval-profiles', 'default');
+    expect(storedAfterRead?.map((profile) => profile.id)).toEqual(['semantic_broad']);
+
+    await app.close();
+  });
+
+  it('keeps admin-customized retrieval profiles when merging default examples', async () => {
+    const defaults = await getDefaultRetrievalProfiles();
+    const openSearchProfile = defaults.find((profile) => profile.id === 'opensearch_hybrid_colbert');
+    expect(openSearchProfile).toBeDefined();
+    await getAdminStore().setJson('retrieval-profiles', 'default', [{
+      ...openSearchProfile!,
+      name: 'Custom OpenSearch + ColBERT',
+      description: 'Customized by admin',
+    }]);
+
+    const app = await makeApp();
+    const list = await app.inject({
+      method: 'GET',
+      url: '/api/admin/retrieval-profiles',
+      headers: { cookie: 'mw=1' },
+    });
+
+    expect(list.statusCode).toBe(200);
+    const profile = list.json().values.find((item: { id: string }) => item.id === 'opensearch_hybrid_colbert');
+    expect(profile).toMatchObject({
+      id: 'opensearch_hybrid_colbert',
+      name: 'Custom OpenSearch + ColBERT',
+      description: 'Customized by admin',
+    });
+    expect(list.json().values.map((item: { id: string }) => item.id)).toContain('opensearch_hybrid');
+
+    await app.close();
+  });
+
+  it('configures the MediaWiki retrieval profile separately from External API defaults', async () => {
+    const app = await makeApp();
+    const read = await app.inject({
+      method: 'GET',
+      url: '/api/admin/mediawiki-profile/config',
+      headers: { cookie: 'mw=1' },
+    });
+
+    expect(read.statusCode).toBe(200);
+    expect(read.json().values).toEqual({ defaultRetrievalProfileId: 'opensearch_hybrid_colbert' });
+    expect(read.json().selectedProfile).toMatchObject({
+      id: 'opensearch_hybrid_colbert',
+      readiness: expect.objectContaining({ status: expect.any(String) }),
+    });
+    expect(read.json().retrievalProfiles.map((profile: { id: string }) => profile.id)).toContain('semantic_broad');
+
+    const saved = await app.inject({
+      method: 'POST',
+      url: '/api/admin/mediawiki-profile/config',
+      headers: { cookie: 'mw=1' },
+      payload: { defaultRetrievalProfileId: 'semantic_broad' },
+    });
+
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json()).toMatchObject({
+      status: 'saved',
+      values: { defaultRetrievalProfileId: 'semantic_broad' },
+      selectedProfile: { id: 'semantic_broad' },
+      metadata: { secretsRedacted: true },
+    });
+
+    const external = await app.inject({
+      method: 'GET',
+      url: '/api/admin/external-api/config',
+      headers: { cookie: 'mw=1' },
+    });
+    expect(external.json().values.defaultRetrievalProfileId).toBe('');
 
     await app.close();
   });
@@ -1331,6 +1470,7 @@ describe('admin routes', () => {
         categoryFilters: { include: ['ИТ'], exclude: ['Архив'] },
         documentPolicyId: 'default',
         runMode: 'manual',
+        indexTargets: ['dense', 'bm25', 'opensearch', 'attachments', 'semanticFacts'],
         attachmentsEnabled: true,
         semanticFactsEnabled: true,
         chunkSize: 640,
@@ -1375,7 +1515,7 @@ describe('admin routes', () => {
     expect(reindex.statusCode).toBe(202);
     expect(startSyncerReindex).toHaveBeenCalledWith({
       profileId: 'corp-it',
-      indexTargets: ['dense', 'bm25', 'attachments', 'semanticFacts'],
+      indexTargets: ['dense', 'bm25', 'opensearch', 'attachments', 'semanticFacts'],
       source: undefined,
       colbertModel: undefined,
       colbertCollection: undefined,

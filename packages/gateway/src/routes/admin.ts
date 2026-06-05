@@ -136,6 +136,10 @@ import {
   setExternalApiConfig,
   toExternalApiCapabilities,
 } from '../services/external-api-config.js';
+import {
+  getMediaWikiProfileConfigStatus,
+  setMediaWikiProfileConfig,
+} from '../services/mediawiki-profile-config.js';
 
 const HELP_TEXT: Record<keyof RuntimeConfig, { label: string; help: string; type: string; min?: number; max?: number }> = {
   litellmModel: {
@@ -498,6 +502,41 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       } catch (err) {
         reply.status(400).send({
           error: 'Invalid external API config',
+          message: err instanceof Error ? err.message : 'Unknown validation error',
+        });
+      }
+    }
+  );
+
+  app.get(
+    '/api/admin/mediawiki-profile/config',
+    { preHandler: mwAuthMiddleware },
+    async (request, reply) => {
+      if (rejectNonAdmin(request as AuthenticatedRequest, reply)) return;
+      reply.send({
+        ...(await getMediaWikiProfileConfigStatus()),
+        metadata: { secretsRedacted: true },
+      });
+    }
+  );
+
+  app.post(
+    '/api/admin/mediawiki-profile/config',
+    { preHandler: mwAuthMiddleware },
+    async (request, reply) => {
+      const authenticated = request as AuthenticatedRequest;
+      if (rejectNonAdmin(authenticated, reply)) return;
+
+      try {
+        await setMediaWikiProfileConfig(request.body, auditActor(authenticated));
+        reply.send({
+          status: 'saved',
+          ...(await getMediaWikiProfileConfigStatus()),
+          metadata: { secretsRedacted: true },
+        });
+      } catch (err) {
+        reply.status(400).send({
+          error: 'Invalid MediaWiki profile config',
           message: err instanceof Error ? err.message : 'Unknown validation error',
         });
       }

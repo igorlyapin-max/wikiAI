@@ -926,6 +926,21 @@ function urlHasCredentials(value: string): boolean {
   }
 }
 
+function normalizeOpenSearchAdminConfig(value: OpenSearchAdminConfig): OpenSearchAdminConfig {
+  const baseUrl = value.baseUrl.trim().length === 0
+    ? DEFAULT_OPENSEARCH_BASE_URL
+    : value.baseUrl;
+  return {
+    ...value,
+    baseUrl,
+    authConfigured: Boolean(
+      value.apiKeyConfigured ||
+      (value.usernameConfigured && value.passwordConfigured) ||
+      urlHasCredentials(baseUrl)
+    ),
+  };
+}
+
 function applyServiceOverrides(base: ServiceAdminConfig, overrides: ServiceConfigUpdate): ServiceAdminConfig {
   return {
     ...base,
@@ -933,7 +948,7 @@ function applyServiceOverrides(base: ServiceAdminConfig, overrides: ServiceConfi
     gateway: { ...base.gateway, ...overrides.gateway },
     syncer: { ...base.syncer, ...overrides.syncer },
     qdrant: { ...base.qdrant, ...overrides.qdrant },
-    opensearch: { ...base.opensearch, ...overrides.opensearch },
+    opensearch: normalizeOpenSearchAdminConfig({ ...base.opensearch, ...overrides.opensearch }),
     llm: { ...base.llm, ...overrides.llm },
     embeddings: { ...base.embeddings, ...overrides.embeddings },
   };
@@ -1133,7 +1148,7 @@ export async function getEffectiveOpenSearchConfig(): Promise<EffectiveOpenSearc
   const apiKey = config.opensearchApiKey || undefined;
   const enabled = overrides.opensearch?.enabled ?? config.opensearchEnabled;
   const configuredBaseUrl = overrides.opensearch?.baseUrl ?? config.opensearchBaseUrl;
-  const baseUrl = enabled && configuredBaseUrl.trim().length === 0
+  const baseUrl = configuredBaseUrl.trim().length === 0
     ? DEFAULT_OPENSEARCH_BASE_URL
     : configuredBaseUrl;
   return {
@@ -1747,8 +1762,13 @@ function normalizeRetrievalProfile(profile: RetrievalProfile): RetrievalProfile 
 
 export async function getRetrievalProfiles(): Promise<RetrievalProfile[]> {
   const stored = await getAdminStore().getJson<RetrievalProfile[]>(RETRIEVAL_PROFILE_AREA, DEFAULT_KEY);
-  if (stored && stored.length > 0) return stored.map(normalizeRetrievalProfile);
-  return getDefaultRetrievalProfiles();
+  const defaults = await getDefaultRetrievalProfiles();
+  if (!stored || stored.length === 0) return defaults;
+
+  const normalizedStored = stored.map(normalizeRetrievalProfile);
+  const storedIds = new Set(normalizedStored.map((profile) => profile.id));
+  const missingDefaults = defaults.filter((profile) => !storedIds.has(profile.id));
+  return [...normalizedStored, ...missingDefaults];
 }
 
 export async function upsertRetrievalProfile(input: unknown, actor?: string): Promise<RetrievalProfile> {
