@@ -1,5 +1,9 @@
 import { SearchChunk, SemanticFacts } from '../types/index.js';
 
+export interface PromptContextOptions {
+  maxChars?: number;
+}
+
 function formatSemanticFacts(facts: SemanticFacts | undefined): string {
   if (!facts) return '';
 
@@ -22,8 +26,16 @@ function formatTrustMetadata(chunk: SearchChunk): string {
   return details.length > 0 ? `\nДоверие источника:\n${details.join('\n')}` : '';
 }
 
-export function formatChunksForPrompt(chunks: SearchChunk[]): string {
-  return chunks
+function truncatePromptContext(value: string, maxChars: number | undefined): string {
+  if (maxChars === undefined || !Number.isFinite(maxChars) || maxChars <= 0) return value;
+  const normalizedMax = Math.trunc(maxChars);
+  if (value.length <= normalizedMax) return value;
+  if (normalizedMax <= 3) return value.slice(0, normalizedMax);
+  return `${value.slice(0, normalizedMax - 3).trimEnd()}...`;
+}
+
+export function formatChunksForPrompt(chunks: SearchChunk[], options: PromptContextOptions = {}): string {
+  const text = chunks
     .map((chunk, index) => {
       const semanticFacts = formatSemanticFacts(chunk.semanticFacts);
       const semanticBlock = semanticFacts ? `\nСвойства документа:\n${semanticFacts}` : '';
@@ -31,4 +43,5 @@ export function formatChunksForPrompt(chunks: SearchChunk[]): string {
       return `[${index + 1}] ${chunk.title}${semanticBlock}${trustBlock}\n\n${chunk.text}`;
     })
     .join('\n\n');
+  return truncatePromptContext(text, options.maxChars);
 }

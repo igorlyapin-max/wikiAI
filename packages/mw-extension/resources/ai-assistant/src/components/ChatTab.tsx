@@ -185,7 +185,7 @@ function renderAssistantContent(content: string, sources: MessageSource[] | unde
   if (!sources || sources.length === 0) return content;
 
   const parts: ReactNode[] = [];
-  const citationPattern = /\[(\d+)\]/g;
+  const citationPattern = /\[(?:источник\s+)?(\d+)\]/giu;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
@@ -238,6 +238,7 @@ export default function ChatTab({ gatewayUrl }: ChatTabProps) {
   const [conversationId, setConversationId] = useState<string | undefined>();
   const [historyError, setHistoryError] = useState<string | undefined>();
   const bottomRef = useRef<HTMLDivElement>(null);
+  const sessionLoadRequestRef = useRef(0);
   const archiveReadOnly = activeSessionStatus === 'archived';
 
   useEffect(() => {
@@ -245,6 +246,8 @@ export default function ChatTab({ gatewayUrl }: ChatTabProps) {
   }, [messages]);
 
   const loadSessions = async (filter = sessionFilter): Promise<ChatSessionSummary[]> => {
+    const requestId = sessionLoadRequestRef.current + 1;
+    sessionLoadRequestRef.current = requestId;
     setSessionsLoading(true);
     setHistoryError(undefined);
     try {
@@ -254,15 +257,21 @@ export default function ChatTab({ gatewayUrl }: ChatTabProps) {
       if (!res.ok) throw new Error(await readGatewayError(res));
       const data = await res.json();
       const values = normalizeSessions(isRecord(data) ? data.values : undefined);
-      setSessions(values);
+      if (sessionLoadRequestRef.current === requestId) {
+        setSessions(values);
+      }
       return values;
     } catch (err) {
       const message = err instanceof Error && err.message ? err.message : 'Ошибка загрузки истории чатов.';
-      setHistoryError(message);
-      setSessions([]);
+      if (sessionLoadRequestRef.current === requestId) {
+        setHistoryError(message);
+        setSessions([]);
+      }
       return [];
     } finally {
-      setSessionsLoading(false);
+      if (sessionLoadRequestRef.current === requestId) {
+        setSessionsLoading(false);
+      }
     }
   };
 

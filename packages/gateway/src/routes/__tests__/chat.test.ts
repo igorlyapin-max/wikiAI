@@ -213,13 +213,17 @@ describe('chat routes', () => {
         retrievalQuery: 'Как подключить VPN?',
         historyMessagesUsed: 0,
         requestedTopK: null,
+        retrievalTopK: 4,
         effectiveTopK: 4,
+        contextTopK: 4,
+        contextMaxChars: 12000,
         searchMode: 'hybrid',
         retrievalProfileId: 'test_mediawiki_vector',
         rawChunks: 1,
         readableChunks: 1,
         trustedChunks: 1,
         finalSources: 1,
+        contextSources: 1,
       },
       sources: [
         {
@@ -253,7 +257,107 @@ describe('chat routes', () => {
     await app.close();
   });
 
-  it('uses active chat history as retrieval context without rewriting the user message', async () => {
+  it('uses retrievalTopK for returned sources and contextTopK for the LLM prompt', async () => {
+    const manyChunks: SearchChunk[] = [
+      {
+        id: 11,
+        pageId: 101,
+        title: 'CorpIT:FAQ VPN',
+        text: 'VPN access requires MFA.',
+        namespace: 3030,
+        allowedGroups: ['ai-it'],
+        score: 0.91,
+      },
+      {
+        id: 12,
+        pageId: 102,
+        title: 'CorpIT:FAQ WiFi',
+        text: 'WiFi access uses corporate credentials.',
+        namespace: 3030,
+        allowedGroups: ['ai-it'],
+        score: 0.88,
+      },
+      {
+        id: 13,
+        pageId: 103,
+        title: 'CorpIT:FAQ MFA',
+        text: 'MFA enrollment is required.',
+        namespace: 3030,
+        allowedGroups: ['ai-it'],
+        score: 0.86,
+      },
+    ];
+    const template = (await getDefaultRetrievalProfiles()).find((profile) => profile.id === 'semantic_broad');
+    if (!template) throw new Error('semantic_broad retrieval profile template is missing');
+    await upsertRetrievalProfile({
+      id: 'test_mediawiki_vector',
+      name: 'Test MediaWiki vector',
+      description: 'Test profile with split limits',
+      enabled: true,
+      apiEnabled: false,
+      mcpEnabled: false,
+      anonymousAllowed: false,
+      maxTopK: 20,
+      tags: ['test'],
+      config: {
+        ...template.config,
+        retrievalTopK: 3,
+        contextTopK: 1,
+        contextMaxChars: 1000,
+        topK: 3,
+        maxContextChunks: 1,
+        maxContextChars: 1000,
+        searchMode: 'vector_only',
+        rerankMode: 'none',
+        colbertEnabled: false,
+      },
+    });
+    searchRagChunks.mockResolvedValueOnce({
+      chunks: manyChunks,
+      limit: 3,
+      aclCandidateLimit: 15,
+      showRawScores: false,
+      mode: 'hybrid',
+    });
+    filterReadableChunks.mockResolvedValueOnce(manyChunks);
+
+    const app = await makeApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/chat',
+      headers: { cookie: 'mw=1', origin: 'http://127.0.0.1:8082' },
+      payload: {
+        message: 'Как подключить VPN?',
+        conversationId: 'conv-split-limits',
+        stream: false,
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().sources).toHaveLength(3);
+    expect(res.json().diagnostics).toMatchObject({
+      requestedTopK: null,
+      retrievalTopK: 3,
+      effectiveTopK: 3,
+      contextTopK: 1,
+      contextMaxChars: 1000,
+      finalSources: 3,
+      contextSources: 1,
+    });
+    expect(searchRagChunks).toHaveBeenCalledWith(expect.objectContaining({
+      fallbackTopK: 3,
+      config: expect.objectContaining({ retrievalTopK: 3, contextTopK: 1 }),
+    }));
+    const messages = callLiteLLM.mock.calls[0][0] as Array<{ role: string; content: string }>;
+    const contextMessage = messages.find((messageItem) => messageItem.content.startsWith('Documents for answer:'));
+    expect(contextMessage?.content).toContain('[1] CorpIT:FAQ VPN');
+    expect(contextMessage?.content).not.toContain('CorpIT:FAQ WiFi');
+    expect(contextMessage?.content).not.toContain('[2]');
+
+    await app.close();
+  });
+
+  it('keeps active chat history in the LLM prompt without injecting it into retrieval', async () => {
     await recordChatMessage({
       sessionHash: 'mw=1',
       conversationId: 'conv-cuisine',
@@ -315,16 +419,108 @@ describe('chat routes', () => {
 
     expect(res.statusCode).toBe(200);
     const ragQuery = searchRagChunks.mock.calls[0][0].query as string;
-    expect(ragQuery).toContain('Еще раз про кухню?');
-    expect(ragQuery).toContain('Расскажи про молекулярную гастрономию');
-    expect(ragQuery).toContain('Молекулярная гастрономия использует научные методы');
+    expect(ragQuery).toBe('Еще раз про кухню?');
     expect(res.json().diagnostics).toMatchObject({
       originalMessage: 'Еще раз про кухню?',
       historyMessagesUsed: 2,
+      retrievalQueryMode: 'current_message',
+      historyInjectedIntoRetrieval: false,
     });
-    expect(res.json().diagnostics.retrievalQuery).toContain('Расскажи про молекулярную гастрономию');
+    expect(res.json().diagnostics.retrievalQuery).toBe('Еще раз про кухню?');
     const llmMessages = callLiteLLM.mock.calls[0][0] as Array<{ role: string; content: string }>;
+    expect(llmMessages).toEqual(expect.arrayContaining([
+      { role: 'user', content: 'Расскажи про молекулярную гастрономию' },
+      { role: 'assistant', content: 'Молекулярная гастрономия использует научные методы приготовления.' },
+    ]));
     expect(llmMessages[llmMessages.length - 1]).toEqual({ role: 'user', content: 'Еще раз про кухню?' });
+
+    await app.close();
+  });
+
+  it('can include active chat history in retrieval when the profile enables history_augmented', async () => {
+    const template = (await getDefaultRetrievalProfiles()).find((profile) => profile.id === 'semantic_broad');
+    if (!template) throw new Error('semantic_broad retrieval profile template is missing');
+    await upsertRetrievalProfile({
+      id: 'test_mediawiki_history_augmented',
+      name: 'Test MediaWiki history augmented',
+      description: 'Test profile with chat history in retrieval',
+      enabled: true,
+      apiEnabled: false,
+      mcpEnabled: false,
+      anonymousAllowed: false,
+      maxTopK: 20,
+      tags: ['test'],
+      config: {
+        ...template.config,
+        chatRetrievalQueryMode: 'history_augmented',
+        searchMode: 'vector_only',
+        rerankMode: 'none',
+        colbertEnabled: false,
+      },
+    });
+    await setMediaWikiProfileConfig({ defaultRetrievalProfileId: 'test_mediawiki_history_augmented' });
+    const retention = {
+      retentionMode: 'archive' as const,
+      activeDays: 7,
+      recentDays: 7,
+      archiveDays: 365,
+      maxPinnedChats: 20,
+      maxActiveChats: 200,
+      maxTotalChats: 1000,
+      onLimitExceeded: 'delete_oldest' as const,
+      exportOptions: {
+        formats: ['json' as const],
+        includeMetadata: true,
+        includeSources: true,
+        includeMessages: true,
+      },
+    };
+    await recordChatMessage({
+      sessionHash: 'mw=1',
+      conversationId: 'conv-history-retrieval',
+      userId: 77,
+      username: 'ChatUser',
+      role: 'user',
+      content: 'Расскажи про молекулярную гастрономию',
+    }, retention);
+    await recordChatMessage({
+      sessionHash: 'mw=1',
+      conversationId: 'conv-history-retrieval',
+      userId: 77,
+      username: 'ChatUser',
+      role: 'assistant',
+      content: 'Молекулярная гастрономия использует научные методы приготовления.',
+    }, retention);
+
+    const app = await makeApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/chat',
+      headers: { cookie: 'mw=1', origin: 'http://127.0.0.1:8082' },
+      payload: {
+        message: 'Еще раз про кухню?',
+        conversationId: 'conv-history-retrieval',
+        stream: false,
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const ragQuery = searchRagChunks.mock.calls[0][0].query as string;
+    expect(ragQuery).toContain('Еще раз про кухню?');
+    expect(ragQuery).toContain('Предыдущий вопрос: Расскажи про молекулярную гастрономию');
+    expect(ragQuery).toContain('Предыдущий ответ: Молекулярная гастрономия использует научные методы приготовления.');
+    expect(res.json().diagnostics).toMatchObject({
+      retrievalProfileId: 'test_mediawiki_history_augmented',
+      retrievalQueryMode: 'history_augmented',
+      historyInjectedIntoRetrieval: true,
+      historyMessagesUsed: 2,
+    });
+    expect(res.json().diagnostics.retrievalQuery).toBe(ragQuery);
+    const llmMessages = callLiteLLM.mock.calls[0][0] as Array<{ role: string; content: string }>;
+    expect(llmMessages).toEqual(expect.arrayContaining([
+      { role: 'user', content: 'Расскажи про молекулярную гастрономию' },
+      { role: 'assistant', content: 'Молекулярная гастрономия использует научные методы приготовления.' },
+    ]));
 
     await app.close();
   });

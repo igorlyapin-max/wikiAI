@@ -57,7 +57,7 @@
 
 - [ ] `GET /api/admin/rag/config` показывает текущие параметры.
 - [ ] `POST /api/admin/rag/config` валидирует границы.
-- [ ] `topK` применяется к chat/search context.
+- [ ] Профиль поиска разделяет `retrievalTopK` для финальных ссылок/results и `contextTopK`/`contextMaxChars` для LLM prompt.
 - [ ] Chunking параметры передаются в reindex profile.
 - [ ] `searchMode=hybrid` смешивает Qdrant vector candidates и SQLite FTS5/BM25 candidates.
 - [ ] `vectorWeight`, `lexicalWeight`, `vectorCandidateLimit`, `lexicalCandidateLimit`, `minFinalScore` меняются из Admin UI.

@@ -20,7 +20,7 @@
 - Syncer режет страницы и вложения на chunks и отправляет их в Gateway.
 - Gateway обновляет dense vector index, BM25/FTS5, optional trigram и optional ColBERT.
 - При запросе берутся кандидаты из включенных retrieval-режимов.
-- Затем применяются MediaWiki ACL, trust policy, лимиты `topK` и контекстные ограничения.
+- Затем применяются MediaWiki ACL, trust policy, `retrievalTopK` для финальной выдачи и `contextTopK/contextMaxChars` для LLM-контекста.
 - В ответе показываются sources, чтобы эксперт видел происхождение знания.
 Визуал: две дорожки: индексация страницы и обработка пользовательского запроса.
 

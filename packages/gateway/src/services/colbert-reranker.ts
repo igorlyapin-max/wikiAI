@@ -11,6 +11,8 @@ export interface ColbertRerankDiagnostics {
   rerankMode: RagAdminConfig['rerankMode'];
   colbertApplied: boolean;
   colbertCandidates: number;
+  colbertScores?: Array<{ id: number; score: number }>;
+  tailSourcesBelowThreshold?: number;
   colbertLatencyMs?: number;
   colbertFallbackUsed: boolean;
   colbertError?: string;
@@ -61,6 +63,8 @@ export interface ColbertIndexDiagnostics {
   searchMode: RagAdminConfig['searchMode'];
   colbertIndexApplied: boolean;
   colbertCandidates: number;
+  colbertScores?: Array<{ id: number; score: number }>;
+  tailSourcesBelowThreshold?: number;
   colbertLatencyMs?: number;
   colbertFallbackUsed: boolean;
   colbertError?: string;
@@ -241,6 +245,16 @@ function applyColbertScores(
   return ranked.slice(0, normalizeTopK(topK));
 }
 
+function colbertScoreDiagnostics(results: ColbertResponseResult[], minScore: number): {
+  colbertScores: Array<{ id: number; score: number }>;
+  tailSourcesBelowThreshold: number;
+} {
+  return {
+    colbertScores: results.map((result) => ({ id: result.id, score: result.score })),
+    tailSourcesBelowThreshold: results.filter((result) => result.score < minScore).length,
+  };
+}
+
 export async function rerankChunksWithColbert(input: ColbertRerankInput): Promise<ColbertRerankResult> {
   const { query, chunks, topK, config } = input;
   if (!isColbertRerankEnabled(config) || chunks.length === 0) {
@@ -274,9 +288,11 @@ export async function rerankChunksWithColbert(input: ColbertRerankInput): Promis
       throw new Error(`ColBERT rerank error: ${response.status} ${response.statusText}`);
     }
 
+    const results = parseColbertResults(await response.json() as unknown);
+    const scoreDiagnostics = colbertScoreDiagnostics(results, config.colbertMinScore);
     const ranked = applyColbertScores(
       chunks,
-      parseColbertResults(await response.json() as unknown),
+      results,
       config.colbertMinScore,
       topK
     );
@@ -288,6 +304,7 @@ export async function rerankChunksWithColbert(input: ColbertRerankInput): Promis
           rerankMode: config.rerankMode,
           colbertApplied: false,
           colbertCandidates: candidates.length,
+          ...scoreDiagnostics,
           colbertLatencyMs: Date.now() - startedAt,
           colbertFallbackUsed: true,
           colbertError: 'ColBERT response did not rank any candidate above threshold',
@@ -301,6 +318,7 @@ export async function rerankChunksWithColbert(input: ColbertRerankInput): Promis
         rerankMode: config.rerankMode,
         colbertApplied: true,
         colbertCandidates: candidates.length,
+        ...scoreDiagnostics,
         colbertLatencyMs: Date.now() - startedAt,
         colbertFallbackUsed: false,
       },
@@ -377,7 +395,9 @@ export async function searchColbertIndex(input: {
     throw new Error(`ColBERT search error: ${response.status} ${response.statusText}`);
   }
 
-  const chunks = parseColbertResults(await response.json() as unknown)
+  const results = parseColbertResults(await response.json() as unknown);
+  const scoreDiagnostics = colbertScoreDiagnostics(results, config.colbertMinScore);
+  const chunks = results
     .map(colbertResultToChunk)
     .filter((chunk): chunk is SearchChunk => chunk !== null)
     .filter((chunk) => chunk.score >= config.colbertMinScore)
@@ -393,6 +413,7 @@ export async function searchColbertIndex(input: {
       searchMode: config.searchMode,
       colbertIndexApplied: true,
       colbertCandidates: chunks.length,
+      ...scoreDiagnostics,
       colbertLatencyMs: Date.now() - startedAt,
       colbertFallbackUsed: false,
     },

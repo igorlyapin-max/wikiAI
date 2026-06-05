@@ -28,6 +28,7 @@ export interface RetrievalProfileCapability {
   lexicalBackend: RagAdminConfig['lexicalBackend'];
   searchMode: RagAdminConfig['searchMode'];
   rerankMode: RagAdminConfig['rerankMode'];
+  chatRetrievalQueryMode: RagAdminConfig['chatRetrievalQueryMode'];
   readiness: RetrievalProfileReadiness;
 }
 
@@ -192,6 +193,7 @@ export async function getRetrievalProfileCapabilities(): Promise<RetrievalProfil
     lexicalBackend: profile.config.lexicalBackend,
     searchMode: profile.config.searchMode,
     rerankMode: profile.config.rerankMode,
+    chatRetrievalQueryMode: profile.config.chatRetrievalQueryMode,
     readiness: profile.readiness,
   }));
 }

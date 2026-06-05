@@ -6,6 +6,9 @@ import { filterReadableChunks, filterReadableChunksForPrincipal, type PrincipalA
 import { formatChunksForPrompt } from './prompt-context.js';
 import {
   calculateChatRetentionRedisTtlSeconds,
+  getEffectiveContextMaxChars,
+  getEffectiveContextTopK,
+  getEffectiveRetrievalTopK,
   getChatRetentionAdminConfig,
   getRagAdminConfig,
   type ChatRetentionConfig,
@@ -38,6 +41,7 @@ import {
 
 type RetrievalHistoryMessage = { role: string; content: string };
 type LlmMessage = { role: string; content: string };
+type RetrievalQueryMode = RagAdminConfig['chatRetrievalQueryMode'];
 
 export interface RuntimeChatInput {
   message: string;
@@ -94,24 +98,48 @@ function truncateText(value: string, maxChars: number): string {
   return `${compact.slice(0, maxChars - 3).trimEnd()}...`;
 }
 
+export interface ChatRetrievalQuery {
+  query: string;
+  mode: RetrievalQueryMode;
+  historyInjected: boolean;
+}
+
 export function buildChatRetrievalQuery(
   currentMessage: string,
   history: RetrievalHistoryMessage[],
+  mode: RetrievalQueryMode = 'current_message',
   maxChars = 1200
-): string {
+): ChatRetrievalQuery {
+  if (mode === 'current_message') {
+    const query = truncateText(currentMessage, maxChars);
+    return {
+      query,
+      mode,
+      historyInjected: false,
+    };
+  }
+
   const parts = [compactText(currentMessage)].filter(Boolean);
   const recent = history
     .filter((historyMessage) => historyMessage.role === 'user' || historyMessage.role === 'assistant')
     .slice(-4);
 
+  let historyInjected = false;
   for (const historyMessage of recent) {
     const label = historyMessage.role === 'user' ? 'Предыдущий вопрос' : 'Предыдущий ответ';
     const content = truncateText(historyMessage.content, historyMessage.role === 'user' ? 320 : 220);
-    if (content) parts.push(`${label}: ${content}`);
+    if (content) {
+      parts.push(`${label}: ${content}`);
+      historyInjected = true;
+    }
   }
 
   const result = parts.join('\n');
-  return result.length <= maxChars ? result : result.slice(0, maxChars).trimEnd();
+  return {
+    query: result.length <= maxChars ? result : result.slice(0, maxChars).trimEnd(),
+    mode,
+    historyInjected,
+  };
 }
 
 function countRetrievalHistoryMessages(history: RetrievalHistoryMessage[]): number {
@@ -227,11 +255,13 @@ export async function prepareRuntimeChat(input: RuntimeChatInput): Promise<Prepa
     input.retrievalProfileId,
     input.retrievalProfileSurface ?? 'api'
   );
+  const ragConfig = profileSelection?.effectiveConfig ?? await getRagAdminConfig();
 
   const sqlHistory = await getSqlChatHistory(sessionHash, convId, input.principal.userId);
   const fullHistory = sqlHistory.length > 0 ? sqlHistory : await getChatHistory(sessionHash, convId);
   const history = fullHistory.slice(-4);
-  const retrievalQuery = buildChatRetrievalQuery(message, history);
+  const retrievalQueryDecision = buildChatRetrievalQuery(message, history, ragConfig.chatRetrievalQueryMode);
+  const retrievalQuery = retrievalQueryDecision.query;
 
   try {
     await recordChatMessage({
@@ -252,12 +282,12 @@ export async function prepareRuntimeChat(input: RuntimeChatInput): Promise<Prepa
     logOperationalError('chat.sql_user_history_write_error', err);
   }
 
-  const ragConfig = profileSelection?.effectiveConfig ?? await getRagAdminConfig();
   const topKLimit = profileSelection
     ? Math.min(input.maxTopK ?? profileSelection.profile.maxTopK, profileSelection.profile.maxTopK)
     : input.maxTopK;
   const topK = clampTopK(input.topK, topKLimit);
-  const fallbackTopK = profileSelection?.effectiveConfig.topK ?? runtime.topK;
+  const fallbackTopK = getEffectiveRetrievalTopK(ragConfig, runtime.topK);
+  const effectiveTopK = topK ?? fallbackTopK;
   const search = await runSearchWithColbertFallback({
     query: retrievalQuery,
     topK,
@@ -284,6 +314,9 @@ export async function prepareRuntimeChat(input: RuntimeChatInput): Promise<Prepa
   const verifiedChunks = reranked.chunks;
 
   const sources = verifiedChunks.map((chunk) => chunkToSource(chunk, input.wikiUrlOptions ?? {}));
+  const contextTopK = getEffectiveContextTopK(ragConfig, effectiveTopK);
+  const contextMaxChars = getEffectiveContextMaxChars(ragConfig);
+  const contextChunks = verifiedChunks.slice(0, contextTopK);
   const conflict = await detectConflictsForChat(retrievalQuery, verifiedChunks);
   const diagnostics = isColbertFullSearchEnabled(ragConfig)
     ? search.diagnostics
@@ -294,7 +327,7 @@ export async function prepareRuntimeChat(input: RuntimeChatInput): Promise<Prepa
 
   await appendChatMessage(sessionHash, convId, { role: 'user', content: message }, chatTtlSeconds);
 
-  const contextText = formatChunksForPrompt(verifiedChunks);
+  const contextText = formatChunksForPrompt(contextChunks, { maxChars: contextMaxChars });
   const messages: LlmMessage[] = [
     { role: 'system', content: runtime.systemPrompt },
     ...(contextText ? [{ role: 'system', content: `Documents for answer:\n${contextText}` }] : []),
@@ -321,14 +354,20 @@ export async function prepareRuntimeChat(input: RuntimeChatInput): Promise<Prepa
       authMode: input.principal.authMode,
       originalMessage: message,
       retrievalQuery,
+      retrievalQueryMode: retrievalQueryDecision.mode,
+      historyInjectedIntoRetrieval: retrievalQueryDecision.historyInjected,
       historyMessagesUsed: countRetrievalHistoryMessages(history),
       requestedTopK: input.topK ?? null,
-      effectiveTopK: topK ?? fallbackTopK,
+      retrievalTopK: fallbackTopK,
+      effectiveTopK,
+      contextTopK,
+      contextMaxChars,
       searchMode: search.mode,
       rawChunks: search.chunks.length,
       readableChunks: readableChunks.length,
       trustedChunks: trustedChunks.length,
       finalSources: sources.length,
+      contextSources: contextChunks.length,
     },
   };
 }

@@ -1,6 +1,11 @@
 import { getEmbedding } from './embedding.js';
 import { getRuntimeConfig } from './config.js';
-import { getRagAdminConfig } from './admin-platform-config.js';
+import {
+  getEffectiveContextMaxChars,
+  getEffectiveContextTopK,
+  getEffectiveRetrievalTopK,
+  getRagAdminConfig,
+} from './admin-platform-config.js';
 import {
   filterReadableChunks,
   filterReadableChunksForPrincipal,
@@ -23,6 +28,7 @@ import {
   type ResolvedRetrievalProfile,
 } from './retrieval-profiles.js';
 import type { RagAdminConfig } from './admin-platform-config.js';
+import { toSearchPlainText } from './text-normalization.js';
 
 export interface RuntimeSearchInput {
   query: string;
@@ -59,6 +65,7 @@ export function formatSearchResult(
 ): Record<string, unknown> {
   const result = {
     ...chunk,
+    text: toSearchPlainText(chunk.text),
     pageUrl: chunk.pageUrl ?? buildWikiPageUrl(chunk.title, wikiUrlOptions),
   };
   if (showRawScores) return result;
@@ -163,7 +170,10 @@ export async function executeRuntimeSearch(input: RuntimeSearchInput): Promise<R
     ? Math.min(input.maxTopK ?? profileSelection.profile.maxTopK, profileSelection.profile.maxTopK)
     : input.maxTopK;
   const topK = clampTopK(input.topK, topKLimit);
-  const fallbackTopK = profileSelection?.effectiveConfig.topK ?? runtime.topK;
+  const fallbackTopK = getEffectiveRetrievalTopK(ragConfig, runtime.topK);
+  const effectiveTopK = topK ?? fallbackTopK;
+  const contextTopK = getEffectiveContextTopK(ragConfig, effectiveTopK);
+  const contextMaxChars = getEffectiveContextMaxChars(ragConfig);
   const search = await runSearchWithColbertFallback({
     query,
     topK,
@@ -214,7 +224,10 @@ export async function executeRuntimeSearch(input: RuntimeSearchInput): Promise<R
       query,
       retrievalQuery: query,
       requestedTopK: input.topK ?? null,
-      effectiveTopK: topK ?? fallbackTopK,
+      retrievalTopK: fallbackTopK,
+      effectiveTopK,
+      contextTopK,
+      contextMaxChars,
       searchMode: search.mode,
       rawChunks: search.chunks.length,
       readableChunks: readableChunks.length,

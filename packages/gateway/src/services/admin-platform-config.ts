@@ -133,6 +133,10 @@ export interface RagAdminConfig {
   chunkSeparators: string[];
   minChunkLength: number;
   maxChunksPerPage: number;
+  retrievalTopK: number;
+  contextTopK: number;
+  contextMaxChars: number;
+  chatRetrievalQueryMode: 'current_message' | 'history_augmented';
   topK: number;
   maxContextChunks: number;
   maxContextChars: number;
@@ -184,7 +188,13 @@ export interface RetrievalProfileReadiness {
 }
 
 export type RetrievalProfileOverrides = Pick<RagAdminConfig,
+  | 'retrievalTopK'
+  | 'contextTopK'
+  | 'contextMaxChars'
+  | 'chatRetrievalQueryMode'
   | 'topK'
+  | 'maxContextChunks'
+  | 'maxContextChars'
   | 'searchMode'
   | 'rerankMode'
   | 'vectorWeight'
@@ -629,6 +639,10 @@ const ragConfigBaseSchema = z.object({
   chunkSeparators: z.array(z.string().min(1)).min(1).max(16),
   minChunkLength: z.number().int().min(1).max(1024),
   maxChunksPerPage: z.number().int().min(1).max(10000),
+  retrievalTopK: z.number().int().min(1).max(20),
+  contextTopK: z.number().int().min(1).max(50),
+  contextMaxChars: z.number().int().min(1000).max(200000),
+  chatRetrievalQueryMode: z.enum(['current_message', 'history_augmented']),
   topK: z.number().int().min(1).max(20),
   maxContextChunks: z.number().int().min(1).max(50),
   maxContextChars: z.number().int().min(1000).max(200000),
@@ -683,7 +697,13 @@ const ragConfigSchema = ragConfigBaseSchema
 const ragConfigUpdateSchema = ragConfigBaseSchema.partial().strict();
 
 const retrievalProfileConfigSchema = ragConfigBaseSchema.pick({
+  retrievalTopK: true,
+  contextTopK: true,
+  contextMaxChars: true,
+  chatRetrievalQueryMode: true,
   topK: true,
+  maxContextChunks: true,
+  maxContextChars: true,
   searchMode: true,
   rerankMode: true,
   vectorWeight: true,
@@ -727,6 +747,17 @@ const retrievalProfileInputSchema = z.object({
   tags: z.array(z.string().trim().min(1).max(80)).max(20).optional(),
   config: retrievalProfileConfigSchema,
 }).strict();
+
+function normalizeRetrievalProfileInput(input: unknown): unknown {
+  if (!isRecord(input) || !isRecord(input.config)) return input;
+  return {
+    ...input,
+    config: withRetrievalLimitAliases({
+      chatRetrievalQueryMode: 'current_message',
+      ...(input.config as DeepPartial<RagAdminConfig>),
+    }),
+  };
+}
 
 const webhookConfigSchema = z.object({
   syncerUrl: urlSchema,
@@ -1504,6 +1535,55 @@ function mergePartial<T extends object>(base: T, patch: DeepPartial<T>): T {
   return { ...base, ...patch } as T;
 }
 
+function normalizeRuntimeLimit(
+  value: number | undefined,
+  fallback: number,
+  min: number,
+  max: number
+): number {
+  const raw = Number.isFinite(value) ? Number(value) : fallback;
+  return Math.min(Math.max(Math.trunc(raw), min), max);
+}
+
+function withRetrievalLimitAliases(configInput: DeepPartial<RagAdminConfig>): DeepPartial<RagAdminConfig> {
+  const configValue = configInput as DeepPartial<RagAdminConfig>;
+  const retrievalTopK = configValue.retrievalTopK ?? configValue.topK;
+  const contextTopK = configValue.contextTopK ?? configValue.maxContextChunks ?? retrievalTopK;
+  const contextMaxChars = configValue.contextMaxChars ?? configValue.maxContextChars;
+  return {
+    ...configValue,
+    ...(retrievalTopK === undefined ? {} : {
+      retrievalTopK,
+      topK: configValue.topK ?? retrievalTopK,
+    }),
+    ...(contextTopK === undefined ? {} : {
+      contextTopK,
+      maxContextChunks: configValue.maxContextChunks ?? contextTopK,
+    }),
+    ...(contextMaxChars === undefined ? {} : {
+      contextMaxChars,
+      maxContextChars: configValue.maxContextChars ?? contextMaxChars,
+    }),
+  };
+}
+
+export function getEffectiveRetrievalTopK(configValue: RagAdminConfig, fallback: number): number {
+  return normalizeRuntimeLimit(configValue.retrievalTopK ?? configValue.topK, fallback, 1, 20);
+}
+
+export function getEffectiveContextTopK(configValue: RagAdminConfig, fallback: number): number {
+  return normalizeRuntimeLimit(
+    configValue.contextTopK ?? configValue.maxContextChunks ?? configValue.retrievalTopK ?? configValue.topK,
+    fallback,
+    1,
+    50
+  );
+}
+
+export function getEffectiveContextMaxChars(configValue: RagAdminConfig, fallback = 12000): number {
+  return normalizeRuntimeLimit(configValue.contextMaxChars ?? configValue.maxContextChars, fallback, 1000, 200000);
+}
+
 export async function getRagAdminConfig(): Promise<RagAdminConfig> {
   const runtime = await getRuntimeConfig();
   const defaults: RagAdminConfig = {
@@ -1512,6 +1592,10 @@ export async function getRagAdminConfig(): Promise<RagAdminConfig> {
     chunkSeparators: ['\n## ', '\n### ', '\n\n', '\n', '. ', ' '],
     minChunkLength: 40,
     maxChunksPerPage: 500,
+    retrievalTopK: runtime.topK,
+    contextTopK: runtime.topK,
+    contextMaxChars: 12000,
+    chatRetrievalQueryMode: 'current_message',
     topK: runtime.topK,
     maxContextChunks: runtime.topK,
     maxContextChars: 12000,
@@ -1550,13 +1634,13 @@ export async function getRagAdminConfig(): Promise<RagAdminConfig> {
     includeSemanticHeader: true,
   };
   const stored = (await getAdminStore().getJson<DeepPartial<RagAdminConfig>>(RAG_CONFIG_AREA, DEFAULT_KEY)) ?? {};
-  return ragConfigSchema.parse(mergePartial(defaults, stored));
+  return ragConfigSchema.parse(withRetrievalLimitAliases(mergePartial(defaults, stored)));
 }
 
 export async function previewRagAdminConfig(input: unknown): Promise<RagAdminConfig> {
-  const patch = ragConfigUpdateSchema.parse(input ?? {});
+  const patch = withRetrievalLimitAliases(ragConfigUpdateSchema.parse(input ?? {}));
   const current = await getRagAdminConfig();
-  return ragConfigSchema.parse({ ...current, ...patch });
+  return ragConfigSchema.parse(withRetrievalLimitAliases({ ...current, ...patch }));
 }
 
 export async function setRagAdminConfig(input: unknown, actor?: string): Promise<RagAdminConfig> {
@@ -1577,7 +1661,7 @@ export async function setRagAdminConfig(input: unknown, actor?: string): Promise
   });
 
   await setRuntimeConfig({
-    topK: updated.topK,
+    topK: updated.retrievalTopK,
     chunkSize: updated.chunkSize,
     chunkOverlap: updated.chunkOverlap,
   });
@@ -1589,8 +1673,24 @@ function retrievalProfileConfigFromRag(
   rag: RagAdminConfig,
   overrides: Partial<RetrievalProfileOverrides> = {}
 ): RetrievalProfileOverrides {
-  return retrievalProfileConfigSchema.parse({
-    topK: rag.topK,
+  const retrievalTopK = overrides.retrievalTopK ?? overrides.topK ?? rag.retrievalTopK ?? rag.topK;
+  const contextTopK = overrides.contextTopK
+    ?? overrides.maxContextChunks
+    ?? rag.contextTopK
+    ?? rag.maxContextChunks
+    ?? retrievalTopK;
+  const contextMaxChars = overrides.contextMaxChars
+    ?? overrides.maxContextChars
+    ?? rag.contextMaxChars
+    ?? rag.maxContextChars;
+  return retrievalProfileConfigSchema.parse(withRetrievalLimitAliases({
+    retrievalTopK,
+    contextTopK,
+    contextMaxChars,
+    chatRetrievalQueryMode: overrides.chatRetrievalQueryMode ?? rag.chatRetrievalQueryMode,
+    topK: overrides.topK ?? retrievalTopK,
+    maxContextChunks: overrides.maxContextChunks ?? contextTopK,
+    maxContextChars: overrides.maxContextChars ?? contextMaxChars,
     searchMode: rag.searchMode,
     rerankMode: rag.rerankMode,
     vectorWeight: rag.vectorWeight,
@@ -1621,7 +1721,7 @@ function retrievalProfileConfigFromRag(
     includeAttachments: rag.includeAttachments,
     includeSemanticHeader: rag.includeSemanticHeader,
     ...overrides,
-  });
+  }));
 }
 
 export async function getDefaultRetrievalProfiles(): Promise<RetrievalProfile[]> {
@@ -1686,6 +1786,7 @@ export async function getDefaultRetrievalProfiles(): Promise<RetrievalProfile[]>
       lexicalGateMode: 'when_bm25_available',
       lexicalMinMatchedTerms: 1,
       colbertEnabled: true,
+      colbertMinScore: 0.58,
       colbertFailMode: 'fail_search',
     }, ['opensearch', 'hybrid', 'colbert']),
     base('prod_hybrid_colbert', 'Production hybrid + ColBERT', 'BM25 gate, dense semantic search and ColBERT rerank for production-facing scenarios.', {
@@ -1751,12 +1852,15 @@ function normalizeRetrievalProfile(profile: RetrievalProfile): RetrievalProfile 
   return {
     ...profile,
     tags: profile.tags ?? [],
-    config: retrievalProfileConfigSchema.parse({
+    config: retrievalProfileConfigSchema.parse(withRetrievalLimitAliases({
       ...configRecord,
+      chatRetrievalQueryMode: configRecord.chatRetrievalQueryMode ?? 'current_message',
+      contextMaxChars: configRecord.contextMaxChars ?? configRecord.maxContextChars ?? 12000,
+      maxContextChars: configRecord.maxContextChars ?? configRecord.contextMaxChars ?? 12000,
       lexicalBackend: typeof configRecord.lexicalBackend === 'string'
         ? configRecord.lexicalBackend
         : 'sqlite_fts',
-    }),
+    } as DeepPartial<RagAdminConfig>)),
   };
 }
 
@@ -1772,7 +1876,7 @@ export async function getRetrievalProfiles(): Promise<RetrievalProfile[]> {
 }
 
 export async function upsertRetrievalProfile(input: unknown, actor?: string): Promise<RetrievalProfile> {
-  const parsed = retrievalProfileInputSchema.parse(input);
+  const parsed = retrievalProfileInputSchema.parse(normalizeRetrievalProfileInput(input));
   const profiles = await getRetrievalProfiles();
   const now = new Date().toISOString();
   const id = parsed.id ?? profileIdFromName(parsed.name);

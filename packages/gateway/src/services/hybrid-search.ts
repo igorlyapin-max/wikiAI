@@ -1,4 +1,4 @@
-import { getRagAdminConfig, RagAdminConfig } from './admin-platform-config.js';
+import { getEffectiveRetrievalTopK, getRagAdminConfig, RagAdminConfig } from './admin-platform-config.js';
 import { normalizeCandidateLimit, normalizeTopK, searchChunkCandidates } from './qdrant.js';
 import {
   getSearchIndexStatus,
@@ -278,7 +278,7 @@ function buildDiagnostics(
 
 export async function searchRagChunks(input: RagSearchInput): Promise<RagSearchResult> {
   const config = input.config ?? await getRagAdminConfig();
-  const limit = normalizeTopK(input.topK, input.fallbackTopK ?? config.topK);
+  const limit = normalizeTopK(input.topK, input.fallbackTopK ?? getEffectiveRetrievalTopK(config, config.topK));
   const aclLimit = getEffectiveCandidateLimit(config, limit);
   const vectorCandidateLimit = normalizeCandidateLimit(config.vectorCandidateLimit, 50);
   const vectorChunks = await searchChunkCandidates(input.vector, vectorCandidateLimit);

@@ -66,6 +66,12 @@ function mediaWikiRerankModeLabel(i18n, value) {
     : helperText(i18n, 'aiadmin-value-rerank-none', 'No rerank');
 }
 
+function mediaWikiChatRetrievalModeLabel(i18n, value) {
+  return value === 'history_augmented'
+    ? helperText(i18n, 'aiadmin-value-chat-retrieval-history-augmented', 'Current query + history')
+    : helperText(i18n, 'aiadmin-value-chat-retrieval-current-message', 'Current query only');
+}
+
 function mediaWikiProfileLabel(i18n, profile) {
   const config = profile.config || {};
   return [
@@ -206,6 +212,10 @@ export function renderMediaWikiProfileSelector(root, payload = {}, options = {})
     [helperText(i18n, 'aiadmin-field-search-mode'), config.searchMode || 'hybrid'],
     [helperText(i18n, 'aiadmin-field-lexical-backend', 'Lexical backend'), mediaWikiLexicalBackendLabel(i18n, config.lexicalBackend || 'sqlite_fts')],
     [helperText(i18n, 'aiadmin-field-rerank-mode'), config.rerankMode || 'none'],
+    [helperText(i18n, 'aiadmin-field-retrieval-top-k', 'Retrieval top-k'), config.retrievalTopK ?? config.topK ?? helperUnknown(i18n)],
+    [helperText(i18n, 'aiadmin-field-context-top-k', 'Context top-k'), config.contextTopK ?? config.maxContextChunks ?? helperUnknown(i18n)],
+    [helperText(i18n, 'aiadmin-field-context-max-chars', 'Context max chars'), config.contextMaxChars ?? config.maxContextChars ?? helperUnknown(i18n)],
+    [helperText(i18n, 'aiadmin-field-chat-retrieval-query-mode', 'Chat retrieval history'), mediaWikiChatRetrievalModeLabel(i18n, config.chatRetrievalQueryMode)],
     ['ColBERT', helperYesNo(i18n, config.colbertEnabled)],
     [helperText(i18n, 'aiadmin-field-lexical-edit-distance-enabled'), helperYesNo(i18n, config.lexicalEditDistanceEnabled)],
     [helperText(i18n, 'aiadmin-field-trigram-index-enabled'), helperYesNo(i18n, config.trigramIndexEnabled)],

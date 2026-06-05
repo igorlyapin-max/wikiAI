@@ -37,6 +37,39 @@ function readString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value : undefined;
 }
 
+function normalizePlainSegment(value: string): string {
+  const entities: Record<string, string> = {
+    amp: '&',
+    gt: '>',
+    lt: '<',
+    nbsp: ' ',
+    quot: '"',
+    apos: "'",
+  };
+  return value
+    .replace(/&(#x[0-9a-f]+|#\d+|[a-z][a-z0-9]+);/gi, (match, entity: string) => {
+      const normalized = entity.toLowerCase();
+      if (normalized.startsWith('#x')) {
+        const codePoint = Number.parseInt(normalized.slice(2), 16);
+        return Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff
+          ? String.fromCodePoint(codePoint)
+          : match;
+      }
+      if (normalized.startsWith('#')) {
+        const codePoint = Number.parseInt(normalized.slice(1), 10);
+        return Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff
+          ? String.fromCodePoint(codePoint)
+          : match;
+      }
+      return entities[normalized] ?? match;
+    })
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<\/?[A-Za-z][A-Za-z0-9:-]*(?:\s+[^<>]*)?>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/\s+([.,!?;:])/g, '$1')
+    .trim();
+}
+
 function readNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
@@ -47,13 +80,14 @@ function normalizeSearchResult(value: unknown, index: number): SearchResult | un
   const pageId = readNumber(value.pageId) ?? 0;
   const title = readString(value.title) ?? `Страница ${pageId || index + 1}`;
   const rawId = value.id;
+  const text = readString(value.text);
 
   return {
     id: typeof rawId === 'string' || typeof rawId === 'number' ? rawId : `${pageId}-${index}`,
     pageId,
     title,
     pageUrl: readString(value.pageUrl),
-    text: readString(value.text),
+    text: text ? normalizePlainSegment(text) : undefined,
   };
 }
 

@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   anonymousPrincipal,
   authenticateOidcBearerToken,
+  mapOidcGroups,
   principalFromMwUser,
   principalSessionHash,
 } from '../principal-auth.js';
@@ -16,6 +17,8 @@ function oidcConfig(patch: Partial<ExternalApiConfig['oidc']> = {}): ExternalApi
     maxTopK: 10,
     defaultRetrievalProfileId: '',
     aclMode: 'mediawiki_check',
+    groupMappingMode: 'mapped_only',
+    groupMappings: {},
     oidc: {
       issuer: 'https://issuer.example',
       audience: 'wikiai',
@@ -153,18 +156,43 @@ describe('principal auth helpers', () => {
     }), oidcConfig())).rejects.toThrow('OIDC audience does not match configured audience');
   });
 
-  it('authenticates signed RS256 OIDC tokens and maps string group claims', async () => {
+  it('maps OIDC groups through explicit MediaWiki ACL group mapping', async () => {
+    const adDnGroup = 'CN=WikiAI-IT-Readers,OU=Groups,DC=corp,DC=example';
+    expect(mapOidcGroups([adDnGroup, 'CN=WikiAI-Exec'], {
+      ...oidcConfig(),
+      groupMappings: {
+        [adDnGroup]: ['ai-it'],
+        'CN=WikiAI-Exec': ['ai-exec', 'ai-it'],
+      },
+    })).toEqual(['ai-exec', 'ai-it']);
+
+    expect(mapOidcGroups(['raw-group'], oidcConfig())).toEqual([]);
+    expect(mapOidcGroups(['raw-group'], {
+      ...oidcConfig(),
+      groupMappingMode: 'passthrough_and_mapped',
+      groupMappings: { 'raw-group': ['ai-it'] },
+    })).toEqual(['ai-it', 'raw-group']);
+  });
+
+  it('authenticates signed RS256 OIDC tokens and applies configured group mapping', async () => {
     const { jwk, signToken } = await createJwtSigner('happy-key');
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ keys: [jwk] }), { status: 200 })));
 
+    const adDnGroup = 'CN=WikiAI-Admins,OU=Groups,DC=corp,DC=example';
     const principal = await authenticateOidcBearerToken(await signToken({
       iss: 'https://issuer.example',
       aud: ['other-audience', 'wikiai'],
       exp: Math.floor(Date.now() / 1000) + 3600,
       sub: 'subject-123',
       preferred_username: 'oidc-admin',
-      groups: 'aiadmin sysop',
-    }), oidcConfig({ jwksUrl: 'https://issuer.example/jwks-happy.json' }));
+      groups: `${adDnGroup} CN=WikiAI-Sysops`,
+    }), {
+      ...oidcConfig({ jwksUrl: 'https://issuer.example/jwks-happy.json' }),
+      groupMappings: {
+        [adDnGroup]: ['aiadmin'],
+        'CN=WikiAI-Sysops': ['sysop'],
+      },
+    });
 
     expect(principal).toMatchObject({
       authMode: 'oidc',

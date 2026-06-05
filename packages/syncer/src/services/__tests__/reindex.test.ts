@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { config } from '../../config.js';
-import { runReindex } from '../reindex.js';
+import { runReindex, validateReindexPreflight } from '../reindex.js';
 
 const fetchAllPages = vi.hoisted(() => vi.fn());
 const fetchPageContent = vi.hoisted(() => vi.fn());
@@ -415,6 +415,45 @@ describe('runReindex', () => {
     expect(summary.estimatedPaidCalls).toBe(summary.totalChunks + 1);
   });
 
+  it('indexes page content as plain text while keeping raw wikitext for service parsers', async () => {
+    fetchAllPages.mockResolvedValueOnce([
+      { pageid: 1, ns: 0, title: 'Markup Page' },
+    ]);
+    fetchPageContent.mockResolvedValueOnce({
+      pageid: 1,
+      ns: 0,
+      title: 'Markup Page',
+      content: [
+        'Запрос <code>древние цивилизации</code> найдет &lt;code&gt;Древний Египет&lt;/code&gt;.',
+        '```mermaid',
+        'graph TD; A-->B;',
+        '```',
+        '{{#cmdb: |template=Assets |city=city49 }}',
+      ].join('\n'),
+      lastModified: '2026-06-04T10:00:00Z',
+    });
+    extractCmdbDynamicSources.mockReturnValueOnce([]);
+
+    const summary = await runReindex({
+      maxPages: 1,
+      semanticFactsEnabled: false,
+      cmdbDynamicPagesEnabled: true,
+      indexTargets: ['bm25'],
+    });
+
+    expect(summary.processed).toBe(1);
+    expect(upsertChunks).toHaveBeenCalledTimes(1);
+    const indexedText = upsertChunks.mock.calls[0][3].map((chunk: { text: string }) => chunk.text).join('\n');
+    expect(indexedText).toContain('Запрос древние цивилизации найдет Древний Египет.');
+    expect(indexedText).toContain('```mermaid');
+    expect(indexedText).not.toContain('<code>');
+    expect(indexedText).not.toContain('&lt;code&gt;');
+    expect(extractCmdbDynamicSources).toHaveBeenCalledWith(
+      expect.stringContaining('<code>древние цивилизации</code>'),
+      'Markup Page'
+    );
+  });
+
   it('indexes cmdbdynamicpages anonymous static snapshots as additional page chunks', async () => {
     config.cmdbDynamicPagesEnabled = true;
     fetchAllPages.mockResolvedValueOnce([
@@ -576,5 +615,25 @@ describe('runReindex', () => {
     })).rejects.toThrow('MediaWiki service auth is required before protected reindex');
     expect(fetchAllPages).not.toHaveBeenCalled();
     expect(upsertChunks).not.toHaveBeenCalled();
+  });
+
+  it('allows Qdrant payload search-target rebuild without MediaWiki service auth', async () => {
+    getMediaWikiServiceAuthStatus.mockReturnValueOnce({
+      configured: false,
+      source: 'none',
+      usernameConfigured: false,
+      passwordConfigured: false,
+      passwordUsesSecretReference: false,
+      pamProviderConfigured: false,
+      deprecatedCookieConfigured: false,
+    });
+
+    await expect(validateReindexPreflight({
+      source: 'qdrant_payload',
+      namespaces: [3030],
+      namespaceAcl: { '3030': ['ai-it', 'ai-exec'] },
+      indexTargets: ['bm25', 'opensearch', 'colbert'],
+    })).resolves.toBeUndefined();
+    expect(getMediaWikiServiceAuthStatus).not.toHaveBeenCalled();
   });
 });

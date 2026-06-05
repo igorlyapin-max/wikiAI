@@ -4,6 +4,7 @@ import { getEmbedding } from './embedding.js';
 import { SearchIndexNotificationResult, syncSearchIndexPage } from './gateway.js';
 import type { CmdbDynamicSnapshotChunk } from './cmdbdynamicpages.js';
 import type { SemanticFacts } from './mediawiki.js';
+import { toIndexPlainText } from './text-normalization.js';
 
 export const qdrant = new QdrantClient({ url: config.qdrantUrl });
 
@@ -133,7 +134,7 @@ function groupQdrantPayloadPoints(points: Array<{ id?: unknown; payload?: unknow
     const pageId = asPositiveInteger(payload.page_id);
     const id = asPositiveInteger(point.id);
     const title = asString(payload.title);
-    const text = asString(payload.text);
+    const text = toIndexPlainText(asString(payload.text) ?? '');
     const namespace = asNonNegativeInteger(payload.namespace);
     if (!pageId || !id || !title || !text || namespace === undefined) continue;
 
@@ -244,6 +245,11 @@ export async function upsertChunks(
   llmEnrichment?: PageLlmEnrichment,
   options: IndexWriteOptions = {}
 ): Promise<SearchIndexNotificationResult | undefined> {
+  const indexChunks = chunks
+    .map((chunk) => ({ ...chunk, text: toIndexPlainText(chunk.text) }))
+    .filter((chunk) => chunk.text.length > 0)
+    .map((chunk, index, normalizedChunks) => ({ ...chunk, index, total: normalizedChunks.length }));
+
   if (shouldWriteDense(options)) {
     await qdrant.delete(config.qdrantCollection, {
       filter: { must: [{ key: 'page_id', match: { value: pageId } }] },
@@ -252,7 +258,7 @@ export async function upsertChunks(
 
   const points = [];
   if (shouldWriteDense(options)) {
-    for (const chunk of chunks) {
+    for (const chunk of indexChunks) {
       const embedding = await getEmbedding(chunk.text);
       const contentType = detectContentType(chunk.text);
       points.push({
@@ -288,7 +294,7 @@ export async function upsertChunks(
     indexTargets: searchIndexTargets(options),
     colbertModel: options.colbertModel,
     colbertCollection: options.colbertCollection,
-    chunks: chunks.map((chunk) => ({
+    chunks: indexChunks.map((chunk) => ({
       id: pageId * 10000 + chunk.index,
       text: chunk.text,
       chunkIndex: chunk.index,

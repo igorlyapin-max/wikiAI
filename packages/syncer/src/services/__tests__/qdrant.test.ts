@@ -63,6 +63,40 @@ describe('qdrant indexing payload', () => {
     }));
   });
 
+  it('normalizes page chunk text before writing Qdrant payloads and Gateway search index', async () => {
+    const { upsertChunks } = await import('../qdrant.js');
+
+    await upsertChunks(
+      13,
+      'RAG и Chunking',
+      0,
+      [{
+        text: 'Запрос <code>древние цивилизации</code> найдет &lt;code&gt;Древний Египет&lt;/code&gt;.',
+        index: 0,
+        total: 1,
+      }],
+      ['*'],
+      '2026-06-01T10:00:00Z'
+    );
+
+    expect(upsertMock).toHaveBeenCalledWith('test_chunks', {
+      points: [
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            text: 'Запрос древние цивилизации найдет Древний Египет.',
+          }),
+        }),
+      ],
+    });
+    expect(syncSearchIndexPage).toHaveBeenCalledWith(expect.objectContaining({
+      chunks: [
+        expect.objectContaining({
+          text: 'Запрос древние цивилизации найдет Древний Египет.',
+        }),
+      ],
+    }));
+  });
+
   it('forwards attachment MIME and processing mode to Gateway', async () => {
     const { upsertAttachmentMetadata } = await import('../qdrant.js');
 

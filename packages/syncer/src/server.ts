@@ -29,6 +29,7 @@ import {
 } from './services/logging.js';
 import { registerMetrics } from './services/metrics.js';
 import { extractCmdbDynamicSources, fetchCmdbDynamicSnapshotChunks } from './services/cmdbdynamicpages.js';
+import { toIndexPlainText } from './services/text-normalization.js';
 
 const app = Fastify({ logger: createFastifyLoggerOptions() });
 
@@ -259,8 +260,10 @@ app.post('/webhook/page', async (request, reply) => {
     const semanticFacts = config.smwSyncEnabled
       ? await fetchSemanticFacts(page.title, indexedSmwProperties?.properties)
       : {};
+    const rawContent = page.content;
+    const pageIndexText = toIndexPlainText(rawContent);
     const semanticText = semanticFactsToText(semanticFacts);
-    const indexText = semanticText ? `${semanticText}\n\n${page.content}` : page.content;
+    const indexText = [semanticText, pageIndexText].filter(Boolean).join('\n\n');
     const chunks = splitText(indexText);
     const allowedGroups = getAllowedGroups(page.ns);
     const searchIndexSync = await upsertChunks(
@@ -275,7 +278,7 @@ app.post('/webhook/page', async (request, reply) => {
     let dynamicBlocks: unknown;
     if (config.cmdbDynamicPagesEnabled) {
       try {
-        const sources = extractCmdbDynamicSources(page.content, page.title);
+        const sources = extractCmdbDynamicSources(rawContent, page.title);
         const snapshotChunks = await fetchCmdbDynamicSnapshotChunks(sources);
         const expandedSnapshotChunks = snapshotChunks.flatMap((snapshot) =>
           splitText(snapshot.text).map((chunk) => ({ ...snapshot, text: chunk.text }))
@@ -325,13 +328,13 @@ app.post('/webhook/page', async (request, reply) => {
             serviceUser: serviceEdit,
           },
           summary: body.summary,
-          content: page.content,
+          content: rawContent,
           semanticFacts,
         });
 
         semanticAutofill = evaluation;
         if (!serviceEdit && evaluation.mode === 'apply_empty' && evaluation.patch.length > 0) {
-          const patch = applySemanticAutofillPatch(page.content, evaluation.patch, evaluation.templates);
+          const patch = applySemanticAutofillPatch(rawContent, evaluation.patch, evaluation.templates);
           semanticAutofill = { ...evaluation, applied: patch.applied, skippedPatch: patch.skipped };
 
           if (patch.changed) {

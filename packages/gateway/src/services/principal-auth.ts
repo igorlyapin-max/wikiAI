@@ -71,11 +71,23 @@ function readGroupsClaim(payload: JwtPayload, claimName: string): string[] {
   }
   if (typeof value === 'string') {
     return value
-      .split(/[,\s]+/)
+      .split(/[\s;]+/)
       .map((item) => item.trim())
       .filter(Boolean);
   }
   return [];
+}
+
+export function mapOidcGroups(rawGroups: string[], configValue: ExternalApiConfig): string[] {
+  const mappedGroups = rawGroups.flatMap((group) => configValue.groupMappings[group] ?? []);
+  const effectiveGroups = configValue.groupMappingMode === 'passthrough_and_mapped'
+    ? [...rawGroups, ...mappedGroups]
+    : mappedGroups;
+  return Array.from(new Set(
+    effectiveGroups
+      .map((group) => group.trim())
+      .filter((group) => group.length > 0 && group !== '*')
+  )).sort((left, right) => left.localeCompare(right));
 }
 
 function readNumericDate(value: unknown): number | undefined {
@@ -255,7 +267,7 @@ export async function authenticateOidcBearerToken(
     throw new Error('OIDC subject claim is missing');
   }
   const username = readStringClaim(payload, configValue.oidc.usernameClaim) ?? subject;
-  const groups = readGroupsClaim(payload, configValue.oidc.groupsClaim);
+  const groups = mapOidcGroups(readGroupsClaim(payload, configValue.oidc.groupsClaim), configValue);
 
   return {
     authMode: 'oidc',

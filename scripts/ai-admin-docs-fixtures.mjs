@@ -536,6 +536,8 @@ RAG и индексация - это две половины одного про
 |-
 | <code>maxContextChars</code> || <code>12000</code> || Верхний предел размера текстового контекста.
 |-
+| <code>chatRetrievalQueryMode</code> || <code>current_message</code> || Как чат строит поисковый запрос: только текущая реплика или текущая реплика плюс последние сообщения истории.
+|-
 | <code>minSearchScore</code> || <code>0</code> || Минимальная похожесть. 0 означает не отбрасывать по score.
 |-
 | <code>searchMode</code> || <code>hybrid</code> || Как искать: только vector search или hybrid из vector search + BM25.
@@ -586,7 +588,7 @@ RAG и индексация - это две половины одного про
 |-
 | <code>colbertTimeoutMs</code> || <code>5000</code> || Timeout запроса к ColBERT.
 |-
-| <code>colbertMinScore</code> || <code>0</code> || Минимальный score ColBERT для сохранения результата.
+| <code>colbertMinScore</code> || <code>0</code> || Минимальный score ColBERT для сохранения результата. Production-профиль <code>opensearch_hybrid_colbert</code> использует <code>0.58</code>, чтобы отсекать слабый ColBERT-хвост.
 |-
 | <code>colbertFailMode</code> || <code>fallback_current</code> || Что делать при ошибке ColBERT: вернуть текущую выдачу или остановить поиск.
 |-
@@ -615,6 +617,7 @@ RAG и индексация - это две половины одного про
 * <code>trigramMinQueryLength</code>: 3-32.
 * <code>vectorOnlyFallbackMinScore</code>: 0-1.
 * <code>minFinalScore</code>: 0-1.
+* <code>chatRetrievalQueryMode</code>: <code>current_message</code> или <code>history_augmented</code>. Дефолт <code>current_message</code>: история остается в prompt модели, но не загрязняет подбор источников.
 * <code>searchMode</code>: <code>hybrid</code>, <code>vector_only</code>, <code>colbert_full</code> или <code>hybrid_colbert</code>.
 * <code>rerankMode</code>: <code>none</code> или <code>colbert_v2</code>.
 * <code>colbertCandidateLimit</code>: 5-200.

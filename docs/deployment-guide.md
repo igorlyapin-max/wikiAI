@@ -57,6 +57,20 @@ MediaWiki; для заказчика сборка должна быть част
 - `SECRETS_PROVIDER` - `None` or `IndeedPamAapm`.
 - `MW_SYNC_COOKIE` - deprecated fallback only. Session cookies expire and should
   not be the primary customer deployment mechanism.
+- `EXTERNAL_API_ENABLED` - включает `/api/v1/search`, `/api/v1/chat` и
+  `/api/v1/capabilities`. Default `false`.
+- `EXTERNAL_MCP_ENABLED` - включает MCP-facing capability flag для внешнего MCP
+  adapter. Default `false`.
+- `EXTERNAL_ANONYMOUS_SEARCH_ALLOWED` - разрешает anonymous `/api/v1/search`
+  по публичным chunks. Default `true`; chat anonymous запрещен.
+- `EXTERNAL_MAX_TOP_K` - верхняя граница `topK` для External API/MCP, default
+  `10`.
+- `EXTERNAL_ACL_MODE` - `mediawiki_check` или `groups_only`. Для Variant A с
+  OIDC/AD group mapping используйте `groups_only`.
+- `OIDC_ISSUER`, `OIDC_AUDIENCE`, `OIDC_JWKS_URL` - Corporate SSO / IdP
+  параметры для проверки Bearer token Gateway.
+- `OIDC_SUBJECT_CLAIM`, `OIDC_USERNAME_CLAIM`, `OIDC_GROUPS_CLAIM` - имена
+  claim'ов, defaults: `sub`, `preferred_username`, `groups`.
 - `REDIS_URL`
 - `QDRANT_URL`
 - `QDRANT_COLLECTION`
@@ -109,6 +123,43 @@ MediaWiki; для заказчика сборка должна быть част
 `OPENSEARCH_API_KEY` не должны иметь `changeme-*` дефолтов в compose или CI.
 Перед запуском стенда задавайте их через защищенные переменные окружения,
 секрет-хранилище или локальный `.env`, который не коммитится.
+
+### External API / MCP Auth: Variant A
+
+Для схемы, где MediaWiki пользователи авторизуются через MS AD/LDAP, а Gateway
+для REST/MCP принимает Corporate SSO Bearer token, используйте:
+
+- `EXTERNAL_API_ENABLED=true`;
+- `EXTERNAL_MCP_ENABLED=true`, если нужен MCP adapter;
+- `EXTERNAL_ACL_MODE=groups_only`;
+- `OIDC_ISSUER`, `OIDC_AUDIENCE`, `OIDC_JWKS_URL` от того же Corporate SSO/IdP,
+  который выдает access token для audience WikiAI.
+
+После запуска администратор в MediaWiki `Служебная:AI-администрирование` ->
+`Внешний API` задает:
+
+- `groupMappingMode=mapped_only`;
+- `groupMappings` как JSON-объект `raw OIDC/AD group -> MediaWiki ACL groups`.
+
+Пример:
+
+```json
+{
+  "CN=WikiAI-IT-Readers,OU=Groups,DC=corp,DC=example": ["ai-it"],
+  "CN=WikiAI-Admins,OU=Groups,DC=corp,DC=example": ["aiadmin", "sysop"]
+}
+```
+
+Gateway сначала проверяет подпись Bearer token по JWKS и claims `iss`/`aud`/`exp`/`nbf`,
+и только после этого применяет mapping. Raw OIDC groups не дают доступ в
+`mapped_only`, если для них нет правила. Логин/пароль MediaWiki для REST/MCP не
+используется; `WIKIAI_COOKIE` остается локальным/admin fallback для embedded
+проверок.
+
+Если IdP отдает AD DN группы (`CN=...,OU=...,DC=...`), настройте
+`OIDC_GROUPS_CLAIM` как array claim. Для строкового claim Gateway использует
+разделители whitespace и `;`; запятая не используется как разделитель, чтобы не
+разрезать DN.
 
 ### Diagnostics, Logs, And Health
 
@@ -305,6 +356,13 @@ Syncer сам получает MediaWiki session cookie через API login и 
 повторяется один раз на следующий запрос. `MW_SYNC_COOKIE` остается только для
 совместимости со старыми стендами. Reindex namespace с `allowed_groups`, отличным
 от ровно `["*"]`, блокируется до успешной настройки MediaWiki service auth.
+
+После задания `MW_SERVICE_*` выполните auth test в админке
+`POST /api/admin/service-config/test` или внутренний Syncer test
+`POST /admin/mediawiki-service-auth/test`. Только после успешного теста запускайте
+полный `source=mediawiki` reindex защищенных namespace. Если нужно лишь пересобрать
+BM25, OpenSearch или ColBERT из уже сохраненных chunks, используйте
+`source=qdrant_payload`: этот путь не читает MediaWiki и не требует service auth.
 
 ## LiteLLM / OpenAI
 

@@ -1024,6 +1024,9 @@ describe('admin routes', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.json().values).toMatchObject({
+      retrievalTopK: 7,
+      contextTopK: 7,
+      contextMaxChars: 12000,
       topK: 7,
       chunkSize: 640,
       chunkOverlap: 80,
@@ -1084,6 +1087,12 @@ describe('admin routes', () => {
     expect(list.json().values).toEqual(expect.arrayContaining([
       expect.objectContaining({
         id: 'prod_hybrid_colbert',
+        config: expect.objectContaining({
+          retrievalTopK: expect.any(Number),
+          contextTopK: expect.any(Number),
+          contextMaxChars: expect.any(Number),
+          chatRetrievalQueryMode: 'current_message',
+        }),
         readiness: expect.objectContaining({ status: 'not_ready' }),
       }),
       expect.objectContaining({
@@ -1099,6 +1108,89 @@ describe('admin routes', () => {
     });
     expect(restored.statusCode).toBe(200);
     expect(restored.json().values.map((profile: { id: string }) => profile.id)).toContain('colbert_full_strict');
+
+    await app.close();
+  });
+
+  it('saves retrieval profile runtime limits with canonical and legacy aliases', async () => {
+    const template = (await getDefaultRetrievalProfiles()).find((profile) => profile.id === 'semantic_broad');
+    expect(template).toBeDefined();
+
+    const app = await makeApp();
+    const saved = await app.inject({
+      method: 'POST',
+      url: '/api/admin/retrieval-profiles',
+      headers: { cookie: 'mw=1' },
+      payload: {
+        id: 'custom_runtime_limits',
+        name: 'Custom runtime limits',
+        description: 'Regression profile for retrieval/context limits',
+        enabled: true,
+        apiEnabled: true,
+        mcpEnabled: true,
+        anonymousAllowed: false,
+        maxTopK: 20,
+        tags: ['test'],
+        config: {
+          ...template!.config,
+          retrievalTopK: 8,
+          contextTopK: 3,
+          contextMaxChars: 9000,
+          chatRetrievalQueryMode: 'history_augmented',
+          topK: 8,
+          maxContextChunks: 3,
+          maxContextChars: 9000,
+        },
+      },
+    });
+
+    expect(saved.statusCode).toBe(200);
+    const profile = saved.json().values.find((item: { id: string }) => item.id === 'custom_runtime_limits');
+    expect(profile.config).toMatchObject({
+      retrievalTopK: 8,
+      contextTopK: 3,
+      contextMaxChars: 9000,
+      chatRetrievalQueryMode: 'history_augmented',
+      topK: 8,
+      maxContextChunks: 3,
+      maxContextChars: 9000,
+    });
+
+    const invalidMode = await app.inject({
+      method: 'POST',
+      url: '/api/admin/retrieval-profiles',
+      headers: { cookie: 'mw=1' },
+      payload: {
+        id: 'custom_bad_history_mode',
+        name: 'Custom bad history mode',
+        config: {
+          ...template!.config,
+          chatRetrievalQueryMode: 'auto',
+        },
+      },
+    });
+
+    expect(invalidMode.statusCode).toBe(400);
+    expect(invalidMode.json().error).toBe('Invalid retrieval profile');
+    expect(invalidMode.json().message).toContain('chatRetrievalQueryMode');
+
+    const invalid = await app.inject({
+      method: 'POST',
+      url: '/api/admin/retrieval-profiles',
+      headers: { cookie: 'mw=1' },
+      payload: {
+        id: 'custom_bad_runtime_limits',
+        name: 'Custom bad runtime limits',
+        config: {
+          ...template!.config,
+          badField: true,
+        },
+      },
+    });
+
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.json().error).toBe('Invalid retrieval profile');
+    expect(invalid.json().message).toContain('badField');
 
     await app.close();
   });
@@ -1122,6 +1214,10 @@ describe('admin routes', () => {
     expect(ids).toContain('opensearch_hybrid');
     expect(ids).toContain('opensearch_hybrid_colbert');
     expect(read.json().selectedProfile).toMatchObject({ id: 'opensearch_hybrid_colbert' });
+    const openSearchColbert = read.json().retrievalProfiles.find((profile: { id: string }) =>
+      profile.id === 'opensearch_hybrid_colbert'
+    );
+    expect(openSearchColbert?.config).toMatchObject({ colbertMinScore: 0.58 });
 
     const storedAfterRead = await getAdminStore().getJson<Array<{ id: string }>>('retrieval-profiles', 'default');
     expect(storedAfterRead?.map((profile) => profile.id)).toEqual(['semantic_broad']);
@@ -1132,11 +1228,14 @@ describe('admin routes', () => {
   it('keeps admin-customized retrieval profiles when merging default examples', async () => {
     const defaults = await getDefaultRetrievalProfiles();
     const openSearchProfile = defaults.find((profile) => profile.id === 'opensearch_hybrid_colbert');
-    expect(openSearchProfile).toBeDefined();
+    if (!openSearchProfile) throw new Error('opensearch_hybrid_colbert retrieval profile template is missing');
+    const legacyConfig: Partial<typeof openSearchProfile.config> = { ...openSearchProfile.config };
+    delete legacyConfig.chatRetrievalQueryMode;
     await getAdminStore().setJson('retrieval-profiles', 'default', [{
-      ...openSearchProfile!,
+      ...openSearchProfile,
       name: 'Custom OpenSearch + ColBERT',
       description: 'Customized by admin',
+      config: legacyConfig,
     }]);
 
     const app = await makeApp();
@@ -1152,6 +1251,7 @@ describe('admin routes', () => {
       id: 'opensearch_hybrid_colbert',
       name: 'Custom OpenSearch + ColBERT',
       description: 'Customized by admin',
+      config: expect.objectContaining({ chatRetrievalQueryMode: 'current_message' }),
     });
     expect(list.json().values.map((item: { id: string }) => item.id)).toContain('opensearch_hybrid');
 
@@ -1195,6 +1295,56 @@ describe('admin routes', () => {
       headers: { cookie: 'mw=1' },
     });
     expect(external.json().values.defaultRetrievalProfileId).toBe('');
+
+    await app.close();
+  });
+
+  it('saves external API OIDC group mapping and reports safe capabilities', async () => {
+    const app = await makeApp();
+    const saved = await app.inject({
+      method: 'POST',
+      url: '/api/admin/external-api/config',
+      headers: { cookie: 'mw=1' },
+      payload: {
+        enabled: true,
+        mcpEnabled: true,
+        anonymousSearchAllowed: false,
+        maxTopK: 10,
+        aclMode: 'groups_only',
+        groupMappingMode: 'mapped_only',
+        groupMappings: {
+          'CN=WikiAI-IT-Readers': ['ai-it', 'ai-it'],
+          'CN=WikiAI-Exec': ['ai-exec', 'ai-it'],
+        },
+        oidc: {
+          issuer: 'https://issuer.example',
+          audience: 'wikiai-api',
+          jwksUrl: 'https://issuer.example/jwks.json',
+          subjectClaim: 'sub',
+          usernameClaim: 'preferred_username',
+          groupsClaim: 'groups',
+        },
+      },
+    });
+
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json()).toMatchObject({
+      status: 'saved',
+      values: {
+        aclMode: 'groups_only',
+        groupMappingMode: 'mapped_only',
+        groupMappings: {
+          'CN=WikiAI-IT-Readers': ['ai-it'],
+          'CN=WikiAI-Exec': ['ai-exec', 'ai-it'],
+        },
+      },
+      capabilities: {
+        groupMappingMode: 'mapped_only',
+        groupMappingConfigured: true,
+        groupMappingCount: 2,
+        mappedGroupCount: 2,
+      },
+    });
 
     await app.close();
   });

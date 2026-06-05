@@ -50,6 +50,26 @@ describe('prompt context formatting', () => {
     expect(formatChunksForPrompt(chunks)).toBe('[1] Public\n\nОткрытый текст.');
   });
 
+  it('limits the formatted context by max chars without changing source numbering', () => {
+    const chunks: SearchChunk[] = [
+      {
+        id: 2,
+        pageId: 102,
+        title: 'Public',
+        text: 'Открытый текст документа с подробным продолжением.',
+        namespace: 0,
+        allowedGroups: ['*'],
+        score: 0.8,
+      },
+    ];
+
+    const context = formatChunksForPrompt(chunks, { maxChars: 32 });
+
+    expect(context.length).toBeLessThanOrEqual(32);
+    expect(context).toMatch(/^\[1\] Public\n\nОткрытый/);
+    expect(context).toMatch(/\.\.\.$/);
+  });
+
   it('adds trust metadata when it is available', () => {
     const chunks: SearchChunk[] = [
       {

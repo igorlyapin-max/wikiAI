@@ -87,11 +87,11 @@
 
 - [x] Настройки `chunkSize`, `chunkOverlap`, `chunkSeparators`.
 - [x] Настройки `minChunkLength`, `maxChunksPerPage`.
-- [x] Настройки retrieval: `topK`, `maxContextChunks`, `maxContextChars`, `minSearchScore`.
+- [x] Настройки retrieval: profile-level `retrievalTopK`, `contextTopK`, `contextMaxChars`, `minSearchScore`.
 - [x] Настройки semantic enrichment: `semanticFactsInContext`, `includeAttachments`, `includeSemanticHeader`.
 - [x] Источник истины для chunking: indexing profile / Syncer config.
 
-Статус: параметры сохраняются через admin API и отображаются в UI. Runtime применяет совместимые поля `topK`, `chunkSize`, `chunkOverlap`; остальные поля ждут profile-driven Syncer/RAG интеграции.
+Статус: параметры сохраняются через admin API и отображаются в UI. Runtime применяет profile-level `retrievalTopK` для финальной выдачи, `contextTopK/contextMaxChars` для prompt context и совместимые legacy поля `topK`, `chunkSize`, `chunkOverlap`; остальные поля ждут profile-driven Syncer/RAG интеграции.
 
 ### 6. Indexing Profiles
 

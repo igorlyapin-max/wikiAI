@@ -13,6 +13,35 @@ API endpoints through `WIKIAI_GATEWAY_URL`.
 Do not configure both token and cookie unless the client has an explicit reason
 to prefer Gateway's normal auth precedence.
 
+## Auth And Group Mapping
+
+Production MCP clients should use `WIKIAI_ACCESS_TOKEN` with an OIDC access
+token issued for the WikiAI audience. The adapter does not validate this token
+itself and does not inspect groups; it forwards the Bearer header to Gateway.
+
+Gateway validates RS256 signature through the configured JWKS, then checks
+`iss`, `aud`, `exp` and `nbf`. When External API ACL mode is `groups_only`, raw
+OIDC/AD groups from the token are mapped to MediaWiki ACL groups by Gateway
+admin config:
+
+```json
+{
+  "groupMappingMode": "mapped_only",
+  "groupMappings": {
+    "CN=WikiAI-IT-Readers,OU=Groups,DC=corp,DC=example": ["ai-it"]
+  }
+}
+```
+
+`mapped_only` is the recommended production mode for Variant A: raw IdP groups
+are dropped after mapping, so only explicit MediaWiki ACL groups can grant
+access. `passthrough_and_mapped` is a compatibility/diagnostic mode for cases
+where raw group names already match MediaWiki groups.
+
+MediaWiki login/password is not an MCP auth method. `WIKIAI_COOKIE` is a
+local/admin fallback for embedded checks and should not be the customer-facing
+multi-consumer path.
+
 ## MCP Methods
 
 - `initialize` returns protocol version `2024-11-05` and server
@@ -37,7 +66,7 @@ GET /api/v1/capabilities
 Input:
 
 - `query` - required non-empty string.
-- `topK` - optional number from 1 to 50.
+- `topK` - optional number from 1 to 50; overrides the selected retrieval profile `retrievalTopK` for this call.
 - `format` - optional `compact` or `full`.
 
 Gateway call:
@@ -52,7 +81,7 @@ Input:
 
 - `message` - required non-empty string.
 - `conversationId` - optional string.
-- `topK` - optional number from 1 to 50.
+- `topK` - optional number from 1 to 50; overrides the selected retrieval profile `retrievalTopK` for this call, while prompt context still follows `contextTopK/contextMaxChars`.
 
 Gateway call:
 

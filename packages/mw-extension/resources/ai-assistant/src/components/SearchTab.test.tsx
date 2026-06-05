@@ -83,6 +83,31 @@ describe('SearchTab', () => {
     });
   });
 
+  it('не показывает literal html-теги из legacy search snippets', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        values: { searchHistoryEnabled: true, searchHistoryLimit: 8 },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        results: [
+          {
+            id: 'r1',
+            pageId: 42,
+            title: 'RAG и Chunking',
+            text: 'Запрос <code>древние цивилизации</code> найдет &lt;code&gt;Древний Египет&lt;/code&gt;',
+          },
+        ],
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<SearchTab gatewayUrl="https://gateway.example" />);
+    await userEvent.type(screen.getByPlaceholderText('Введите вопрос...'), 'древние цивилизации');
+    await userEvent.click(screen.getByRole('button', { name: 'Найти' }));
+
+    expect(await screen.findByText('Запрос древние цивилизации найдет Древний Египет...')).toBeInTheDocument();
+    expect(screen.queryByText(/<code>/)).not.toBeInTheDocument();
+  });
+
   it('нормализует неполный результат поиска', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse({

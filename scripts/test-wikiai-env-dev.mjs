@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import process from 'node:process';
 
 const repoRoot = new URL('..', import.meta.url);
@@ -16,6 +16,7 @@ const opensearchBaseUrl = envUrl('OPENSEARCH_BASE_URL', 'http://127.0.0.1:9200')
 const colbertBaseUrl = envUrl('COLBERT_BASE_URL', 'http://127.0.0.1:8083');
 const adminCookie = process.env.MW_TEST_COOKIE || process.env.WIKIAI_ADMIN_COOKIE || '';
 const liveTimeoutMs = Number.parseInt(process.env.WIKIAI_ENV_DEV_TIMEOUT_MS || '8000', 10);
+const gatewayContainer = process.env.WIKIAI_GATEWAY_CONTAINER || 'wikiai-gateway-1';
 
 const gates = [
   ['Gateway coverage', 'npm', ['--prefix', 'packages/gateway', 'run', 'test:coverage']],
@@ -62,6 +63,14 @@ function runCommand(label, command, args) {
         reject(new Error(`${label} failed with exit code ${code}`));
       }
     });
+  });
+}
+
+function runCommandCapture(command, args) {
+  return spawnSync(command, args, {
+    cwd: repoRoot,
+    env: process.env,
+    encoding: 'utf8',
   });
 }
 
@@ -209,6 +218,32 @@ async function assertGatewayAdminRouteRegistered(label, path, init = {}) {
   record(label, 'pass', `HTTP ${response.status}; route registered`);
 }
 
+function assertGatewayRuntimeRetrievalLimits() {
+  const label = 'Gateway runtime retrieval profile limits contract';
+  if (!gatewayContainer || gatewayContainer.toLowerCase() === 'none') {
+    record(label, 'skip', 'set WIKIAI_GATEWAY_CONTAINER to the live Gateway container name');
+    return;
+  }
+  const inspect = runCommandCapture('docker', ['inspect', gatewayContainer]);
+  if (inspect.status !== 0) {
+    record(label, 'skip', `docker container ${gatewayContainer} is not available`);
+    return;
+  }
+
+  const command = [
+    'set -eu',
+    'for marker in retrievalTopK contextTopK contextMaxChars maxContextChunks maxContextChars; do',
+    '  grep -R "$marker" /app/dist/services/admin-platform-config.js /app/dist/services/prompt-context.js /app/dist/routes/admin.js >/dev/null || { echo "missing $marker"; exit 42; }',
+    'done',
+  ].join('\n');
+  const result = runCommandCapture('docker', ['exec', gatewayContainer, 'sh', '-lc', command]);
+  if (result.status !== 0) {
+    const output = `${result.stdout || ''}${result.stderr || ''}`.trim();
+    throw new Error(`${label} failed: live Gateway image is stale or missing retrieval limit schema markers. Rebuild/recreate gateway. ${output}`);
+  }
+  record(label, 'pass', gatewayContainer);
+}
+
 async function runLiveChecks() {
   logStep('WikiAI live dev checks');
 
@@ -224,6 +259,7 @@ async function runLiveChecks() {
   await assertTextEndpoint('Gateway /metrics', `${gatewayBaseUrl}/metrics`, (text) => {
     if (!text.includes('wikiai_http_requests_total')) throw new Error('Gateway metrics do not include wikiai_http_requests_total');
   });
+  assertGatewayRuntimeRetrievalLimits();
 
   await assertJsonEndpoint('Syncer /live', `${syncerBaseUrl}/live`, (body) => {
     if (body.status !== 'ok' || body.service !== 'syncer') throw new Error('Invalid Syncer /live shape');
@@ -254,6 +290,9 @@ async function runLiveChecks() {
       'aiadmin-mediawiki-profile-config',
       'mediawiki-default-retrieval-profile',
       'aiadmin-restore-mediawiki-retrieval-profiles',
+      'retrieval-profile-retrieval-top-k',
+      'retrieval-profile-context-top-k',
+      'aiadmin-retrieval-profile-limits-marker',
       '/api/admin/mediawiki-profile/config',
       'opensearch_hybrid_colbert',
     ]) {

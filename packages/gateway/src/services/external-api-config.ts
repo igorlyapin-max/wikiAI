@@ -6,6 +6,7 @@ const CONFIG_AREA = 'external-api-config';
 const CONFIG_KEY = 'default';
 
 export type ExternalAclMode = 'mediawiki_check' | 'groups_only';
+export type ExternalGroupMappingMode = 'mapped_only' | 'passthrough_and_mapped';
 
 export interface ExternalApiConfig {
   enabled: boolean;
@@ -14,6 +15,8 @@ export interface ExternalApiConfig {
   maxTopK: number;
   defaultRetrievalProfileId: string;
   aclMode: ExternalAclMode;
+  groupMappingMode: ExternalGroupMappingMode;
+  groupMappings: Record<string, string[]>;
   oidc: {
     issuer: string;
     audience: string;
@@ -35,8 +38,18 @@ export interface ExternalApiCapabilities {
   aclMode: ExternalAclMode;
   defaultRetrievalProfileId?: string;
   oidcConfigured: boolean;
+  groupMappingMode: ExternalGroupMappingMode;
+  groupMappingConfigured: boolean;
+  groupMappingCount: number;
+  mappedGroupCount: number;
   warnings: string[];
 }
+
+const groupNameSchema = z.string()
+  .trim()
+  .min(1)
+  .max(200)
+  .refine((value) => value !== '*', 'Wildcard group mapping target is not allowed');
 
 const configSchema = z.object({
   enabled: z.boolean().optional(),
@@ -45,6 +58,11 @@ const configSchema = z.object({
   maxTopK: z.number().int().min(1).max(50).optional(),
   defaultRetrievalProfileId: z.string().trim().max(120).regex(/^[A-Za-z0-9_.-]+$/).or(z.literal('')).optional(),
   aclMode: z.enum(['mediawiki_check', 'groups_only']).optional(),
+  groupMappingMode: z.enum(['mapped_only', 'passthrough_and_mapped']).optional(),
+  groupMappings: z.record(
+    z.string().trim().min(1).max(500),
+    z.array(groupNameSchema).max(20)
+  ).optional(),
   oidc: z.object({
     issuer: z.string().trim().max(500).optional(),
     audience: z.string().trim().max(500).optional(),
@@ -62,6 +80,8 @@ export const DEFAULT_EXTERNAL_API_CONFIG: ExternalApiConfig = {
   maxTopK: Math.max(1, Math.min(config.externalMaxTopK, 50)),
   defaultRetrievalProfileId: '',
   aclMode: config.externalAclMode,
+  groupMappingMode: 'mapped_only',
+  groupMappings: {},
   oidc: {
     issuer: config.oidcIssuer,
     audience: config.oidcAudience,
@@ -72,13 +92,32 @@ export const DEFAULT_EXTERNAL_API_CONFIG: ExternalApiConfig = {
   },
 };
 
+export function normalizeGroupMappings(value: Record<string, string[]> | undefined): Record<string, string[]> {
+  const entries = Object.entries(value ?? {})
+    .map(([sourceGroup, targetGroups]) => {
+      const source = sourceGroup.trim();
+      const targets = Array.from(new Set(
+        targetGroups
+          .map((target) => target.trim())
+          .filter((target) => target.length > 0 && target !== '*')
+      )).sort((left, right) => left.localeCompare(right));
+      return [source, targets] as const;
+    })
+    .filter(([source, targets]) => source.length > 0 && targets.length > 0)
+    .sort(([left], [right]) => left.localeCompare(right));
+  return Object.fromEntries(entries);
+}
+
 function mergeExternalApiConfig(
   base: ExternalApiConfig,
   patch: Partial<ExternalApiConfig>
 ): ExternalApiConfig {
+  const groupMappings = normalizeGroupMappings(patch.groupMappings ?? base.groupMappings);
   return {
     ...base,
     ...patch,
+    groupMappingMode: patch.groupMappingMode ?? base.groupMappingMode,
+    groupMappings,
     oidc: {
       ...base.oidc,
       ...(patch.oidc ?? {}),
@@ -109,9 +148,18 @@ export function externalOidcConfigured(configValue: ExternalApiConfig): boolean 
 
 export function toExternalApiCapabilities(configValue: ExternalApiConfig): ExternalApiCapabilities {
   const oidcConfigured = externalOidcConfigured(configValue);
+  const groupMappingEntries = Object.entries(configValue.groupMappings);
+  const mappedGroupCount = new Set(groupMappingEntries.flatMap(([, targets]) => targets)).size;
   const warnings: string[] = [];
   if (configValue.aclMode === 'groups_only') {
     warnings.push('OIDC ACL uses indexed allowed_groups without MediaWiki readable post-check');
+  }
+  if (
+    configValue.aclMode === 'groups_only'
+    && configValue.groupMappingMode === 'mapped_only'
+    && groupMappingEntries.length === 0
+  ) {
+    warnings.push('OIDC group mapping is empty; protected groups_only access will be denied except public chunks');
   }
   if (configValue.enabled && !oidcConfigured) {
     warnings.push('OIDC is not fully configured; external Bearer auth will be rejected, cookie auth remains available');
@@ -128,6 +176,10 @@ export function toExternalApiCapabilities(configValue: ExternalApiConfig): Exter
     aclMode: configValue.aclMode,
     defaultRetrievalProfileId: configValue.defaultRetrievalProfileId || undefined,
     oidcConfigured,
+    groupMappingMode: configValue.groupMappingMode,
+    groupMappingConfigured: groupMappingEntries.length > 0,
+    groupMappingCount: groupMappingEntries.length,
+    mappedGroupCount,
     warnings,
   };
 }

@@ -25,6 +25,7 @@ import { getNamespacesToReindex } from './reindex-scope.js';
 import { applyIndexingProfileDefaults, getIndexingProfileFromAdminStorage } from './indexing-profile-store.js';
 import { enrichPageForReindex, fetchEffectiveEmbeddingConfig, ReindexLlmEnrichmentResult } from './gateway.js';
 import { extractCmdbDynamicSources, fetchCmdbDynamicSnapshotChunks } from './cmdbdynamicpages.js';
+import { toIndexPlainText } from './text-normalization.js';
 
 export interface ReindexOptions {
   profileId?: string;
@@ -182,6 +183,8 @@ export async function validateReindexPreflight(options: ReindexOptions = {}): Pr
         : await getIndexingProfileFromAdminStorage(options.profileId)
     )
     : options;
+  if (effectiveOptions.source === 'qdrant_payload') return;
+
   const effectiveNamespaceAcl = effectiveOptions.namespaceAcl ?? config.namespaceAcl;
   const namespaces = getRequestedNamespaces(effectiveOptions.namespaces, effectiveNamespaceAcl);
   const protectedNamespaces = getProtectedReindexNamespaces(namespaces, effectiveNamespaceAcl);
@@ -431,20 +434,22 @@ export async function runReindex(
         continue;
       }
 
+      const rawContent = content.content;
+      const pageIndexText = toIndexPlainText(rawContent);
       const semanticFacts = semanticFactsEnabled ? await fetchSemanticFacts(page.title, smwProperties) : {};
       const semanticText = semanticFactsToText(semanticFacts);
       let enrichment: ReindexLlmEnrichmentResult | undefined;
       if (!dryRun && llmEnrichmentEnabled) {
         enrichment = await enrichPageForReindex({
           title: page.title,
-          text: content.content,
+          text: pageIndexText,
           model: effectiveOptions.llmEnrichmentModel,
           maxChars: effectiveOptions.llmEnrichmentMaxChars,
         });
         llmEnrichmentCalls++;
       }
       const enrichmentText = enrichmentToText(enrichment);
-      const indexText = [semanticText, enrichmentText, content.content].filter(Boolean).join('\n\n');
+      const indexText = [semanticText, enrichmentText, pageIndexText].filter(Boolean).join('\n\n');
       const chunks = splitText(indexText, {
         chunkSize: effectiveOptions.chunkSize,
         chunkOverlap: effectiveOptions.chunkOverlap,
@@ -486,7 +491,7 @@ export async function runReindex(
       totalChunks += chunks.length;
 
       if (cmdbDynamicPagesEnabled) {
-        const dynamicSources = extractCmdbDynamicSources(content.content, content.title);
+        const dynamicSources = extractCmdbDynamicSources(rawContent, content.title);
         dynamicBlocksMatched += dynamicSources.length;
         const snapshotChunks = await fetchCmdbDynamicSnapshotChunks(dynamicSources);
         dynamicSnapshotsIndexed += snapshotChunks.filter((chunk) => chunk.snapshotFound).length;

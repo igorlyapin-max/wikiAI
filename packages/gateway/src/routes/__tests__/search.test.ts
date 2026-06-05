@@ -241,7 +241,10 @@ describe('search routes trust filtering', () => {
       searchMode: 'hybrid',
       retrievalProfileId: 'test_mediawiki_vector',
       requestedTopK: 2,
+      retrievalTopK: 4,
       effectiveTopK: 2,
+      contextTopK: 4,
+      contextMaxChars: 12000,
       rawChunks: 2,
       readableChunks: 2,
       trustedChunks: 1,
@@ -252,6 +255,49 @@ describe('search routes trust filtering', () => {
       lexicalRequiredMatchedTerms: 2,
       lexicalGateApplied: true,
     });
+
+    await app.close();
+  });
+
+  it('returns plain-text snippets when indexed chunks still contain html-like markup', async () => {
+    await useMediaWikiVectorProfile();
+    const htmlChunk: SearchChunk = {
+      ...chunks[1],
+      text: 'Запрос <code>древние цивилизации</code> найдет &lt;code&gt;Древний Египет&lt;/code&gt;.',
+    };
+    searchRagChunks.mockResolvedValueOnce({
+      chunks: [htmlChunk],
+      limit: 1,
+      aclCandidateLimit: 5,
+      showRawScores: false,
+      mode: 'hybrid',
+      diagnostics: {
+        searchMode: 'hybrid',
+        lexicalGateMode: 'when_bm25_available',
+        vectorCandidates: 1,
+        bm25Candidates: 1,
+        bm25RawCandidates: 1,
+        lexicalMinMatchedTerms: 2,
+        lexicalRequiredMatchedTerms: 2,
+        lexicalGateApplied: true,
+        vectorOnlyFallbackUsed: false,
+        vectorOnlyFallbackMinScore: 0.78,
+      },
+    });
+    filterReadableChunks.mockResolvedValueOnce([htmlChunk]);
+
+    const app = await makeApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/search',
+      headers: { cookie: 'mw=1' },
+      payload: { query: 'древние цивилизации', topK: 1 },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().results[0].text).toBe('Запрос древние цивилизации найдет Древний Египет.');
+    expect(JSON.stringify(res.json().results)).not.toContain('<code>');
+    expect(JSON.stringify(res.json().results)).not.toContain('&lt;code&gt;');
 
     await app.close();
   });

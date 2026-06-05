@@ -14,6 +14,10 @@ const baseConfig: RagAdminConfig = {
   chunkSeparators: ['\n\n'],
   minChunkLength: 40,
   maxChunksPerPage: 500,
+  retrievalTopK: 4,
+  contextTopK: 4,
+  contextMaxChars: 12000,
+  chatRetrievalQueryMode: 'current_message',
   topK: 4,
   maxContextChunks: 4,
   maxContextChars: 12000,
@@ -135,6 +139,45 @@ describe('ColBERT reranker', () => {
       rerankMode: 'colbert_v2',
       colbertApplied: true,
       colbertCandidates: 2,
+      colbertScores: [
+        { id: 2, score: 0.91 },
+        { id: 1, score: 0.83 },
+      ],
+      tailSourcesBelowThreshold: 0,
+      colbertFallbackUsed: false,
+    });
+  });
+
+  it('filters weak ColBERT tail below the configured minimum score', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: async () => ({
+        results: [
+          { id: 2, score: 0.91 },
+          { id: 1, score: 0.54 },
+        ],
+      }),
+    })));
+
+    const result = await rerankChunksWithColbert({
+      query: 'молекуляр',
+      chunks,
+      topK: 2,
+      config: enabledConfig({ colbertMinScore: 0.58 }),
+    });
+
+    expect(result.chunks.map((chunk) => chunk.id)).toEqual([2]);
+    expect(result.diagnostics).toMatchObject({
+      rerankMode: 'colbert_v2',
+      colbertApplied: true,
+      colbertCandidates: 2,
+      colbertScores: [
+        { id: 2, score: 0.91 },
+        { id: 1, score: 0.54 },
+      ],
+      tailSourcesBelowThreshold: 1,
       colbertFallbackUsed: false,
     });
   });

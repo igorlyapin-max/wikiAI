@@ -952,6 +952,97 @@ export function initializeAIAdmin(options = {}) {
         return baseUrl?.value.trim() || "";
       };
 
+      const externalGroupMappingOptions = () => [
+        ["mapped_only", t("aiadmin-value-group-mapping-mapped-only", "Mapped MediaWiki groups only")],
+        ["passthrough_and_mapped", t("aiadmin-value-group-mapping-passthrough", "Raw OIDC groups + mapped MediaWiki groups")]
+      ];
+
+      const groupListFromValue = (value) => Array.isArray(value)
+        ? value
+        : String(value ?? "").split(/[\n;]+/);
+
+      const normalizeGroupList = (groups) => [...new Set(groupListFromValue(groups)
+        .map((group) => String(group).trim())
+        .filter((group) => group && group !== "*"))].sort();
+
+      const normalizedExternalGroupMappings = (mappings = {}) => {
+        const normalized = {};
+        Object.entries(mappings || {}).forEach(([sourceGroup, targetGroups]) => {
+          const source = String(sourceGroup || "").trim();
+          const targets = normalizeGroupList(targetGroups);
+          if (source && targets.length > 0) {
+            normalized[source] = targets;
+          }
+        });
+        return Object.fromEntries(Object.entries(normalized).sort(([left], [right]) => left.localeCompare(right)));
+      };
+
+      const formatExternalGroupMappings = (mappings = {}) => JSON.stringify(normalizedExternalGroupMappings(mappings), null, 2);
+
+      const parseExternalGroupMappings = (value = "") => {
+        const text = String(value || "").trim();
+        if (!text) return {};
+        let parsed;
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          throw new Error(t(
+            "aiadmin-error-oidc-group-mappings-json",
+            "OIDC group mappings must be a valid JSON object: {\"idp-group\": [\"mediawiki-group\"]}."
+          ));
+        }
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          throw new Error(t(
+            "aiadmin-error-oidc-group-mappings-json",
+            "OIDC group mappings must be a valid JSON object: {\"idp-group\": [\"mediawiki-group\"]}."
+          ));
+        }
+        return normalizedExternalGroupMappings(parsed);
+      };
+
+      const mappedExternalGroups = (rawGroups, mappings, mode) => {
+        const sourceGroups = normalizeGroupList(rawGroups);
+        const mappedGroups = sourceGroups.flatMap((group) => mappings[group] || []);
+        return normalizeGroupList(mode === "passthrough_and_mapped" ? [...sourceGroups, ...mappedGroups] : mappedGroups);
+      };
+
+      const renderExternalGroupMappingPreview = () => {
+        const mode = document.getElementById("external-group-mapping-mode")?.value || "mapped_only";
+        const rawGroups = normalizeGroupList(document.getElementById("external-group-preview-raw")?.value || "");
+        const previewNode = document.getElementById("external-group-preview-output");
+        const warningNode = document.getElementById("external-group-mapping-warning");
+        const aclMode = document.getElementById("external-acl-mode")?.value || "mediawiki_check";
+        let mappings = {};
+        try {
+          mappings = parseExternalGroupMappings(document.getElementById("external-group-mappings")?.value || "");
+        } catch (error) {
+          if (previewNode) {
+            previewNode.textContent = error.message;
+            previewNode.className = "ai-admin-status-error";
+          }
+          if (warningNode) warningNode.textContent = "";
+          return;
+        }
+        const mappedGroups = mappedExternalGroups(rawGroups, mappings, mode);
+        if (previewNode) {
+          previewNode.textContent = formatText("aiadmin-status-oidc-group-preview", {
+            raw: rawGroups.join(", ") || unknown(),
+            mapped: mappedGroups.join(", ") || unknown()
+          }, "Raw groups: {raw}; effective MW ACL groups: {mapped}");
+          previewNode.className = mappedGroups.length > 0 || mode === "passthrough_and_mapped"
+            ? "ai-admin-muted"
+            : "ai-admin-status-warning";
+        }
+        if (warningNode) {
+          warningNode.textContent = aclMode === "groups_only" && mode === "mapped_only" && Object.keys(mappings).length === 0
+            ? t(
+              "aiadmin-status-oidc-group-mapping-empty",
+              "groups_only + mapped_only requires explicit OIDC to MediaWiki group mappings; protected chunks will be denied without them."
+            )
+            : "";
+        }
+      };
+
       const renderExternalApiConfig = async () => {
         const data = await request("/api/admin/external-api/config");
         externalApiConfig = data.values || {};
@@ -971,7 +1062,7 @@ export function initializeAIAdmin(options = {}) {
           ["", t("aiadmin-value-legacy-global-rag", "Legacy global RAG config")],
           ...retrievalProfiles.map((profile) => [profile.id, `${profile.name} (${profile.readiness?.status || "unknown"})`])
         ]);
-        appendSelectRow(form, "external-acl-mode", t("aiadmin-field-external-acl-mode"), externalApiConfig.aclMode || "mediawiki_check", [
+        const aclModeSelect = appendSelectRow(form, "external-acl-mode", t("aiadmin-field-external-acl-mode"), externalApiConfig.aclMode || "mediawiki_check", [
           ["mediawiki_check", t("aiadmin-value-external-acl-mediawiki-check")],
           ["groups_only", t("aiadmin-value-external-acl-groups-only")]
         ]);
@@ -985,6 +1076,55 @@ export function initializeAIAdmin(options = {}) {
         appendInputRow(form, "external-oidc-subject-claim", t("aiadmin-field-oidc-subject-claim"), oidc.subjectClaim || "sub");
         appendInputRow(form, "external-oidc-username-claim", t("aiadmin-field-oidc-username-claim"), oidc.usernameClaim || "preferred_username");
         appendInputRow(form, "external-oidc-groups-claim", t("aiadmin-field-oidc-groups-claim"), oidc.groupsClaim || "groups");
+        const groupMappingTitle = document.createElement("h3");
+        groupMappingTitle.textContent = t("aiadmin-section-external-group-mapping", "OIDC group mapping to MediaWiki ACL");
+        form.appendChild(groupMappingTitle);
+        const groupMappingMode = appendSelectRow(
+          form,
+          "external-group-mapping-mode",
+          t("aiadmin-field-oidc-group-mapping-mode", "OIDC group mapping mode"),
+          externalApiConfig.groupMappingMode || "mapped_only",
+          externalGroupMappingOptions()
+        );
+        const groupMappingsInput = appendInputRow(
+          form,
+          "external-group-mappings",
+          t("aiadmin-field-oidc-group-mappings", "OIDC to MediaWiki group mappings JSON"),
+          formatExternalGroupMappings(externalApiConfig.groupMappings || {}),
+          {
+            textarea: true,
+            help: t(
+              "aiadmin-help-oidc-group-mappings",
+              "JSON object where each key is a raw OIDC/AD group and each value is a list of MediaWiki ACL groups."
+            )
+          }
+        );
+        groupMappingsInput.rows = 6;
+        const previewInput = appendInputRow(
+          form,
+          "external-group-preview-raw",
+          t("aiadmin-field-oidc-group-preview", "Preview raw OIDC groups"),
+          "CN=WikiAI-Readers,OU=Groups,DC=corp,DC=example\nCN=WikiAI-Admins,OU=Groups,DC=corp,DC=example",
+          {
+            help: t(
+              "aiadmin-help-oidc-group-preview",
+              "Newline or semicolon separated raw groups from the OIDC token; this is only a local preview."
+            )
+          }
+        );
+        const previewNode = document.createElement("div");
+        previewNode.id = "external-group-preview-output";
+        previewNode.className = "ai-admin-muted";
+        form.appendChild(previewNode);
+        const warningNode = document.createElement("p");
+        warningNode.id = "external-group-mapping-warning";
+        warningNode.className = "ai-admin-status-warning";
+        form.appendChild(warningNode);
+        [aclModeSelect, groupMappingMode, groupMappingsInput, previewInput].forEach((node) => {
+          node.addEventListener("input", renderExternalGroupMappingPreview);
+          node.addEventListener("change", renderExternalGroupMappingPreview);
+        });
+        renderExternalGroupMappingPreview();
 
         const capabilitiesNode = document.getElementById("aiadmin-external-api-capabilities");
         const authModes = (capabilities.authModes || []).join(", ") || unknown();
@@ -996,6 +1136,9 @@ export function initializeAIAdmin(options = {}) {
           auth: authModes,
           topK: capabilities.maxTopK ?? unknown(),
           acl: capabilities.aclMode || unknown(),
+          mappingMode: capabilities.groupMappingMode || externalApiConfig.groupMappingMode || "mapped_only",
+          mappingRules: capabilities.groupMappingCount ?? Object.keys(externalApiConfig.groupMappings || {}).length,
+          mappedGroups: capabilities.mappedGroupCount ?? new Set(Object.values(externalApiConfig.groupMappings || {}).flat()).size,
           warnings: warnings || ""
         });
         renderRetrievalProfiles();
@@ -1008,6 +1151,8 @@ export function initializeAIAdmin(options = {}) {
         maxTopK: Number(document.getElementById("external-max-top-k").value),
         defaultRetrievalProfileId: document.getElementById("external-default-retrieval-profile").value,
         aclMode: document.getElementById("external-acl-mode").value,
+        groupMappingMode: document.getElementById("external-group-mapping-mode").value,
+        groupMappings: parseExternalGroupMappings(document.getElementById("external-group-mappings").value),
         oidc: {
           issuer: document.getElementById("external-oidc-issuer").value.trim(),
           audience: document.getElementById("external-oidc-audience").value.trim(),
@@ -1034,6 +1179,11 @@ export function initializeAIAdmin(options = {}) {
         ["colbert_v2", t("aiadmin-value-rerank-colbert-v2")]
       ];
 
+      const chatRetrievalQueryModeOptions = () => [
+        ["current_message", t("aiadmin-value-chat-retrieval-current-message", "Current query only")],
+        ["history_augmented", t("aiadmin-value-chat-retrieval-history-augmented", "Current query + history")]
+      ];
+
       const optionLabel = (options, value, fallback = unknown()) => {
         const match = options.find((item) => item[0] === value);
         return match ? match[1] : (value || fallback);
@@ -1055,6 +1205,14 @@ export function initializeAIAdmin(options = {}) {
         ].join(" / ");
       };
 
+      const retrievalProfileLimits = (profile = {}) => {
+        const config = profile.config || {};
+        const retrievalTopK = config.retrievalTopK ?? config.topK ?? ragConfig?.retrievalTopK ?? ragConfig?.topK ?? 4;
+        const contextTopK = config.contextTopK ?? config.maxContextChunks ?? retrievalTopK;
+        const contextMaxChars = config.contextMaxChars ?? config.maxContextChars ?? ragConfig?.contextMaxChars ?? ragConfig?.maxContextChars ?? 12000;
+        return { retrievalTopK, contextTopK, contextMaxChars };
+      };
+
       const renderMediaWikiProfileConfig = async () => {
         const data = await loadMediaWikiProfilePayload(request);
         mediaWikiProfileConfig = data.values || {};
@@ -1070,7 +1228,13 @@ export function initializeAIAdmin(options = {}) {
       const collectMediaWikiProfileConfig = () => collectMediaWikiProfileSelectorConfig(document);
 
       const retrievalConfigFrom = (value = {}) => ({
-        topK: Number(value.topK ?? 4),
+        retrievalTopK: Number(value.retrievalTopK ?? value.topK ?? 4),
+        contextTopK: Number(value.contextTopK ?? value.maxContextChunks ?? value.retrievalTopK ?? value.topK ?? 4),
+        contextMaxChars: Number(value.contextMaxChars ?? value.maxContextChars ?? 12000),
+        chatRetrievalQueryMode: value.chatRetrievalQueryMode || "current_message",
+        topK: Number(value.topK ?? value.retrievalTopK ?? 4),
+        maxContextChunks: Number(value.maxContextChunks ?? value.contextTopK ?? value.retrievalTopK ?? value.topK ?? 4),
+        maxContextChars: Number(value.maxContextChars ?? value.contextMaxChars ?? 12000),
         searchMode: value.searchMode || "hybrid",
         rerankMode: value.rerankMode || "none",
         lexicalBackend: value.lexicalBackend || "sqlite_fts",
@@ -1107,12 +1271,22 @@ export function initializeAIAdmin(options = {}) {
         if (!root) return;
         root.innerHTML = "";
 
+        const marker = document.createElement("div");
+        marker.id = "aiadmin-retrieval-profile-limits-marker";
+        marker.className = "ai-admin-muted";
+        marker.textContent = t("aiadmin-status-retrieval-profile-limits-ui", "Retrieval profile limits UI loaded");
+        root.appendChild(marker);
+
         const table = document.createElement("table");
         table.className = "ai-admin-table";
         table.innerHTML = tableHtml([
           "aiadmin-table-id",
           "aiadmin-table-name",
           "aiadmin-table-mode",
+          "aiadmin-field-retrieval-top-k",
+          "aiadmin-field-context-top-k",
+          "aiadmin-field-context-max-chars",
+          "aiadmin-field-chat-retrieval-query-mode",
           "aiadmin-table-enabled",
           "aiadmin-table-external-api",
           "aiadmin-table-mcp",
@@ -1124,6 +1298,14 @@ export function initializeAIAdmin(options = {}) {
           appendTableCell(row, profile.id);
           appendTableCell(row, profile.name);
           appendTableCell(row, retrievalProfileModeLabel(profile));
+          const limits = retrievalProfileLimits(profile);
+          appendTableCell(row, limits.retrievalTopK);
+          appendTableCell(row, limits.contextTopK);
+          appendTableCell(row, limits.contextMaxChars);
+          appendTableCell(row, optionLabel(
+            chatRetrievalQueryModeOptions(),
+            profile.config?.chatRetrievalQueryMode || "current_message"
+          ));
           appendTableCell(row, yesNo(profile.enabled));
           appendTableCell(row, yesNo(profile.apiEnabled));
           appendTableCell(row, yesNo(profile.mcpEnabled));
@@ -1147,7 +1329,15 @@ export function initializeAIAdmin(options = {}) {
         appendCheckboxRow(form, "retrieval-profile-api-enabled", t("aiadmin-field-retrieval-api-enabled", "Available for External API"), profile.apiEnabled);
         appendCheckboxRow(form, "retrieval-profile-mcp-enabled", t("aiadmin-field-retrieval-mcp-enabled", "Available for MCP"), profile.mcpEnabled);
         appendCheckboxRow(form, "retrieval-profile-anonymous", t("aiadmin-field-external-anonymous-search"), profile.anonymousAllowed);
+        const limitsTitle = document.createElement("h3");
+        limitsTitle.textContent = t("aiadmin-section-retrieval-profile-limits", "Retrieval and context limits");
+        form.appendChild(limitsTitle);
         appendInputRow(form, "retrieval-profile-max-top-k", t("aiadmin-field-external-max-top-k"), profile.maxTopK || 20, { type: "number", min: 1, max: 50 });
+        const profileLimits = retrievalProfileLimits(profile);
+        appendInputRow(form, "retrieval-profile-retrieval-top-k", t("aiadmin-field-retrieval-top-k", "Retrieval top-k"), profileLimits.retrievalTopK, { type: "number", min: 1, max: 20 });
+        appendInputRow(form, "retrieval-profile-context-top-k", t("aiadmin-field-context-top-k", "Context top-k"), profileLimits.contextTopK, { type: "number", min: 1, max: 50 });
+        appendInputRow(form, "retrieval-profile-context-max-chars", t("aiadmin-field-context-max-chars", "Context max chars"), profileLimits.contextMaxChars, { type: "number", min: 1000, max: 200000 });
+        appendSelectRow(form, "retrieval-profile-chat-retrieval-query-mode", t("aiadmin-field-chat-retrieval-query-mode", "Chat retrieval history"), profile.config?.chatRetrievalQueryMode || "current_message", chatRetrievalQueryModeOptions());
         appendInputRow(form, "retrieval-profile-tags", t("aiadmin-field-tags-csv"), (profile.tags || []).join(", "));
         appendSelectRow(form, "retrieval-profile-search-mode", t("aiadmin-field-search-mode"), profile.config?.searchMode || "hybrid", retrievalModeOptions());
         appendSelectRow(form, "retrieval-profile-rerank-mode", t("aiadmin-field-rerank-mode"), profile.config?.rerankMode || "none", rerankModeOptions());
@@ -1190,6 +1380,9 @@ export function initializeAIAdmin(options = {}) {
       const collectRetrievalProfile = () => {
         const selected = selectedRetrievalProfile();
         const base = retrievalConfigFrom(selected?.config || ragConfig || {});
+        const retrievalTopK = Number(document.getElementById("retrieval-profile-retrieval-top-k").value);
+        const contextTopK = Number(document.getElementById("retrieval-profile-context-top-k").value);
+        const contextMaxChars = Number(document.getElementById("retrieval-profile-context-max-chars").value);
         return {
           id: document.getElementById("retrieval-profile-id").value.trim(),
           name: document.getElementById("retrieval-profile-name").value.trim(),
@@ -1202,6 +1395,13 @@ export function initializeAIAdmin(options = {}) {
           tags: document.getElementById("retrieval-profile-tags").value.split(",").map((value) => value.trim()).filter(Boolean),
           config: {
             ...base,
+            retrievalTopK,
+            contextTopK,
+            contextMaxChars,
+            chatRetrievalQueryMode: document.getElementById("retrieval-profile-chat-retrieval-query-mode").value,
+            topK: retrievalTopK,
+            maxContextChunks: contextTopK,
+            maxContextChars: contextMaxChars,
             searchMode: document.getElementById("retrieval-profile-search-mode").value,
             rerankMode: document.getElementById("retrieval-profile-rerank-mode").value,
             lexicalBackend: document.getElementById("retrieval-profile-lexical-backend").value,
@@ -1331,9 +1531,6 @@ export function initializeAIAdmin(options = {}) {
         [form, bm25Form, colbertForm].forEach((target) => {
           target.innerHTML = "";
         });
-        appendInputRow(form, "rag-topK", t("aiadmin-field-top-k"), ragConfig.topK, { type: "number", min: 1, max: 20 });
-        appendInputRow(form, "rag-maxContextChunks", t("aiadmin-field-max-context-chunks"), ragConfig.maxContextChunks, { type: "number", min: 1, max: 50 });
-        appendInputRow(form, "rag-maxContextChars", t("aiadmin-field-max-context-chars"), ragConfig.maxContextChars, { type: "number", min: 1000, max: 200000 });
         appendInputRow(form, "rag-minSearchScore", t("aiadmin-field-min-search-score"), ragConfig.minSearchScore, { type: "number", min: 0, max: 1, step: "0.01" });
         appendInputRow(form, "rag-chunkSize", t("aiadmin-field-chunk-size"), ragConfig.chunkSize, { type: "number", min: 128, max: 4096 });
         appendInputRow(form, "rag-chunkOverlap", t("aiadmin-field-chunk-overlap"), ragConfig.chunkOverlap, { type: "number", min: 0, max: 2048 });
@@ -1470,10 +1667,16 @@ export function initializeAIAdmin(options = {}) {
       const collectRagConfig = () => {
         const searchMode = readFormValue("rag-searchMode", ragConfig?.searchMode || "hybrid");
         const rerankMode = readFormValue("rag-rerankMode", ragConfig?.rerankMode || "none");
+        const retrievalTopK = ragConfig?.retrievalTopK ?? ragConfig?.topK ?? 4;
+        const contextTopK = ragConfig?.contextTopK ?? ragConfig?.maxContextChunks ?? retrievalTopK;
+        const contextMaxChars = ragConfig?.contextMaxChars ?? ragConfig?.maxContextChars ?? 12000;
         return {
-          topK: readFormNumber("rag-topK", ragConfig?.topK ?? 4),
-          maxContextChunks: readFormNumber("rag-maxContextChunks", ragConfig?.maxContextChunks ?? 4),
-          maxContextChars: readFormNumber("rag-maxContextChars", ragConfig?.maxContextChars ?? 12000),
+          retrievalTopK,
+          contextTopK,
+          contextMaxChars,
+          topK: retrievalTopK,
+          maxContextChunks: contextTopK,
+          maxContextChars: contextMaxChars,
           minSearchScore: readFormNumber("rag-minSearchScore", ragConfig?.minSearchScore ?? 0),
           searchMode,
           rerankMode,

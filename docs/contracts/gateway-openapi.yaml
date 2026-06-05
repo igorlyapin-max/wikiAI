@@ -424,6 +424,7 @@ components:
         topK:
           type: integer
           minimum: 1
+          description: Optional request override for the selected retrieval profile retrievalTopK. If omitted, Gateway uses the profile default.
         retrievalProfileId:
           type: string
           description: Optional admin-defined retrieval profile id for /api/v1/* external APIs. Ignored by built-in MediaWiki /api/search, which uses /api/admin/mediawiki-profile/config. Raw BM25/ColBERT/trigram flags are not accepted by the public API.
@@ -472,6 +473,7 @@ components:
         topK:
           type: integer
           minimum: 1
+          description: Optional request override for the selected retrieval profile retrievalTopK. Prompt context still uses contextTopK/contextMaxChars.
         retrievalProfileId:
           type: string
           description: Optional admin-defined retrieval profile id for /api/v1/* external APIs. Ignored by built-in MediaWiki /api/chat, which uses /api/admin/mediawiki-profile/config. Raw BM25/ColBERT/trigram flags are not accepted by the public API.
@@ -522,7 +524,7 @@ components:
           type: string
     Capabilities:
       type: object
-      required: [searchEnabled, mcpEnabled, anonymousSearchAllowed, aclMode]
+      required: [searchEnabled, mcpEnabled, anonymousSearchAllowed, aclMode, groupMappingMode, groupMappingConfigured, groupMappingCount, mappedGroupCount]
       properties:
         searchEnabled:
           type: boolean
@@ -533,6 +535,21 @@ components:
         aclMode:
           type: string
           enum: [mediawiki_check, groups_only]
+        groupMappingMode:
+          type: string
+          enum: [mapped_only, passthrough_and_mapped]
+          description: Determines whether OIDC raw groups are dropped after mapping or kept together with mapped MediaWiki ACL groups.
+        groupMappingConfigured:
+          type: boolean
+          description: True when at least one OIDC/AD source group is mapped to MediaWiki ACL groups.
+        groupMappingCount:
+          type: integer
+          minimum: 0
+          description: Number of configured OIDC/AD source group mapping rules.
+        mappedGroupCount:
+          type: integer
+          minimum: 0
+          description: Number of unique MediaWiki ACL group names produced by mapping rules.
         defaultRetrievalProfileId:
           type: string
         retrievalProfiles:
@@ -591,6 +608,10 @@ components:
         rerankMode:
           type: string
           enum: [none, colbert_v2]
+        chatRetrievalQueryMode:
+          type: string
+          enum: [current_message, history_augmented]
+          description: Controls whether chat retrieval uses only the current user message or augments the retrieval query with recent chat history.
         readiness:
           $ref: "#/components/schemas/RetrievalProfileReadiness"
     ReindexRequest:

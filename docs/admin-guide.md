@@ -48,7 +48,7 @@ Namespace `WikiAIAdmin` должен быть закрыт read-ACL правил
 - `LLM` - модель, temperature, max tokens, timeout, smoke test.
 - `Embeddings` - embedding provider/model, vector dimension, test embedding.
 - `Webhook` - endpoint Syncer, события, timeout/retry, last status, test.
-- `RAG / Chunking` - top-k, chunk size, overlap, separators, context limits.
+- `RAG / Chunking` - chunk size, overlap, separators; объем выдачи и prompt context настраиваются в `Профили поиска`.
 - `Индексация` - profiles, filters, SMW properties, manual reindex.
 - `Распознавание документов` - MIME policy и режимы `text`, `ocr`, `metadata`, `disabled`.
 - `Модель доверия` - активная trust model, правила доверия, preview и пересчет payload.
@@ -91,10 +91,38 @@ OIDC-настройки:
 
 Gateway проверяет JWT Bearer локально: `RS256`, подпись по JWKS, `iss`, `aud`, `exp`, `nbf`. Секретов OIDC в UI нет; JWKS URL публичен для проверки подписи, access token передается только в запросе клиента.
 
+Если `groupsClaim` содержит AD DN вида `CN=...,OU=...,DC=...`, настройте IdP так,
+чтобы claim был массивом строк. Строковый claim Gateway делит только по пробелам
+или `;`; запятая не считается разделителем групп, потому что она является частью
+AD DN.
+
+### Variant A: OIDC groups_only + mapping
+
+Рабочая схема для многих внешних потребителей:
+
+- MediaWiki авторизует пользователей через MS AD/LDAP и продолжает хранить свои ACL группы;
+- Corporate SSO/IdP выдает access token для audience WikiAI;
+- Gateway проверяет Bearer token по JWKS этого IdP;
+- raw группы из OIDC `groupsClaim` не считаются MediaWiki ACL группами напрямую;
+- Gateway мапит raw OIDC/AD группы в группы MediaWiki, которые уже лежат в индексированных `allowed_groups`.
+
+В production для этого варианта используйте `aclMode=groups_only` и `groupMappingMode=mapped_only`. Режим `mapped_only` отбрасывает raw IdP groups после маппинга: если правило не задано, такая группа не дает доступ. `passthrough_and_mapped` оставлен для совместимости и диагностики, когда raw group names уже совпадают с MediaWiki group names.
+
+Пример `groupMappings` во вкладке `Внешний API`:
+
+```json
+{
+  "CN=WikiAI-IT-Readers,OU=Groups,DC=corp,DC=example": ["ai-it"],
+  "CN=WikiAI-Exec,OU=Groups,DC=corp,DC=example": ["ai-exec", "ai-it"]
+}
+```
+
+Preview в UI принимает raw группы с новой строки или через `;` и показывает effective MW ACL groups до сохранения. Запятая не используется как разделитель, потому что AD DN групп обычно сами содержат запятые. Это локальная проверка формы; реальный доступ все равно считается Gateway после валидации подписи Bearer token.
+
 ACL mode:
 
-- `mediawiki_check` - режим по умолчанию. После retrieval Gateway спрашивает MediaWiki API, readable ли исходная страница для текущего cookie или Bearer. Это надежнее и должно быть production default.
-- `groups_only` - fallback, который доверяет `allowed_groups` из индекса. Его можно использовать только осознанно, когда MediaWiki не принимает Bearer для readable-check.
+- `mediawiki_check` - режим по умолчанию. После retrieval Gateway спрашивает MediaWiki API, readable ли исходная страница для текущего cookie или Bearer. Это самый строгий вариант, если MediaWiki реально умеет проверять тот же Bearer/SSO для readable-check.
+- `groups_only` - production-вариант для схемы Variant A, когда MediaWiki не принимает Bearer от внешнего клиента. Он доверяет `allowed_groups` из индекса, поэтому требует актуального reindex и явного `groupMappings` в режиме `mapped_only`.
 
 MCP adapter не имеет прямого доступа к Qdrant, Redis, SQLite или MediaWiki. Он вызывает только Gateway external API:
 
@@ -120,6 +148,10 @@ node packages/mcp-adapter/src/server.mjs
 
 ```json
 {
+  "groupMappingMode": "mapped_only",
+  "groupMappingConfigured": true,
+  "groupMappingCount": 2,
+  "mappedGroupCount": 3,
   "retrievalProfiles": [
     {
       "id": "prod_hybrid_colbert",
@@ -170,7 +202,7 @@ Admin endpoint'ы:
 - `GET /api/admin/mediawiki-profile/config` - выбранный профиль, readiness, effective config и список retrieval profiles.
 - `POST /api/admin/mediawiki-profile/config` - сохранить `defaultRetrievalProfileId`.
 
-Вкладка только выбирает профиль и показывает read-only детали: search mode, lexical backend, rerank, ColBERT, editDistance, trigram, semantic/context flags, required/missing index targets. Настраивать состав поиска нужно во вкладке `Профили поиска`.
+Вкладка только выбирает профиль и показывает read-only детали: search mode, lexical backend, rerank, `retrievalTopK`, `contextTopK`, `contextMaxChars`, `chatRetrievalQueryMode`, ColBERT, editDistance, trigram, semantic/context flags, required/missing index targets. Настраивать состав поиска нужно во вкладке `Профили поиска`.
 
 Готовность профиля:
 
@@ -192,13 +224,27 @@ Readiness также возвращает `requiredIndexTargets` и `missingInde
 - `typo_tolerant_experimental` - BM25 + `editDistance`, trigram только после готового trigram index;
 - `colbert_full_strict` - `colbert_full` для экспертного сравнения late-interaction index.
 
+В профиле есть три разных лимита, которые не нужно смешивать:
+
+- `retrievalTopK` - сколько финальных результатов или источников вернуть пользователю после ACL/trust/rerank.
+- `contextTopK` - сколько верхних источников из этой финальной выдачи положить в LLM prompt.
+- `contextMaxChars` - сколько символов prompt context можно дать модели.
+- `chatRetrievalQueryMode` - как чат строит поисковый запрос: `current_message` ищет источники только по текущей реплике, `history_augmented` добавляет последние сообщения диалога в retrieval query.
+
+Если чат вернул 4 ссылки, а `contextTopK=2`, пользователь видит 4 проверенных источника, но модель получает только первые 2. Для External API/MCP явный `topK` в запросе остается request override в пределах `maxTopK`; без него используется `retrievalTopK` выбранного профиля.
+
+По умолчанию все профили используют `current_message`: история остается в prompt модели, но не загрязняет подбор источников. `history_augmented` включайте только для follow-up сценариев, где важнее восстановить контекст диалога, чем исключить тематический хвост из прошлых вопросов.
+
+Если сохранение профиля возвращает `unrecognized_keys` для `retrievalTopK`, `contextTopK`, `contextMaxChars`, `chatRetrievalQueryMode`, `maxContextChunks` или `maxContextChars`, это почти всегда означает stale Gateway build/container: текущий Gateway должен принимать эти поля как profile-level limits. Пересоберите и перезапустите Gateway, затем проверьте `GET /api/admin/mediawiki-profile/config` и повторите сохранение профиля.
+
 Профиль не управляет `colbertModel` и `colbertCollection`: смена модели остается отдельным процессом candidate build, массового reindex и promote active ColBERT index.
 
 ## RAG / Embeddings, BM25, ColBERT и профиль MediaWiki
 
 До внедрения indexing profiles текущий runtime использует:
 
-- Gateway runtime config: `topK`, `chunkSize`, `chunkOverlap`;
+- Gateway runtime config: legacy `topK`, `chunkSize`, `chunkOverlap`;
+- retrieval profile config: `retrievalTopK`, `contextTopK`, `contextMaxChars`;
 - Syncer env fallback: `CHUNK_SIZE`, `CHUNK_OVERLAP`;
 - Syncer reindex options: `attachmentsEnabled`, `semanticFactsEnabled`, `namespaces`, `maxPages`.
 
@@ -206,7 +252,8 @@ Readiness также возвращает `requiredIndexTargets` и `missingInde
 
 Admin UI разделяет настройки на несколько рабочих зон:
 
-- `RAG / Embeddings` - top-k, context limits, chunking и параметры embedding-контекста.
+- `RAG / Embeddings` - chunking и параметры embedding-контекста; глобальный legacy `topK` больше не редактируется как основная настройка.
+- `Профили поиска` - `retrievalTopK`, `contextTopK`, `contextMaxChars`, `chatRetrievalQueryMode`, режим retrieval, backend, ColBERT и experimental lexical features.
 - `BM25` - веса lexical/vector, BM25 gate, candidate limits и состояние FTS5.
 - `OpenSearch` - отдельный lexical backend с language analyzer, fuzzy query, highlights, title/text boosts, effective settings, index state и preview запроса.
 - `ColBERT` - URL сервиса, active model/collection, health, candidate indexes и build/promote/cancel.
@@ -285,7 +332,7 @@ RUN_WIKIAI_ENV_DEV=1 RUN_COLBERT_E2E=1 node scripts/test-wikiai-env-dev.mjs
 - `colbertCollection`: отдельная Qdrant collection для ColBERT multivectors. Дефолт `wiki_colbert_chunks`.
 - `colbertCandidateLimit`: сколько ColBERT-кандидатов брать до ACL/trust или сколько разрешенных chunks отправлять на rerank. Дефолт `50`.
 - `colbertTimeoutMs`: timeout HTTP-запроса к ColBERT. Дефолт `5000`.
-- `colbertMinScore`: минимальный score ColBERT для сохранения результата. Дефолт `0`.
+- `colbertMinScore`: минимальный score ColBERT для сохранения результата. Глобальный дефолт `0`; production-профиль `opensearch_hybrid_colbert` использует `0.58`, чтобы отсекать слабый ColBERT-хвост.
 - `colbertFailMode`: `fallback_current` по умолчанию возвращает текущую hybrid-выдачу, если ColBERT недоступен; `fail_search` останавливает поиск ошибкой.
 
 `GET /api/admin/search-index/status` теперь возвращает `readiness`:
@@ -418,6 +465,13 @@ curl -s -X POST http://127.0.0.1:3000/api/admin/reindex \
   -H 'Cookie: <admin-mediawiki-cookie>' \
   -d '{"indexTargets":["bm25","opensearch","colbert"],"source":"qdrant_payload","dryRun":true,"maxPages":5}'
 ```
+
+Этот режим читает уже сохраненные chunks из Qdrant и не ходит в MediaWiki.
+Поэтому для cleanup/backfill BM25, OpenSearch или ColBERT из `source=qdrant_payload`
+MediaWiki service auth не обязателен. Для полного reindex из MediaWiki это не
+так: если профиль включает namespace, где `allowed_groups` отличается от ровно
+`["*"]`, Syncer блокирует protected reindex до настройки `MW_SERVICE_USERNAME` с
+`MW_SERVICE_PASSWORD` или `MW_SERVICE_PASSWORD_SECRET`.
 
 Legacy-скрипт BM25 backfill также остается доступен:
 
@@ -569,6 +623,27 @@ Safe webhook test проверяет Syncer `/health` и не создает, н
 Syncer применяет chunking, `dryRun` и фильтры страниц. Фильтры применяются до `maxPages`: сначала namespace, затем название страницы, затем категории. `maxPages` - это только явный лимит для пробного запуска; пустое значение означает индексацию всех страниц, подходящих под профиль.
 
 Статус reindex показывает разные счетчики: `найдено страниц` - сколько страниц подошло под профиль до лимита, `в обработке` - сколько реально поставлено в job после лимита, `обработано страниц` - сколько страниц записано в индекс, `пропущено` - пустые или недоступные страницы, `фрагментов RAG` - сколько chunks получилось после разбиения текста. Дополнительные счетчики стоимости: `embedding calls` - сколько embedding-вызовов сделано при записи, `LLM enrichment` - сколько страниц было обогащено через LLM, `estimated paid calls` - оценка потенциально платных вызовов, если embeddings или enrichment идут через OpenAI-compatible endpoint.
+
+### Protected MediaWiki Reindex And Service Auth
+
+Это production/runtime настройка, не только dev. Полный reindex из MediaWiki
+читает страницы от имени Syncer. Для публичных namespace с `allowed_groups=["*"]`
+сервисный пользователь не нужен, но для закрытых namespace Syncer должен уметь
+войти в MediaWiki как отдельный пользователь, которому разрешено читать эти
+страницы.
+
+Настройте один из вариантов:
+
+- `MW_SERVICE_USERNAME` + `MW_SERVICE_PASSWORD` из защищенного env/config;
+- `MW_SERVICE_USERNAME` + `MW_SERVICE_PASSWORD_SECRET` при `SECRETS_PROVIDER=IndeedPamAapm`;
+- `MW_SERVICE_PASSWORD=secret://...` как явную ссылку на секрет.
+
+После настройки проверьте авторизацию через админку: `POST /api/admin/service-config/test`.
+Для внутренней диагностики Syncer доступен `POST /admin/mediawiki-service-auth/test`
+с `x-wikiai-admin-token`. Если тест показывает `source=none`, protected reindex
+не стартует и вернет ошибку до обхода страниц. `MW_SYNC_COOKIE` остается только
+deprecated fallback для старых стендов и не должен быть основным механизмом у
+заказчика.
 
 `Включить LLM-обогащение reindex` по умолчанию выключено. Если включить его в ручном запуске и `dryRun=false`, Syncer один раз на страницу вызывает Gateway internal endpoint `/api/internal/reindex/llm-enrich`, Gateway делает короткий chat/completions запрос через LiteLLM, а результат кладется в payload chunk как `ai_summary`, `ai_keywords` и `ai_enrichment_model`. Это может улучшить поиск по документам с плохой структурой, но добавляет платный LLM-вызов на каждую обработанную страницу. Для приемки сначала используйте `dryRun=true` и маленький `maxPages`: dry-run покажет оценку, но не будет вызывать LLM и не будет писать Qdrant.
 

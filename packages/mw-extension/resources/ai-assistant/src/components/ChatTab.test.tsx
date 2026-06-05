@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ChatTab from './ChatTab';
@@ -20,6 +20,14 @@ function streamResponse(lines: string[]): Response {
   });
 
   return new Response(stream, { status: 200 });
+}
+
+function deferredResponse(): { promise: Promise<Response>; resolve: (value: Response) => void } {
+  let resolve!: (value: Response) => void;
+  const promise = new Promise<Response>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
 }
 
 describe('ChatTab', () => {
@@ -56,6 +64,70 @@ describe('ChatTab', () => {
       'https://gateway.example/api/chat/sessions?status=active&limit=20',
       { credentials: 'include' }
     );
+  });
+
+  it('не перетирает список чатов поздним ответом предыдущей загрузки', async () => {
+    const activeRequest = deferredResponse();
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('status=active')) {
+        return activeRequest.promise;
+      }
+      if (url.includes('status=archived')) {
+        return Promise.resolve(jsonResponse({
+          values: [
+            {
+              id: 'arch-1',
+              conversationId: 'arch-c1',
+              title: 'Архивный чат 1',
+              status: 'archived',
+              messageCount: 1,
+              createdAt: '2026-06-03T10:00:00Z',
+              updatedAt: '2026-06-03T10:00:00Z',
+            },
+            {
+              id: 'arch-2',
+              conversationId: 'arch-c2',
+              title: 'Архивный чат 2',
+              status: 'archived',
+              messageCount: 3,
+              createdAt: '2026-06-03T11:00:00Z',
+              updatedAt: '2026-06-03T11:00:00Z',
+            },
+          ],
+        }));
+      }
+      return Promise.resolve(jsonResponse({ values: [] }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<ChatTab gatewayUrl="https://gateway.example" />);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Архив' }));
+
+    expect(await screen.findByText('Архивный чат 1')).toBeInTheDocument();
+    expect(screen.getByText('Архивный чат 2')).toBeInTheDocument();
+
+    await act(async () => {
+      activeRequest.resolve(jsonResponse({
+        values: [
+          {
+            id: 'active-late',
+            conversationId: 'active-c1',
+            title: 'Поздний активный чат',
+            status: 'active',
+            messageCount: 9,
+            createdAt: '2026-06-03T09:00:00Z',
+            updatedAt: '2026-06-03T09:00:00Z',
+          },
+        ],
+      }));
+      await activeRequest.promise;
+    });
+
+    expect(screen.queryByText('Поздний активный чат')).not.toBeInTheDocument();
+    expect(screen.getByText('Архивный чат 1')).toBeInTheDocument();
+    expect(screen.getByText('Архивный чат 2')).toBeInTheDocument();
   });
 
   it('открывает archived session в режиме только чтение', async () => {
@@ -102,7 +174,7 @@ describe('ChatTab', () => {
       .mockResolvedValueOnce(jsonResponse({ values: [] }))
       .mockResolvedValueOnce(streamResponse([
         'data: {"type":"conversation","conversationId":"c-stream"}\n',
-        'data: {"type":"diagnostics","diagnostics":{"originalMessage":"Что актуально?","retrievalQuery":"Что актуально?\\nПредыдущий вопрос: Старый вопрос","historyMessagesUsed":1,"requestedTopK":null,"effectiveTopK":4,"searchMode":"hybrid","rawChunks":3,"readableChunks":2,"trustedChunks":1,"finalSources":1}}\n',
+        'data: {"type":"diagnostics","diagnostics":{"originalMessage":"Что актуально?","retrievalQuery":"Что актуально?","retrievalQueryMode":"current_message","historyInjectedIntoRetrieval":false,"historyMessagesUsed":1,"requestedTopK":null,"retrievalTopK":4,"effectiveTopK":4,"contextTopK":2,"contextMaxChars":12000,"searchMode":"hybrid","rawChunks":3,"readableChunks":2,"trustedChunks":1,"finalSources":1,"contextSources":1,"tailSourcesBelowThreshold":1,"colbertScores":[{"id":7,"score":0.912},{"id":8,"score":0.541}]}}\n',
         'data: {"type":"token","content":"Ответ"}\n',
         'data: {"type":"token","content":" готов"}\n',
         'data: {"type":"conflict","conflict":{"hasConflict":true,"lowTrust":true,"confidence":0.82,"summary":"Есть расхождение","conflictingSources":[{"title":"Черновик","claim":"Старое значение","trustScore":0.31}],"recommendedSourceTitle":"Регламент","lowTrustReason":"Источник требует проверки"}}\n',
@@ -137,9 +209,12 @@ describe('ChatTab', () => {
     expect(screen.getByText('Источник требует проверки')).toBeInTheDocument();
     expect(screen.getByText('Черновик').closest('li')).toHaveTextContent('Черновик, trust 0.31: Старое значение');
     expect(screen.getByRole('link', { name: 'Регламент' })).toHaveAttribute('href', 'https://wiki.example/Reglament');
-    expect(screen.getByText('Источники подобраны по текущему сообщению и истории диалога (1).')).toBeInTheDocument();
-    expect(screen.getByText('Retrieval: режим hybrid, topK 4')).toBeInTheDocument();
-    expect(screen.getByText('Что актуально? Предыдущий вопрос: Старый вопрос')).toBeInTheDocument();
+    expect(screen.getByText('Источники подобраны по текущему сообщению. История учтена в ответе (1), но не в поисковом запросе.')).toBeInTheDocument();
+    expect(screen.getByText('Retrieval: режим hybrid, выдача 4, контекст 1')).toBeInTheDocument();
+    expect(screen.getAllByText('Что актуально?').length).toBeGreaterThan(0);
+    expect(screen.getByText('historyInjectedIntoRetrieval')).toBeInTheDocument();
+    expect(screen.getByText('ColBERT scores')).toBeInTheDocument();
+    expect(screen.getByText('7:0.912, 8:0.541')).toBeInTheDocument();
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith('https://gateway.example/api/chat', expect.objectContaining({
@@ -155,7 +230,7 @@ describe('ChatTab', () => {
       .mockResolvedValueOnce(jsonResponse({ values: [] }))
       .mockResolvedValueOnce(streamResponse([
         'data: {"type":"conversation","conversationId":"c-citation"}\n',
-        'data: {"type":"token","content":"Карибский бассейн популярен для отдыха [3], но неизвестная ссылка [9] остается текстом."}\n',
+        'data: {"type":"token","content":"Карибский бассейн популярен для отдыха [Источник 3], первый источник тоже доступен [источник 1], но неизвестная ссылка [Источник 9] остается текстом."}\n',
         'data: {"type":"sources","sources":[{"title":"Источник 1","pageId":1,"pageUrl":"https://wiki.example/One"},{"title":"Источник 2","pageId":2},{"title":"Карибский бассейн","pageId":3,"pageUrl":"https://wiki.example/Caribbean"}]}\n',
         'data: [DONE]\n',
       ]))
@@ -184,7 +259,11 @@ describe('ChatTab', () => {
       'href',
       'https://wiki.example/Caribbean'
     );
-    expect(screen.getByText(/неизвестная ссылка \[9\] остается текстом/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Открыть источник 1: Источник 1' })).toHaveAttribute(
+      'href',
+      'https://wiki.example/One'
+    );
+    expect(screen.getByText(/неизвестная ссылка \[Источник 9\] остается текстом/)).toBeInTheDocument();
   });
 
   it('показывает ошибку истории чатов', async () => {

@@ -47,6 +47,12 @@ describe('SpecialAIAdmin UI contract', () => {
     expect(specialPageSource).toContain('data-ai-panel="retrieval-profiles"');
     expect(specialPageSource).toContain('id="aiadmin-retrieval-profiles"');
     expect(specialPageSource).toContain("'aiadmin-tab-retrieval-profiles'");
+    expect(specialPageSource).toContain("'aiadmin-field-retrieval-top-k'");
+    expect(specialPageSource).toContain("'aiadmin-field-context-top-k'");
+    expect(specialPageSource).toContain("'aiadmin-field-context-max-chars'");
+    expect(specialPageSource).toContain("'aiadmin-field-chat-retrieval-query-mode'");
+    expect(specialPageSource).toContain("'aiadmin-section-retrieval-profile-limits'");
+    expect(specialPageSource).toContain("'aiadmin-status-retrieval-profile-limits-ui'");
   });
 
   it('renders OpenSearch as a first-class admin panel', () => {

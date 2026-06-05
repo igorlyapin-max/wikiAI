@@ -161,6 +161,26 @@ describe('AI admin helpers', () => {
     expect(adminAppSource).toContain('rag-lexicalBackend');
     expect(adminAppSource).toContain('readFormValue("rag-lexicalBackend"');
     expect(adminAppSource).toContain('retrieval-profile-lexical-backend');
+    expect(adminAppSource).toContain('retrieval-profile-retrieval-top-k');
+    expect(adminAppSource).toContain('retrieval-profile-context-top-k');
+    expect(adminAppSource).toContain('retrieval-profile-context-max-chars');
+    expect(adminAppSource).toContain('retrieval-profile-chat-retrieval-query-mode');
+    expect(adminAppSource).toContain('aiadmin-retrieval-profile-limits-marker');
+    expect(adminAppSource).toContain('"aiadmin-field-retrieval-top-k"');
+    expect(adminAppSource).toContain('"aiadmin-field-context-top-k"');
+    expect(adminAppSource).toContain('"aiadmin-field-context-max-chars"');
+    expect(adminAppSource).toContain('"aiadmin-field-chat-retrieval-query-mode"');
+    expect(adminAppSource).toContain('chatRetrievalQueryMode: document.getElementById("retrieval-profile-chat-retrieval-query-mode").value');
+    expect(adminAppSource).toContain('appendTableCell(row, limits.retrievalTopK)');
+    expect(adminAppSource).toContain('appendTableCell(row, limits.contextTopK)');
+    expect(adminAppSource).toContain('appendTableCell(row, limits.contextMaxChars)');
+    expect(adminAppSource).toContain('profile.config?.chatRetrievalQueryMode || "current_message"');
+    expect(adminAppSource).toContain('aiadmin-section-retrieval-profile-limits');
+    expect(adminHelpersSource).toContain('aiadmin-field-retrieval-top-k');
+    expect(adminHelpersSource).toContain('config.retrievalTopK ?? config.topK');
+    expect(adminAppSource).not.toContain('appendInputRow(form, "rag-topK"');
+    expect(adminAppSource).not.toContain('appendInputRow(form, "rag-maxContextChunks"');
+    expect(adminAppSource).not.toContain('appendInputRow(form, "rag-maxContextChars"');
     expect(adminAppSource).toContain('lexicalBackend');
   });
 
@@ -205,6 +225,10 @@ describe('AI admin helpers', () => {
           colbertEnabled: true,
           lexicalEditDistanceEnabled: true,
           trigramIndexEnabled: false,
+          retrievalTopK: 8,
+          contextTopK: 3,
+          contextMaxChars: 9000,
+          chatRetrievalQueryMode: 'history_augmented',
           semanticFactsInContext: true,
           includeAttachments: true,
           includeSemanticHeader: true,
@@ -260,6 +284,10 @@ describe('AI admin helpers', () => {
     expect(root.textContent).toContain('hybrid_colbert');
     expect(root.textContent).toContain('OpenSearch');
     expect(root.textContent).toContain('colbert_v2');
+    expect(root.textContent).toContain('8');
+    expect(root.textContent).toContain('3');
+    expect(root.textContent).toContain('9000');
+    expect(root.textContent).toContain('Текущий запрос + история');
     expect(root.textContent).toContain('dense, opensearch, colbert');
     expect(root.querySelector('#aiadmin-refresh-mediawiki-profile')).not.toBeNull();
     expect(root.querySelector('#aiadmin-open-retrieval-profiles')).not.toBeNull();
@@ -377,9 +405,41 @@ describe('AI admin helpers', () => {
     expect(ruMessages['aiadmin-field-external-anonymous-search']).toBe('Разрешить поиск без авторизации');
     expect(ruMessages['aiadmin-table-unauthenticated']).toBe('Без авторизации');
     expect(ruMessages['aiadmin-value-lexical-backend-sqlite']).toBe('BM25/trigram');
+    expect(ruMessages['aiadmin-field-retrieval-top-k']).toBe('Сколько источников вернуть');
+    expect(ruMessages['aiadmin-field-context-top-k']).toBe('Сколько источников дать модели');
+    expect(ruMessages['aiadmin-field-chat-retrieval-query-mode']).toBe('История в поиске чата');
+    expect(ruMessages['aiadmin-value-chat-retrieval-current-message']).toBe('Только текущий запрос');
+    expect(ruMessages['aiadmin-value-chat-retrieval-history-augmented']).toBe('Текущий запрос + история');
+    expect(ruMessages['aiadmin-section-retrieval-profile-limits']).toBe('Лимиты выдачи и контекста');
+    expect(ruMessages['aiadmin-status-retrieval-profile-limits-ui']).toContain('Лимиты профилей загружены');
     expect(enMessages['aiadmin-field-external-anonymous-search']).toBe('Allow unauthenticated search');
     expect(enMessages['aiadmin-table-unauthenticated']).toBe('Unauthenticated');
     expect(enMessages['aiadmin-value-lexical-backend-sqlite']).toBe('BM25/trigram');
+    expect(enMessages['aiadmin-field-retrieval-top-k']).toBe('Sources to return');
+    expect(enMessages['aiadmin-field-context-top-k']).toBe('Sources sent to model');
+    expect(enMessages['aiadmin-field-chat-retrieval-query-mode']).toBe('Chat retrieval history');
+    expect(enMessages['aiadmin-value-chat-retrieval-current-message']).toBe('Current query only');
+    expect(enMessages['aiadmin-value-chat-retrieval-history-augmented']).toBe('Current query + history');
+    expect(enMessages['aiadmin-section-retrieval-profile-limits']).toBe('Retrieval and context limits');
+    expect(enMessages['aiadmin-status-retrieval-profile-limits-ui']).toBe('Retrieval profile limits UI loaded');
+  });
+
+  it('keeps OIDC group mapping controls wired into the External API admin form', () => {
+    expect(adminAppSource).toContain('external-group-mapping-mode');
+    expect(adminAppSource).toContain('external-group-mappings');
+    expect(adminAppSource).toContain('external-group-preview-raw');
+    expect(adminAppSource).toContain('external-group-preview-output');
+    expect(adminAppSource).toContain('external-group-mapping-warning');
+    expect(adminAppSource).toContain('parseExternalGroupMappings');
+    expect(adminAppSource).toContain('mappedExternalGroups');
+    expect(adminAppSource).toContain('groupMappingMode: document.getElementById("external-group-mapping-mode").value');
+    expect(adminAppSource).toContain('groupMappings: parseExternalGroupMappings(document.getElementById("external-group-mappings").value)');
+    expect(specialAdminSource).toContain('aiadmin-field-oidc-group-mapping-mode');
+    expect(specialAdminSource).toContain('aiadmin-help-oidc-group-mappings');
+    expect(ruMessages['aiadmin-value-group-mapping-mapped-only']).toBe('Только mapped MediaWiki groups');
+    expect(ruMessages['aiadmin-status-oidc-group-mapping-empty']).toContain('groups_only + mapped_only');
+    expect(enMessages['aiadmin-value-group-mapping-passthrough']).toBe('Raw OIDC groups + mapped MediaWiki groups');
+    expect(enMessages['aiadmin-status-external-api-capabilities']).toContain('mapping: {mappingMode}');
   });
 
   it('keeps OpenSearch preview actions routed to the Gateway admin API', () => {
