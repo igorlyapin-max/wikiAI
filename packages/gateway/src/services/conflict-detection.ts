@@ -4,7 +4,7 @@ import {
   ConflictDetectionRunMode,
   getConflictDetectionConfig,
 } from './admin-platform-config.js';
-import { callLiteLLM } from './litellm.js';
+import { callLiteLLM, type ChatCompletionResponse } from './litellm.js';
 import { logOperationalError } from './logging.js';
 import { SearchChunk, SemanticFacts } from '../types/index.js';
 
@@ -35,7 +35,7 @@ export interface ConflictDetectionResult {
   };
 }
 
-interface PreparedConflictSource {
+export interface PreparedConflictSource {
   sourceIndex: number;
   pageId: number;
   title: string;
@@ -51,6 +51,26 @@ interface PreparedConflictSource {
 interface DetectConflictsOptions {
   config?: ConflictDetectionConfig;
   force?: boolean;
+}
+
+export interface ConflictDetectionTrace {
+  request: {
+    model: string;
+    messages: Array<{ role: string; content: string }>;
+    sourceCount: number;
+    trustGap?: number;
+  };
+  preparedSources: PreparedConflictSource[];
+  skippedReason?: ConflictDetectionResult['skippedReason'];
+  response?: ChatCompletionResponse;
+  responseContent?: string;
+  parsedPayload?: ParsedConflictPayload;
+  result?: ConflictDetectionResult;
+}
+
+export interface ConflictDetectionWithTrace {
+  result: ConflictDetectionResult;
+  trace: ConflictDetectionTrace;
 }
 
 const llmConflictSchema = z.object({
@@ -187,7 +207,11 @@ function shouldRunDetection(
   return undefined;
 }
 
-function buildPrompt(query: string, sources: PreparedConflictSource[]): Array<{ role: string; content: string }> {
+function buildPrompt(
+  query: string,
+  sources: PreparedConflictSource[],
+  systemPrompt: string
+): Array<{ role: string; content: string }> {
   const sourceText = sources.map((source) => {
     const semanticFacts = formatSemanticFacts(source.semanticFacts);
     return [
@@ -204,15 +228,7 @@ function buildPrompt(query: string, sources: PreparedConflictSource[]): Array<{ 
   return [
     {
       role: 'system',
-      content: [
-        'Ты проверяешь корпоративные wiki-источники на противоречия для RAG-ответа.',
-        'Нужно сравнить только предоставленные источники. Не добавляй внешние знания.',
-        'Считай противоречием только несовместимые утверждения об одном и том же объекте, правиле, сроке, числе или факте.',
-        'Разные темы, разные предметные области, разные кухни, разные процедуры или нерелевантные источники сами по себе не являются противоречием.',
-        'Верни только JSON без Markdown.',
-        'Схема JSON: {"hasConflict":boolean,"confidence":number,"summary":string,"conflictingSources":[{"sourceIndex":number,"title":string,"claim":string,"status":string}],"recommendedSourceIndex":number,"recommendedSourceTitle":string,"lowTrustReason":string}.',
-        'confidence означает уверенность в выводе о наличии или отсутствии противоречия от 0 до 1.',
-      ].join('\n'),
+      content: systemPrompt,
     },
     {
       role: 'user',
@@ -265,27 +281,45 @@ function normalizeConflictSources(
   });
 }
 
-export async function detectConflicts(
+export async function detectConflictsWithTrace(
   query: string,
   chunks: SearchChunk[],
   options: DetectConflictsOptions = {}
-): Promise<ConflictDetectionResult> {
+): Promise<ConflictDetectionWithTrace> {
   const config = options.config ?? await getConflictDetectionConfig();
   const sources = prepareSources(chunks, config);
   const trustGap = calculateTrustGap(sources);
+  const messages = buildPrompt(query, sources, config.systemPrompt);
+  const traceBase: Omit<ConflictDetectionTrace, 'response' | 'responseContent' | 'parsedPayload' | 'result'> = {
+    request: {
+      model: config.model,
+      messages,
+      sourceCount: sources.length,
+      trustGap,
+    },
+    preparedSources: sources,
+  };
   const skippedReason = shouldRunDetection(config, sources, trustGap, Boolean(options.force));
   if (skippedReason) {
-    return skippedResult(config, sources.length, skippedReason, trustGap);
+    const result = skippedResult(config, sources.length, skippedReason, trustGap);
+    return {
+      result,
+      trace: {
+        ...traceBase,
+        skippedReason,
+        result,
+      },
+    };
   }
 
-  const response = await callLiteLLM(buildPrompt(query, sources), config.model);
+  const response = await callLiteLLM(messages, config.model);
   const content = response.choices[0]?.message?.content ?? '';
   const payload = parseConflictPayload(content);
   const lowTrust = payload.confidence < config.lowConfidenceThreshold;
   const recommendedSourceTitle =
     payload.recommendedSourceTitle || sourceTitleByIndex(sources, payload.recommendedSourceIndex);
 
-  return {
+  const result: ConflictDetectionResult = {
     enabled: config.enabled,
     checked: true,
     hasConflict: payload.hasConflict,
@@ -302,6 +336,25 @@ export async function detectConflicts(
       trustGap,
     },
   };
+
+  return {
+    result,
+    trace: {
+      ...traceBase,
+      response,
+      responseContent: content,
+      parsedPayload: payload,
+      result,
+    },
+  };
+}
+
+export async function detectConflicts(
+  query: string,
+  chunks: SearchChunk[],
+  options: DetectConflictsOptions = {}
+): Promise<ConflictDetectionResult> {
+  return (await detectConflictsWithTrace(query, chunks, options)).result;
 }
 
 export async function detectConflictsForChat(

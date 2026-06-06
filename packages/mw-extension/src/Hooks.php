@@ -31,12 +31,31 @@ class Hooks implements
     $config = MediaWikiServices::getInstance()->getMainConfig();
     $syncerUrl = $config->get('AIAssistantSyncerUrl');
     $url = rtrim($syncerUrl, '/') . '/webhook/page';
+    $payload = self::withoutNullValues(array_merge(['event' => $event], $data));
+    $payloadJson = json_encode($payload);
+    if ($payloadJson === false) {
+      wfDebugLog('aiassistant', 'Webhook payload JSON encoding failed for event: ' . $event);
+      return;
+    }
+    $headers = ['Content-Type: application/json'];
+    $secret = trim((string)$config->get('AIAssistantWebhookSecret'));
+    if ($secret !== '') {
+      $signatureTimestamp = (string)time();
+      $headers[] = 'X-WikiAI-Webhook-Timestamp: ' . $signatureTimestamp;
+      $headers[] = 'X-WikiAI-Webhook-Signature: ' . self::signWebhookPayload(
+        $secret,
+        $signatureTimestamp,
+        $payload
+      );
+      $headers[] = 'X-WikiAI-Webhook-Idempotency-Key: ' . self::webhookIdempotencyKey($payload);
+    }
+
     try {
       $response = self::getHttpFactory()->post(
         $url,
         [
-          'postData' => json_encode(array_merge(['event' => $event], $data)),
-          'headers' => ['Content-Type: application/json'],
+          'postData' => $payloadJson,
+          'headers' => $headers,
           'timeout' => 3,
         ],
         __METHOD__
@@ -47,6 +66,57 @@ class Hooks implements
     } catch (\Exception $e) {
       wfDebugLog('aiassistant', 'Webhook failed: ' . $e->getMessage());
     }
+  }
+
+  private static function withoutNullValues(array $input): array
+  {
+    return array_filter($input, static function ($value) {
+      return $value !== null;
+    });
+  }
+
+  private static function isListArray(array $value): bool
+  {
+    if ($value === []) {
+      return true;
+    }
+    return array_keys($value) === range(0, count($value) - 1);
+  }
+
+  private static function canonicalizeWebhookValue($value)
+  {
+    if (!is_array($value)) {
+      return $value;
+    }
+    if (self::isListArray($value)) {
+      return array_map([self::class, 'canonicalizeWebhookValue'], $value);
+    }
+
+    ksort($value, SORT_STRING);
+    foreach ($value as $key => $entryValue) {
+      $value[$key] = self::canonicalizeWebhookValue($entryValue);
+    }
+    return $value;
+  }
+
+  private static function canonicalWebhookJson(array $payload): string
+  {
+    return json_encode(self::canonicalizeWebhookValue($payload));
+  }
+
+  private static function signWebhookPayload(string $secret, string $timestamp, array $payload): string
+  {
+    return 'sha256=' . hash_hmac('sha256', $timestamp . '.' . self::canonicalWebhookJson($payload), $secret);
+  }
+
+  private static function webhookIdempotencyKey(array $payload): string
+  {
+    $revisionOrTimestamp = isset($payload['rev_id']) ? (string)$payload['rev_id'] : (string)($payload['timestamp'] ?? '');
+    return implode(':', [
+      (string)($payload['event'] ?? 'unknown'),
+      (string)($payload['page_id'] ?? '0'),
+      $revisionOrTimestamp,
+    ]);
   }
 
   /**

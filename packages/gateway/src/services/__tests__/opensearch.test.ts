@@ -3,6 +3,7 @@ import { config } from '../../config.js';
 import { resetAdminStoreForTests } from '../../db/admin-store.js';
 import {
   analyzeOpenSearchQuery,
+  getOpenSearchAttachmentDiagnostics,
   getOpenSearchStatus,
   searchOpenSearchChunksWithDiagnostics,
   upsertOpenSearchPage,
@@ -72,7 +73,18 @@ describe('OpenSearch service', () => {
     config.opensearchEnabled = true;
     vi.stubGlobal('fetch', vi.fn()
       .mockResolvedValueOnce(response({ ok: true, status: 200 }))
-      .mockResolvedValueOnce(response({ ok: true, status: 200, text: { count: 7 } })));
+      .mockResolvedValueOnce(response({ ok: true, status: 200, text: { count: 7 } }))
+      .mockResolvedValueOnce(response({
+        ok: true,
+        status: 200,
+        text: {
+          aggregations: {
+            sourceTypes: { buckets: [{ key: 'attachment', doc_count: 2 }] },
+            attachmentDocs: { doc_count: 2 },
+            attachmentFilenames: { buckets: [{ key: 'Wikiai-architecture.pptx', doc_count: 2 }] },
+          },
+        },
+      })));
 
     const status = await getOpenSearchStatus();
 
@@ -80,6 +92,8 @@ describe('OpenSearch service', () => {
       status: 'ok',
       ready: true,
       documentCount: 7,
+      attachmentDocumentCount: 2,
+      attachmentFilenames: [{ filename: 'Wikiai-architecture.pptx', count: 2 }],
     });
     expect(status.url).toBe('http://***:***@opensearch:9200/');
   });
@@ -89,7 +103,18 @@ describe('OpenSearch service', () => {
     config.opensearchBaseUrl = '';
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(response({ ok: true, status: 200 }))
-      .mockResolvedValueOnce(response({ ok: true, status: 200, text: { count: 3 } }));
+      .mockResolvedValueOnce(response({ ok: true, status: 200, text: { count: 3 } }))
+      .mockResolvedValueOnce(response({
+        ok: true,
+        status: 200,
+        text: {
+          aggregations: {
+            sourceTypes: { buckets: [] },
+            attachmentDocs: { doc_count: 0 },
+            attachmentFilenames: { buckets: [] },
+          },
+        },
+      }));
     vi.stubGlobal('fetch', fetchMock);
 
     const status = await getOpenSearchStatus();
@@ -99,6 +124,7 @@ describe('OpenSearch service', () => {
       ready: true,
       url: 'http://opensearch:9200/',
       documentCount: 3,
+      attachmentDocumentCount: 0,
     });
     expect(fetchMock).toHaveBeenCalledWith(
       'http://opensearch:9200/wikiai_test',
@@ -230,6 +256,47 @@ describe('OpenSearch service', () => {
       id: 100000,
       title: 'Древний Египет',
       lexicalRank: 1,
+    });
+  });
+
+  it('looks up attachment documents by filename', async () => {
+    config.opensearchEnabled = true;
+    vi.stubGlobal('fetch', vi.fn(async () => response({
+      ok: true,
+      status: 200,
+      text: {
+        hits: {
+          total: { value: 1 },
+          hits: [
+            {
+              _source: {
+                chunkId: 10450000,
+                pageId: 104,
+                title: 'CorpCommon:Приказы/Режим рабочего времени',
+                sourceType: 'attachment',
+                attachmentFilename: 'Wikiai-architecture.pptx',
+                attachmentMime: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+                attachmentProcessingMode: 'text',
+                chunkIndex: 0,
+                totalChunks: 32,
+              },
+            },
+          ],
+        },
+      },
+    })));
+
+    const result = await getOpenSearchAttachmentDiagnostics('Wikiai-architecture.pptx');
+
+    expect(result).toMatchObject({
+      status: 'ok',
+      ready: true,
+      found: true,
+      chunks: 1,
+      samples: [expect.objectContaining({
+        pageId: 104,
+        attachmentFilename: 'Wikiai-architecture.pptx',
+      })],
     });
   });
 });

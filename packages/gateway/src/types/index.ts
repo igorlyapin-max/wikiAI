@@ -25,6 +25,7 @@ export interface AppConfig {
   opensearchTextBoost: number;
   opensearchCandidateLimit: number;
   qdrantUrl: string;
+  qdrantApiKey?: string;
   qdrantCollection: string;
   redisUrl: string;
   databaseUrl: string;
@@ -52,6 +53,10 @@ export interface AppConfig {
   logSyslogHost: string;
   logSyslogPort: number;
   healthCheckTimeoutMs: number;
+  httpBodyLimitBytes: number;
+  embeddingTimeoutMs: number;
+  gracefulShutdownTimeoutMs: number;
+  schedulerLockTtlSeconds: number;
 }
 
 export interface MWUserInfo {

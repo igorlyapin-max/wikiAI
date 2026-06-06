@@ -86,6 +86,77 @@ describe('AI admin helpers', () => {
     expect(adminAppSource).toContain('data.searchHistoryLimit');
   });
 
+  it('does not render legacy cached chat owners as real users', () => {
+    expect(adminAppSource).toContain('displayChatSessionUser');
+    expect(adminAppSource).toContain('username !== "cached"');
+    expect(adminAppSource).toContain('aiadmin-value-chat-user-legacy');
+    expect(adminAppSource).toContain('displayChatSessionUser(session)');
+    expect(ruMessages['aiadmin-value-chat-user-legacy']).toContain('legacy');
+    expect(enMessages['aiadmin-value-chat-user-legacy']).toContain('legacy');
+  });
+
+  it('keeps the conflict detection system prompt visible and saved in the admin UI', () => {
+    expect(adminAppSource).toContain('conflict-system-prompt');
+    expect(adminAppSource).toContain('aiadmin-field-conflict-system-prompt');
+    expect(adminAppSource).toContain('aiadmin-help-conflict-system-prompt');
+    expect(adminAppSource).toContain('systemPrompt: document.getElementById("conflict-system-prompt").value.trim()');
+    expect(specialAdminSource).toContain('aiadmin-field-conflict-system-prompt');
+    expect(specialAdminSource).toContain('aiadmin-help-conflict-system-prompt');
+    expect(ruMessages['aiadmin-field-conflict-system-prompt']).toBe('System prompt проверки противоречий');
+    expect(enMessages['aiadmin-field-conflict-system-prompt']).toBe('Conflict detection system prompt');
+  });
+
+  it('keeps attachment reindex status visible in the admin UI', () => {
+    expect(adminAppSource).toContain('aiadmin-status-attachment-index');
+    expect(adminAppSource).toContain('attachmentColumnsReady');
+    expect(adminAppSource).toContain('aiadmin-reindex-attachment-counters');
+    expect(adminAppSource).toContain('aiadmin-reindex-preflight');
+    expect(adminAppSource).toContain('attachmentTargetWrites');
+    expect(adminAppSource).toContain('aiadmin-reindex-attachment-target-writes');
+    expect(adminAppSource).toContain('currentAttachmentFilename');
+    expect(adminAppSource).toContain('aiadmin-field-reindex-attachments');
+    expect(adminAppSource).toContain('aiadmin-warning-reindex-attachments-policy-disabled');
+    expect(specialAdminSource).toContain('aiadmin-reindex-preflight');
+    expect(specialAdminSource).toContain('aiadmin-reindex-attachment-counters');
+    expect(specialAdminSource).toContain('aiadmin-field-reindex-attachments');
+    expect(ruMessages['aiadmin-reindex-preflight']).toContain('Preflight');
+    expect(ruMessages['aiadmin-reindex-attachment-counters']).toContain('Вложения');
+    expect(ruMessages['aiadmin-reindex-attachment-target-writes']).toContain('target');
+    expect(ruMessages['aiadmin-field-reindex-attachments']).toContain('этом запуске');
+    expect(enMessages['aiadmin-reindex-attachment-counters']).toContain('Attachments');
+    expect(enMessages['aiadmin-reindex-attachment-target-writes']).toContain('target');
+    expect(enMessages['aiadmin-field-reindex-attachments']).toContain('this run');
+  });
+
+  it('keeps indexing profile attachment checkbox and target synchronized', () => {
+    expect(adminAppSource).toContain('normalizeAttachmentTarget');
+    expect(adminAppSource).toContain('syncIndexingAttachmentControls');
+    expect(adminAppSource).toContain('attachmentTargetMismatch');
+    expect(adminAppSource).toContain('aiadmin-warning-index-profile-attachments-target-mismatch');
+    expect(adminAppSource).toContain('document.querySelector(".idx-profile-target[value=\\\"attachments\\\"]")');
+    expect(specialAdminSource).toContain('aiadmin-warning-index-profile-attachments-target-mismatch');
+    expect(ruMessages['aiadmin-warning-index-profile-attachments-target-mismatch']).toContain('attachments');
+    expect(enMessages['aiadmin-warning-index-profile-attachments-target-mismatch']).toContain('Attachment target');
+  });
+
+  it('separates indexing profile content from automation assignments', () => {
+    expect(specialAdminSource).toContain('aiadmin-indexing-profiles-section');
+    expect(specialAdminSource).toContain('aiadmin-indexing-automation-section');
+    expect(specialAdminSource).toContain('aiadmin-indexing-profile-editor-section');
+    expect(specialAdminSource).toContain('aiadmin-indexing-manual-run-section');
+    expect(specialAdminSource).toContain('idx-automation-change-profile');
+    expect(specialAdminSource).toContain('idx-automation-scheduled-profile');
+    expect(specialAdminSource).not.toContain('idx-profile-runmode');
+    expect(specialAdminSource).not.toContain('idx-profile-schedule');
+    expect(adminAppSource).toContain('/api/admin/indexing-automation');
+    expect(adminAppSource).toContain('collectIndexingAutomation');
+    expect(adminAppSource).toContain('changeIndexingProfileId');
+    expect(adminAppSource).toContain('scheduledReindexProfileId');
+    expect(adminAppSource).not.toContain('runMode: document.getElementById("idx-profile-runmode").value');
+    expect(ruMessages['aiadmin-section-indexing-automation']).toBe('Автоматизация');
+    expect(enMessages['aiadmin-section-indexing-automation']).toBe('Automation');
+  });
+
   it('builds document recognition capability summary from current MIME policy modes', () => {
     const summary = getDocumentCapabilitySummary({
       mimeTypes: {
@@ -135,7 +206,10 @@ describe('AI admin helpers', () => {
     expect(adminAppSource).toContain('aiadmin-test-opensearch-status');
     expect(adminAppSource).toContain('aiadmin-analyze-opensearch-query');
     expect(adminAppSource).toContain('aiadmin-preview-opensearch-search');
+    expect(adminAppSource).toContain('aiadmin-check-opensearch-attachment');
+    expect(adminAppSource).toContain('svc-opensearch-attachment-filename');
     expect(adminAppSource).toContain('svc-opensearch-enabled');
+    expect(adminAppSource).toContain('aiadmin-help-opensearch-enabled');
     expect(adminAppSource).toContain('svc-opensearch-baseUrl');
     expect(adminAppSource).toContain('defaultOpenSearchBaseUrl = "http://opensearch:9200"');
     expect(adminAppSource).toContain('aiadmin-help-opensearch-base-url');
@@ -153,6 +227,9 @@ describe('AI admin helpers', () => {
     expect(adminAppSource).toContain('/api/admin/opensearch/status');
     expect(adminAppSource).toContain('/api/admin/opensearch/analyze');
     expect(adminAppSource).toContain('/api/admin/opensearch/search-preview');
+    expect(adminAppSource).toContain('/api/admin/opensearch/attachment-diagnostics');
+    expect(adminAppSource).toContain('attachmentDocumentCount');
+    expect(adminAppSource).toContain('attachmentFilenames');
     expect(adminAppSource).toContain('aiadmin-rebuild-opensearch-index');
     expect(adminAppSource).toContain('openSearchIndexingProfile');
     expect(adminAppSource).toContain('indexTargets || []).includes("opensearch")');
@@ -164,17 +241,19 @@ describe('AI admin helpers', () => {
     expect(adminAppSource).toContain('retrieval-profile-retrieval-top-k');
     expect(adminAppSource).toContain('retrieval-profile-context-top-k');
     expect(adminAppSource).toContain('retrieval-profile-context-max-chars');
-    expect(adminAppSource).toContain('retrieval-profile-chat-retrieval-query-mode');
+    expect(adminAppSource).toContain('retrieval-profile-chat-profile');
     expect(adminAppSource).toContain('aiadmin-retrieval-profile-limits-marker');
     expect(adminAppSource).toContain('"aiadmin-field-retrieval-top-k"');
     expect(adminAppSource).toContain('"aiadmin-field-context-top-k"');
     expect(adminAppSource).toContain('"aiadmin-field-context-max-chars"');
-    expect(adminAppSource).toContain('"aiadmin-field-chat-retrieval-query-mode"');
-    expect(adminAppSource).toContain('chatRetrievalQueryMode: document.getElementById("retrieval-profile-chat-retrieval-query-mode").value');
+    expect(adminAppSource).toContain('"aiadmin-field-chat-profile"');
+    expect(adminAppSource).toContain('chatProfileId = document.getElementById("retrieval-profile-chat-profile").value');
+    expect(adminAppSource).toContain('chatProfileId,');
+    expect(adminAppSource).toContain('chatRetrievalQueryMode: legacyChatRetrievalModeForChatProfileId(chatProfileId)');
     expect(adminAppSource).toContain('appendTableCell(row, limits.retrievalTopK)');
     expect(adminAppSource).toContain('appendTableCell(row, limits.contextTopK)');
     expect(adminAppSource).toContain('appendTableCell(row, limits.contextMaxChars)');
-    expect(adminAppSource).toContain('profile.config?.chatRetrievalQueryMode || "current_message"');
+    expect(adminAppSource).toContain('retrievalProfileChatProfileId(profile)');
     expect(adminAppSource).toContain('aiadmin-section-retrieval-profile-limits');
     expect(adminHelpersSource).toContain('aiadmin-field-retrieval-top-k');
     expect(adminHelpersSource).toContain('config.retrievalTopK ?? config.topK');
@@ -182,6 +261,44 @@ describe('AI admin helpers', () => {
     expect(adminAppSource).not.toContain('appendInputRow(form, "rag-maxContextChunks"');
     expect(adminAppSource).not.toContain('appendInputRow(form, "rag-maxContextChars"');
     expect(adminAppSource).toContain('lexicalBackend');
+    expect(ruMessages['aiadmin-field-opensearch-enabled']).toContain('backend');
+    expect(enMessages['aiadmin-field-opensearch-enabled']).toContain('backend');
+  });
+
+  it('wires chat management profiles into the admin UI', () => {
+    expect(specialAdminSource).toContain('aiadmin-chat-management-config');
+    expect(specialAdminSource).toContain('aiadmin-chat-profiles');
+    expect(adminAppSource).toContain('/api/admin/chat-management/config');
+    expect(adminAppSource).toContain('/api/admin/chat-profiles');
+    expect(adminAppSource).toContain('/api/admin/chat-profiles/restore-defaults');
+    expect(adminAppSource).toContain('collectChatProfile');
+    expect(adminAppSource).toContain('promptHistoryScopeOptions');
+    expect(adminAppSource).toContain('retrievalHistoryModeOptions');
+    expect(adminAppSource).toContain('chat-profile-prompt-scope');
+    expect(adminAppSource).toContain('chat-profile-retrieval-mode');
+    expect(adminAppSource).toContain('chat-management-default-profile');
+    expect(adminAppSource).toContain('aiadmin-save-chat-management-config');
+    expect(adminAppSource).toContain('aiadmin-save-chat-profile');
+    expect(adminAppSource).toContain('aiadmin-restore-chat-profiles');
+    expect(ruMessages['aiadmin-tab-chat-retention']).toBe('Управление чатами');
+    expect(enMessages['aiadmin-tab-chat-retention']).toBe('Chat management');
+    expect(ruMessages['aiadmin-chat-profile-name-chat_followup_questions']).toContain('Уточняющие');
+    expect(enMessages['aiadmin-chat-profile-name-chat_followup_questions']).toContain('Follow-up');
+  });
+
+  it('wires one-shot chat debug trace into the admin UI', () => {
+    expect(specialAdminSource).toContain('aiadmin-chat-debug-form');
+    expect(specialAdminSource).toContain('aiadmin-run-chat-debug');
+    expect(specialAdminSource).toContain('aiadmin-chat-debug-result');
+    expect(adminAppSource).toContain('/api/admin/chat/debug-trace');
+    expect(adminAppSource).toContain('collectChatDebugTrace');
+    expect(adminAppSource).toContain('renderChatDebugTrace');
+    expect(adminAppSource).toContain('chat-debug-verbosity');
+    expect(adminAppSource).toContain('Final LLM request');
+    expect(adminAppSource).toContain('Final LLM response');
+    expect(adminAppSource).toContain('Copy prompt');
+    expect(ruMessages['aiadmin-section-chat-debug']).toBe('Debug одного вопроса');
+    expect(enMessages['aiadmin-section-chat-debug']).toBe('One-shot question debug');
   });
 
   it('replaces search composition with the MediaWiki retrieval profile selector', () => {
@@ -446,9 +563,11 @@ describe('AI admin helpers', () => {
     expect(adminAppSource).toContain('if (event.target?.id !== "aiadmin-test-opensearch-status") return');
     expect(adminAppSource).toContain('if (event.target?.id !== "aiadmin-analyze-opensearch-query") return');
     expect(adminAppSource).toContain('if (event.target?.id !== "aiadmin-preview-opensearch-search") return');
+    expect(adminAppSource).toContain('if (event.target?.id !== "aiadmin-check-opensearch-attachment") return');
     expect(adminAppSource).toContain('if (event.target?.id !== "aiadmin-rebuild-opensearch-index") return');
     expect(adminAppSource).toContain('ensureOpenSearchBaseUrl();');
     expect(adminAppSource).toContain('renderOpenSearchIndexState(values)');
+    expect(adminAppSource).toContain('renderOpenSearchAttachmentDiagnostics(data.values || {})');
     expect(adminAppSource).toContain('renderOpenSearchPreview(`analyzer=');
     expect(adminAppSource).toContain('renderOpenSearchPreview(`hits=');
     expect(adminAppSource).toContain('rebuildOpenSearchIndex');

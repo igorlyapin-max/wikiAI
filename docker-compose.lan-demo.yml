@@ -1,0 +1,5 @@
+services:
+  gateway:
+    environment:
+      - MW_PUBLIC_BASE_URL=${MW_PUBLIC_BASE_URL:?Set MW_PUBLIC_BASE_URL in .env.lan-demo}
+      - CORS_ORIGINS=${CORS_ORIGINS:?Set CORS_ORIGINS in .env.lan-demo}

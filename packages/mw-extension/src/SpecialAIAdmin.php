@@ -177,17 +177,20 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-action-refresh-status',
       'aiadmin-action-open',
       'aiadmin-action-opensearch-analyze',
+      'aiadmin-action-check-attachment-index',
       'aiadmin-action-rebuild-opensearch-index',
       'aiadmin-action-remove',
       'aiadmin-action-reset',
       'aiadmin-action-duplicate-current-rag',
       'aiadmin-action-restore-retrieval-profiles',
+      'aiadmin-action-restore-chat-profiles',
       'aiadmin-action-reset-policy',
       'aiadmin-action-save-entity',
       'aiadmin-action-save-model',
       'aiadmin-action-save-ontology',
       'aiadmin-action-save-policy',
       'aiadmin-action-save-profile',
+      'aiadmin-action-save-indexing-automation',
       'aiadmin-action-save-rule',
       'aiadmin-action-save-scheduled-recalculation',
       'aiadmin-action-save-sensitive-properties',
@@ -197,6 +200,9 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-action-similar',
       'aiadmin-action-test',
       'aiadmin-action-test-conflict-detection',
+      'aiadmin-action-run-chat-debug',
+      'aiadmin-action-copy-json',
+      'aiadmin-action-copy-prompt',
       'aiadmin-assignment-chat',
       'aiadmin-assignment-conflicts',
       'aiadmin-assignment-embeddings',
@@ -204,6 +210,7 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-autofill',
       'aiadmin-autofill-note',
       'aiadmin-chat-export-created',
+      'aiadmin-chat-sessions',
       'aiadmin-chat-sessions-summary',
       'aiadmin-external-api',
       'aiadmin-confirm-delete-entity',
@@ -251,6 +258,12 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-field-category-include-csv',
       'aiadmin-field-category',
       'aiadmin-field-categories-csv',
+      'aiadmin-field-change-indexing-profile',
+      'aiadmin-field-chat-debug-question',
+      'aiadmin-field-chat-debug-retrieval-profile',
+      'aiadmin-field-chat-debug-topk',
+      'aiadmin-field-chat-debug-verbosity',
+      'aiadmin-field-chat-debug-conflicts',
       'aiadmin-field-chunk-overlap',
       'aiadmin-field-chunk-separators-json',
       'aiadmin-field-chunk-size',
@@ -300,6 +313,7 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-field-conflict-model',
       'aiadmin-field-conflict-run-mode',
       'aiadmin-field-conflict-show-block',
+      'aiadmin-field-conflict-system-prompt',
       'aiadmin-field-conflict-trust-gap',
       'aiadmin-field-include-attachments',
       'aiadmin-field-include-drafts',
@@ -357,6 +371,7 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-field-operator',
       'aiadmin-field-opensearch-analyzer',
       'aiadmin-field-opensearch-auth-configured',
+      'aiadmin-field-opensearch-attachment-filename',
       'aiadmin-field-opensearch-base-url',
       'aiadmin-field-opensearch-candidate-limit',
       'aiadmin-field-opensearch-enabled',
@@ -391,6 +406,7 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-field-reindex-llm-enrichment',
       'aiadmin-field-reindex-llm-max-chars',
       'aiadmin-field-reindex-llm-model',
+      'aiadmin-field-reindex-attachments',
       'aiadmin-field-require-sources',
       'aiadmin-field-require-verified-direct-answer',
       'aiadmin-field-retrieval-api-enabled',
@@ -399,6 +415,15 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-field-context-top-k',
       'aiadmin-field-context-max-chars',
       'aiadmin-field-chat-retrieval-query-mode',
+      'aiadmin-field-chat-profile',
+      'aiadmin-field-default-chat-profile',
+      'aiadmin-field-experimental',
+      'aiadmin-field-prompt-history-scope',
+      'aiadmin-field-prompt-history-turns',
+      'aiadmin-field-retrieval-history-mode',
+      'aiadmin-field-retrieval-history-turns',
+      'aiadmin-field-max-prompt-history-chars',
+      'aiadmin-field-max-retrieval-history-chars',
       'aiadmin-value-chat-retrieval-current-message',
       'aiadmin-value-chat-retrieval-history-augmented',
       'aiadmin-field-retention-mode',
@@ -408,6 +433,8 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-field-rule-id',
       'aiadmin-field-run-mode',
       'aiadmin-field-schedule-min',
+      'aiadmin-field-schedule-enabled',
+      'aiadmin-field-scheduled-indexing-profile',
       'aiadmin-field-scheduled',
       'aiadmin-field-semantic-facts',
       'aiadmin-field-semantic-facts-in-context',
@@ -456,7 +483,12 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-field-webhook-event-protect',
       'aiadmin-help-category-exclude-filter',
       'aiadmin-help-category-include-filter',
+      'aiadmin-help-indexing-profiles',
+      'aiadmin-help-indexing-automation',
+      'aiadmin-help-indexing-profile-editor',
+      'aiadmin-help-indexing-manual-run',
       'aiadmin-help-conflict-detection',
+      'aiadmin-help-conflict-system-prompt',
       'aiadmin-help-ontology-actions',
       'aiadmin-help-ontology-selected',
       'aiadmin-help-property-value-manual',
@@ -465,6 +497,7 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-help-sensitive-properties',
       'aiadmin-help-hybrid-search',
       'aiadmin-help-opensearch-base-url',
+      'aiadmin-help-opensearch-enabled',
       'aiadmin-help-opensearch-effective',
       'aiadmin-help-opensearch-analyzer',
       'aiadmin-help-opensearch-fuzzy',
@@ -525,7 +558,18 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-placeholder-select-category',
       'aiadmin-placeholder-select-smw-property',
       'aiadmin-placeholder-verified-documents',
+      'aiadmin-status-attachment-index',
+      'aiadmin-section-opensearch-attachments',
+      'aiadmin-status-opensearch-attachments-empty',
+      'aiadmin-status-attachment-index-mismatch',
+      'aiadmin-status-reindex-profile-missing',
+      'aiadmin-reindex-preflight',
       'aiadmin-reindex-status-line',
+      'aiadmin-reindex-attachment-counters',
+      'aiadmin-reindex-attachment-target-writes',
+      'aiadmin-reindex-current-attachment',
+      'aiadmin-warning-index-profile-attachments-target-mismatch',
+      'aiadmin-warning-reindex-attachments-policy-disabled',
       'aiadmin-reindex-paid-counters',
       'aiadmin-reindex-current-title',
       'aiadmin-search-summary',
@@ -551,6 +595,7 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-status-oidc-group-preview',
       'aiadmin-status-mediawiki-webhook-match',
       'aiadmin-status-mediawiki-webhook-mismatch',
+      'aiadmin-status-chat-profile-effective',
       'aiadmin-status-retention-effective',
       'aiadmin-status-schedule-line',
       'aiadmin-section-active-trust-model',
@@ -568,6 +613,14 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-section-opensearch-effective',
       'aiadmin-section-opensearch-index-state',
       'aiadmin-section-assistant-ui',
+      'aiadmin-section-chat-management',
+      'aiadmin-section-chat-debug',
+      'aiadmin-section-chat-profiles',
+      'aiadmin-section-chat-retention',
+      'aiadmin-section-indexing-profiles',
+      'aiadmin-section-indexing-automation',
+      'aiadmin-section-indexing-profile-editor',
+      'aiadmin-section-indexing-manual-run',
       'aiadmin-section-trust-entities',
       'aiadmin-section-trust-preview',
       'aiadmin-section-trust-recalc',
@@ -604,6 +657,7 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-table-base',
       'aiadmin-table-check',
       'aiadmin-table-chunking',
+      'aiadmin-table-chunks',
       'aiadmin-table-collection',
       'aiadmin-table-confidence',
       'aiadmin-table-condition',
@@ -622,6 +676,7 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-table-facts',
       'aiadmin-table-failed',
       'aiadmin-table-filters',
+      'aiadmin-table-filename',
       'aiadmin-table-flags',
       'aiadmin-table-id',
       'aiadmin-table-indexed',
@@ -686,12 +741,18 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-value-search-mode-hybrid-colbert',
       'aiadmin-value-search-mode-colbert-full',
       'aiadmin-value-search-mode-vector-only',
+      'aiadmin-value-chat-prompt-current-session',
+      'aiadmin-value-chat-prompt-active-sessions',
+      'aiadmin-value-chat-retrieval-current-message',
+      'aiadmin-value-chat-retrieval-current-session-questions',
+      'aiadmin-value-chat-retrieval-current-session-full',
       'aiadmin-value-lexical-gate-off',
       'aiadmin-value-lexical-gate-when-bm25',
       'aiadmin-value-fail-search',
       'aiadmin-value-legacy-global-rag',
       'aiadmin-value-fallback-current',
       'aiadmin-value-none',
+      'aiadmin-value-current-default',
       'aiadmin-value-rerank-colbert-v2',
       'aiadmin-value-rerank-none',
       'aiadmin-value-system-namespace',
@@ -700,6 +761,14 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-value-admin-override',
       'aiadmin-value-env-default',
       'aiadmin-value-derived',
+      'aiadmin-chat-profile-name-chat_current_session',
+      'aiadmin-chat-profile-name-chat_followup_questions',
+      'aiadmin-chat-profile-name-chat_followup_full',
+      'aiadmin-chat-profile-name-chat_active_sessions_prompt_experimental',
+      'aiadmin-chat-profile-description-chat_current_session',
+      'aiadmin-chat-profile-description-chat_followup_questions',
+      'aiadmin-chat-profile-description-chat_followup_full',
+      'aiadmin-chat-profile-description-chat_active_sessions_prompt_experimental',
     ];
 
     $messages = [];
@@ -735,6 +804,9 @@ class SpecialAIAdmin extends SpecialPage
         margin: 0 0 12px; font-size: 1.2em; border-bottom: 1px solid #eaecf0;
         padding-bottom: 8px;
       }
+      .ai-admin-section { border-top: 1px solid #eaecf0; padding-top: 12px; margin-top: 14px; }
+      .ai-admin-section h3 { margin: 0 0 6px; font-size: 1.05em; color: #111827; }
+      .ai-admin-section > .ai-admin-muted { margin-bottom: 10px; }
       .ai-admin-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; }
       .ai-admin-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
       .ai-admin-row label { width: 220px; font-weight: bold; }
@@ -880,6 +952,11 @@ class SpecialAIAdmin extends SpecialPage
         <form id="aiadmin-rag-config"></form>
         <button type="button" class="ai-admin-btn ai-admin-btn-primary" id="aiadmin-save-rag-config">' . $this->msgHtml('aiadmin-save') . '</button>
         <span id="aiadmin-rag-status"></span>
+        <h3>' . $this->msgHtml('aiadmin-section-chat-debug') . '</h3>
+        <form id="aiadmin-chat-debug-form"></form>
+        <button type="button" class="ai-admin-btn ai-admin-btn-primary" id="aiadmin-run-chat-debug">' . $this->msgHtml('aiadmin-action-run-chat-debug') . '</button>
+        <span id="aiadmin-chat-debug-status"></span>
+        <div id="aiadmin-chat-debug-result" class="ai-admin-search-results"></div>
       </div>
       <div class="ai-admin-card ai-admin-panel" data-ai-panel="bm25">
         <h2>' . $this->msgHtml('aiadmin-tab-bm25') . '</h2>
@@ -925,10 +1002,16 @@ class SpecialAIAdmin extends SpecialPage
       </div>
       <div class="ai-admin-card ai-admin-panel" data-ai-panel="chat-retention">
         <h2>' . htmlspecialchars($this->msg('aiadmin-chat-retention')->text()) . '</h2>
+        <h3>' . $this->msgHtml('aiadmin-section-chat-management') . '</h3>
+        <div id="aiadmin-chat-management-config" class="ai-admin-search-results">' . $this->msgHtml('aiadmin-loading') . '</div>
+        <h3>' . $this->msgHtml('aiadmin-section-chat-profiles') . '</h3>
+        <div id="aiadmin-chat-profiles" class="ai-admin-search-results">' . $this->msgHtml('aiadmin-loading') . '</div>
+        <h3>' . $this->msgHtml('aiadmin-section-chat-retention') . '</h3>
         <form id="aiadmin-chat-retention-config"></form>
         <button type="button" class="ai-admin-btn ai-admin-btn-primary" id="aiadmin-save-chat-retention">' . $this->msgHtml('aiadmin-save') . '</button>
         <span id="aiadmin-chat-retention-status"></span>
         <div id="aiadmin-chat-retention-effective" class="ai-admin-muted"></div>
+        <h3>' . $this->msgHtml('aiadmin-chat-sessions') . '</h3>
         <div id="aiadmin-chat-sessions" class="ai-admin-search-results">' . $this->msgHtml('aiadmin-loading') . '</div>
         <div class="ai-admin-muted">' . htmlspecialchars($this->msg('aiadmin-chat-retention-note')->text()) . '</div>
       </div>
@@ -1273,8 +1356,35 @@ class SpecialAIAdmin extends SpecialPage
       </div>
       <div class="ai-admin-card ai-admin-panel" data-ai-panel="indexing">
         <h2>' . htmlspecialchars($this->msg('aiadmin-management')->text()) . '</h2>
-        <div id="aiadmin-indexing-profiles">' . $this->msgHtml('aiadmin-loading') . '</div>
-        <div id="aiadmin-indexing-scheduler" class="ai-admin-search-results">' . $this->msgHtml('aiadmin-loading-scheduler') . '</div>
+        <div class="ai-admin-section" id="aiadmin-indexing-profiles-section">
+          <h3>' . $this->msgHtml('aiadmin-section-indexing-profiles') . '</h3>
+          <div class="ai-admin-muted">' . $this->msgHtml('aiadmin-help-indexing-profiles') . '</div>
+          <div id="aiadmin-indexing-profiles">' . $this->msgHtml('aiadmin-loading') . '</div>
+        </div>
+        <div class="ai-admin-section" id="aiadmin-indexing-automation-section">
+          <h3>' . $this->msgHtml('aiadmin-section-indexing-automation') . '</h3>
+          <div class="ai-admin-muted">' . $this->msgHtml('aiadmin-help-indexing-automation') . '</div>
+          <form id="aiadmin-indexing-automation-form">
+            <div class="ai-admin-row">
+              <label for="idx-automation-change-profile">' . $this->msgHtml('aiadmin-field-change-indexing-profile') . '</label>
+              <select id="idx-automation-change-profile"></select>
+              <label for="idx-automation-schedule-enabled">' . $this->msgHtml('aiadmin-field-schedule-enabled') . '</label>
+              <input type="checkbox" id="idx-automation-schedule-enabled" />
+            </div>
+            <div class="ai-admin-row">
+              <label for="idx-automation-scheduled-profile">' . $this->msgHtml('aiadmin-field-scheduled-indexing-profile') . '</label>
+              <select id="idx-automation-scheduled-profile"></select>
+              <label for="idx-automation-schedule-interval">' . $this->msgHtml('aiadmin-field-schedule-min') . '</label>
+              <input type="number" id="idx-automation-schedule-interval" min="5" max="10080" value="1440" />
+            </div>
+            <button type="button" class="ai-admin-btn" id="aiadmin-save-indexing-automation">' . $this->msgHtml('aiadmin-action-save-indexing-automation') . '</button>
+            <span id="aiadmin-indexing-automation-status"></span>
+          </form>
+          <div id="aiadmin-indexing-scheduler" class="ai-admin-search-results">' . $this->msgHtml('aiadmin-loading-scheduler') . '</div>
+        </div>
+        <div class="ai-admin-section" id="aiadmin-indexing-profile-editor-section">
+          <h3>' . $this->msgHtml('aiadmin-section-indexing-profile-editor') . '</h3>
+          <div class="ai-admin-muted">' . $this->msgHtml('aiadmin-help-indexing-profile-editor') . '</div>
         <form id="aiadmin-indexing-profile-form">
           <div class="ai-admin-row">
             <label for="idx-profile-id">' . $this->msgHtml('aiadmin-field-profile-id') . '</label>
@@ -1340,13 +1450,6 @@ class SpecialAIAdmin extends SpecialPage
           <div class="ai-admin-row">
             <label for="idx-profile-document-policy">' . $this->msgHtml('aiadmin-field-document-policy') . '</label>
             <input type="text" id="idx-profile-document-policy" value="default" />
-            <label for="idx-profile-runmode">' . $this->msgHtml('aiadmin-field-run-mode') . '</label>
-            <select id="idx-profile-runmode">
-              <option value="manual">manual</option>
-              <option value="scheduled">scheduled</option>
-            </select>
-            <label for="idx-profile-schedule">' . $this->msgHtml('aiadmin-field-schedule-min') . '</label>
-            <input type="number" id="idx-profile-schedule" min="5" max="10080" placeholder="' . $this->msgHtml('aiadmin-placeholder-optional') . '" />
           </div>
           <div class="ai-admin-row">
             <label for="idx-profile-attachments">' . $this->msgHtml('aiadmin-field-attachments') . '</label>
@@ -1369,12 +1472,16 @@ class SpecialAIAdmin extends SpecialPage
           <button type="button" class="ai-admin-btn" id="aiadmin-save-indexing-profile">' . $this->msgHtml('aiadmin-action-save-profile') . '</button>
           <span id="aiadmin-indexing-profile-status"></span>
         </form>
+        </div>
+        <div class="ai-admin-section" id="aiadmin-indexing-manual-run-section">
+          <h3>' . $this->msgHtml('aiadmin-section-indexing-manual-run') . '</h3>
+          <div class="ai-admin-muted">' . $this->msgHtml('aiadmin-help-indexing-manual-run') . '</div>
         <div class="ai-admin-row">
           <label for="aiadmin-reindex-profile">' . $this->msgHtml('aiadmin-field-profile') . '</label>
           <select id="aiadmin-reindex-profile"></select>
           <label for="aiadmin-reindex-maxpages">' . $this->msgHtml('aiadmin-field-max-pages') . '</label>
           <input type="number" id="aiadmin-reindex-maxpages" min="1" placeholder="' . $this->msgHtml('aiadmin-placeholder-optional') . '" />
-          <label for="aiadmin-reindex-attachments">' . $this->msgHtml('aiadmin-field-attachments') . '</label>
+          <label for="aiadmin-reindex-attachments">' . $this->msgHtml('aiadmin-field-reindex-attachments') . '</label>
           <input type="checkbox" id="aiadmin-reindex-attachments" />
           <label for="aiadmin-reindex-dryrun">' . $this->msgHtml('aiadmin-field-dry-run') . '</label>
           <input type="checkbox" id="aiadmin-reindex-dryrun" />
@@ -1389,6 +1496,7 @@ class SpecialAIAdmin extends SpecialPage
         </div>
         <div class="ai-admin-muted" id="aiadmin-reindex-maxpages-help">' . $this->msgHtml('aiadmin-help-reindex-max-pages') . '</div>
         <div class="ai-admin-muted">' . $this->msgHtml('aiadmin-help-reindex-llm-enrichment') . '</div>
+        <div id="aiadmin-reindex-preflight" class="ai-admin-muted"></div>
         <button type="button" class="ai-admin-btn ai-admin-btn-primary" id="aiadmin-start-reindex">' . htmlspecialchars($this->msg('aiadmin-sync-now')->text()) . '</button>
         <button type="button" class="ai-admin-btn ai-admin-btn-danger" id="aiadmin-clear-cache">' . htmlspecialchars($this->msg('aiadmin-clear-cache')->text()) . '</button>
         <button type="button" class="ai-admin-btn" disabled>' . htmlspecialchars($this->msg('aiadmin-backup')->text()) . '</button>
@@ -1396,6 +1504,7 @@ class SpecialAIAdmin extends SpecialPage
         <div class="ai-admin-muted">' . htmlspecialchars($this->msg('aiadmin-management-note')->text()) . '</div>
         <div id="aiadmin-reindex-status"></div>
         <div id="aiadmin-management-status"></div>
+        </div>
       </div>
       <div class="ai-admin-card ai-admin-panel" data-ai-panel="audit">
         <h2>' . htmlspecialchars($this->msg('aiadmin-audit')->text()) . '</h2>

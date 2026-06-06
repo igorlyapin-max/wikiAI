@@ -1,6 +1,7 @@
 import { FastifyRequest, FastifyReply } from 'fastify';
 import { fetchUserInfo } from '../services/mediawiki.js';
-import { getCachedUserGroups, cacheUserGroups } from '../services/redis.js';
+import { getCachedUserGroups, cacheUserInfo, getCachedUserInfo } from '../services/redis.js';
+import { logOperationalEvent } from '../services/logging.js';
 import { config } from '../config.js';
 import { MWUserInfo } from '../types/index.js';
 
@@ -15,6 +16,25 @@ export const ANONYMOUS_MW_USER: MWUserInfo = {
   groups: ['*'],
 };
 
+async function resolveMediaWikiUserFromCookie(cookie: string): Promise<MWUserInfo | null> {
+  const sessionHash = Buffer.from(cookie).toString('base64url').slice(0, 32);
+  const cachedUser = await getCachedUserInfo(sessionHash);
+  if (cachedUser) return cachedUser;
+
+  const legacyCachedGroups = await getCachedUserGroups(sessionHash);
+  if (legacyCachedGroups) {
+    logOperationalEvent('info', 'mediawiki.auth.legacy_group_cache_refresh', {
+      groupsCount: legacyCachedGroups.length,
+    });
+  }
+
+  const userInfo = await fetchUserInfo(cookie);
+  if (!userInfo) return null;
+
+  await cacheUserInfo(sessionHash, userInfo, config.userGroupsCacheTtl);
+  return userInfo;
+}
+
 export async function mwAuthMiddleware(
   request: FastifyRequest,
   reply: FastifyReply
@@ -27,26 +47,12 @@ export async function mwAuthMiddleware(
 
   (request as AuthenticatedRequest).sessionCookie = cookie;
 
-  const sessionHash = Buffer.from(cookie).toString('base64url').slice(0, 32);
-  const cached = await getCachedUserGroups(sessionHash);
-
-  if (cached) {
-    (request as AuthenticatedRequest).mwUser = {
-      username: 'cached',
-      userId: 0,
-      groups: cached,
-    };
-    return;
-  }
-
-  const userInfo = await fetchUserInfo(cookie);
+  const userInfo = await resolveMediaWikiUserFromCookie(cookie);
 
   if (!userInfo) {
     reply.status(401).send({ error: 'Invalid or expired MediaWiki session' });
     return;
   }
-
-  await cacheUserGroups(sessionHash, userInfo.groups, config.userGroupsCacheTtl);
 
   (request as AuthenticatedRequest).mwUser = userInfo;
 }
@@ -60,24 +66,11 @@ export async function mwOptionalAuthMiddleware(request: FastifyRequest): Promise
     return;
   }
 
-  const sessionHash = Buffer.from(cookie).toString('base64url').slice(0, 32);
-  const cached = await getCachedUserGroups(sessionHash);
-
-  if (cached) {
-    (request as AuthenticatedRequest).mwUser = {
-      username: 'cached',
-      userId: 0,
-      groups: cached,
-    };
-    return;
-  }
-
-  const userInfo = await fetchUserInfo(cookie);
+  const userInfo = await resolveMediaWikiUserFromCookie(cookie);
   if (!userInfo) {
     (request as AuthenticatedRequest).mwUser = ANONYMOUS_MW_USER;
     return;
   }
 
-  await cacheUserGroups(sessionHash, userInfo.groups, config.userGroupsCacheTtl);
   (request as AuthenticatedRequest).mwUser = userInfo;
 }

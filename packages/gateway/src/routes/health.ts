@@ -2,6 +2,8 @@ import { FastifyInstance } from 'fastify';
 import { qdrant } from '../services/qdrant.js';
 import { redis } from '../services/redis.js';
 import { config } from '../config.js';
+import { currentTraceHeaders } from '../services/tracing.js';
+import { recordHealthCheckMetric } from '../services/metrics.js';
 
 export interface HealthCheck {
   status: string;
@@ -36,9 +38,13 @@ async function runCheck(name: string, operation: () => Promise<void>): Promise<H
   const start = Date.now();
   try {
     await withTimeout(operation(), name);
-    return { status: 'ok', latencyMs: Date.now() - start };
+    const latencyMs = Date.now() - start;
+    recordHealthCheckMetric({ check: name, ok: true, latencyMs });
+    return { status: 'ok', latencyMs };
   } catch (err) {
-    return { status: 'error', latencyMs: Date.now() - start, error: (err as Error).message };
+    const latencyMs = Date.now() - start;
+    recordHealthCheckMetric({ check: name, ok: false, latencyMs });
+    return { status: 'error', latencyMs, error: (err as Error).message };
   }
 }
 
@@ -71,7 +77,7 @@ export async function getReadinessStatus(): Promise<HealthStatus> {
     const litellmHost = config.litellmBaseUrl.replace('/v1', '');
     const res = await fetchWithTimeout(`${litellmHost}/health/readiness`, {
       method: 'GET',
-      headers: { Authorization: `Bearer ${config.litellmApiKey}` },
+      headers: { Authorization: `Bearer ${config.litellmApiKey}`, ...currentTraceHeaders() },
     });
     if (!res.ok) throw new Error(`LiteLLM readiness failed with HTTP ${res.status}`);
   });

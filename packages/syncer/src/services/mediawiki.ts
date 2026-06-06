@@ -1,6 +1,8 @@
 import { config } from '../config.js';
 import { getSecretStatus, resolveSecretValue } from './secrets.js';
 import { logOperationalError } from './logging.js';
+import { measureDependency } from './metrics.js';
+import { currentTraceHeaders } from './tracing.js';
 
 export interface MWPage {
   pageid: number;
@@ -46,6 +48,48 @@ let loginPromise: Promise<string | undefined> | undefined;
 
 function getApiUrl(): URL {
   return new URL(config.mwApiPath, config.mwBaseUrl);
+}
+
+function headersToRecord(headers: RequestInit['headers']): Record<string, string> {
+  if (!headers) return {};
+  if (headers instanceof Headers) return Object.fromEntries(headers.entries());
+  if (Array.isArray(headers)) return Object.fromEntries(headers);
+  return Object.fromEntries(
+    Object.entries(headers).map(([key, value]) => [
+      key,
+      Array.isArray(value) ? value.join(',') : String(value),
+    ])
+  );
+}
+
+async function fetchMediaWiki(
+  input: string,
+  init: RequestInit = {},
+  operation = 'mediawiki_api'
+): Promise<Response> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), config.healthCheckTimeoutMs);
+    const headers = { ...headersToRecord(init.headers), ...currentTraceHeaders() };
+    try {
+      return await measureDependency(
+        { dependency: 'mediawiki', operation },
+        async () => fetch(input, { ...init, headers, signal: controller.signal })
+      );
+    } catch (err) {
+      lastError = err instanceof Error && err.name === 'AbortError'
+        ? new Error(`MediaWiki request timed out after ${config.healthCheckTimeoutMs}ms`)
+        : err;
+      if (attempt === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        continue;
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  throw lastError;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -122,7 +166,9 @@ async function loginWithServiceCredentials(): Promise<string | undefined> {
   tokenUrl.searchParams.set('type', 'login');
   tokenUrl.searchParams.set('format', 'json');
 
-  const tokenResponse = await fetch(tokenUrl.toString(), { headers: { 'User-Agent': 'WikiAI-Syncer/0.1' } });
+  const tokenResponse = await fetchMediaWiki(tokenUrl.toString(), {
+    headers: { 'User-Agent': 'WikiAI-Syncer/0.1' },
+  }, 'login_token');
   captureCookies(tokenResponse.headers, jar);
   if (!tokenResponse.ok) throw new Error(`MediaWiki login token request failed with HTTP ${tokenResponse.status}`);
   const tokenData = await tokenResponse.json() as unknown;
@@ -140,7 +186,7 @@ async function loginWithServiceCredentials(): Promise<string | undefined> {
     lgtoken: loginToken,
     format: 'json',
   });
-  const loginResponse = await fetch(getApiUrl().toString(), {
+  const loginResponse = await fetchMediaWiki(getApiUrl().toString(), {
     method: 'POST',
     headers: {
       Cookie: cookieHeader(jar),
@@ -148,7 +194,7 @@ async function loginWithServiceCredentials(): Promise<string | undefined> {
       'User-Agent': 'WikiAI-Syncer/0.1',
     },
     body: form,
-  });
+  }, 'login');
   captureCookies(loginResponse.headers, jar);
   if (!loginResponse.ok) throw new Error(`MediaWiki login failed with HTTP ${loginResponse.status}`);
   const loginData = await loginResponse.json() as unknown;
@@ -193,7 +239,7 @@ async function getRequestHeaders(): Promise<Record<string, string>> {
 }
 
 async function fetchJson(url: URL, retry = true): Promise<unknown | null> {
-  const res = await fetch(url.toString(), { headers: await getRequestHeaders() });
+  const res = await fetchMediaWiki(url.toString(), { headers: await getRequestHeaders() });
   if (!res.ok) return null;
   const data = await res.json() as unknown;
   if (retry && serviceCredentialsConfigured() && isAuthError(data)) {
@@ -204,14 +250,14 @@ async function fetchJson(url: URL, retry = true): Promise<unknown | null> {
 }
 
 async function postForm(form: URLSearchParams, retry = true): Promise<unknown | null> {
-  const res = await fetch(getApiUrl().toString(), {
+  const res = await fetchMediaWiki(getApiUrl().toString(), {
     method: 'POST',
     headers: {
       ...(await getRequestHeaders()),
       'Content-Type': 'application/x-www-form-urlencoded',
     },
     body: form,
-  });
+  }, 'post_form');
   if (!res.ok) return null;
   const data = await res.json() as unknown;
   if (retry && serviceCredentialsConfigured() && isAuthError(data)) {
@@ -484,10 +530,10 @@ export async function fetchFileInfo(filename: string): Promise<MWFile | null> {
 
 export async function downloadFile(url: string): Promise<Buffer | null> {
   try {
-    let res = await fetch(url, { headers: await getRequestHeaders() });
+    let res = await fetchMediaWiki(url, { headers: await getRequestHeaders() }, 'download_file');
     if ((res.status === 401 || res.status === 403) && serviceCredentialsConfigured()) {
       invalidateServiceSession();
-      res = await fetch(url, { headers: await getRequestHeaders() });
+      res = await fetchMediaWiki(url, { headers: await getRequestHeaders() }, 'download_file');
     }
     if (!res.ok) return null;
     const arrayBuffer = await res.arrayBuffer();
@@ -512,7 +558,7 @@ export async function testMediaWikiServiceLogin(): Promise<MediaWikiServiceLogin
     url.searchParams.set('meta', 'userinfo');
     url.searchParams.set('uiprop', 'groups');
     url.searchParams.set('format', 'json');
-    const res = await fetch(url.toString(), { headers });
+    const res = await fetchMediaWiki(url.toString(), { headers }, 'userinfo');
     if (!res.ok) throw new Error(`MediaWiki userinfo failed with HTTP ${res.status}`);
     const data = await res.json() as unknown;
     if (isAuthError(data)) throw new Error('MediaWiki service session is not authorized');

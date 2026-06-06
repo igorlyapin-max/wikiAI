@@ -23,7 +23,12 @@ import {
 } from './qdrant.js';
 import { getNamespacesToReindex } from './reindex-scope.js';
 import { applyIndexingProfileDefaults, getIndexingProfileFromAdminStorage } from './indexing-profile-store.js';
-import { enrichPageForReindex, fetchEffectiveEmbeddingConfig, ReindexLlmEnrichmentResult } from './gateway.js';
+import {
+  enrichPageForReindex,
+  fetchEffectiveEmbeddingConfig,
+  getGatewaySearchIndexStatus,
+  ReindexLlmEnrichmentResult,
+} from './gateway.js';
 import { extractCmdbDynamicSources, fetchCmdbDynamicSnapshotChunks } from './cmdbdynamicpages.js';
 import { toIndexPlainText } from './text-normalization.js';
 
@@ -72,8 +77,17 @@ export interface ReindexSummary {
   embeddingCalls: number;
   llmEnrichmentCalls: number;
   estimatedPaidCalls: number;
+  attachmentsRequested: boolean;
+  attachmentsActive: boolean;
+  documentPolicyEnabled: boolean;
+  attachmentsFound: number;
   attachmentsProcessed: number;
   attachmentsFailed: number;
+  attachmentsSkippedDisabled: number;
+  attachmentsSkippedNoInfo: number;
+  attachmentsSkippedNoDownload: number;
+  attachmentsSkippedEmpty: number;
+  attachmentTargetWrites: Record<string, number>;
   dynamicBlocksMatched: number;
   dynamicSnapshotsIndexed: number;
   dynamicSnapshotsMissed: number;
@@ -99,6 +113,20 @@ export interface ReindexProgress {
   embeddingCalls?: number;
   llmEnrichmentCalls?: number;
   estimatedPaidCalls?: number;
+  attachmentsRequested?: boolean;
+  attachmentsActive?: boolean;
+  documentPolicyEnabled?: boolean;
+  attachmentsFound?: number;
+  attachmentsProcessed?: number;
+  attachmentsFailed?: number;
+  attachmentsSkippedDisabled?: number;
+  attachmentsSkippedNoInfo?: number;
+  attachmentsSkippedNoDownload?: number;
+  attachmentsSkippedEmpty?: number;
+  attachmentTargetWrites?: Record<string, number>;
+  currentAttachmentFilename?: string;
+  currentAttachmentMime?: string;
+  currentAttachmentMode?: string;
   currentTitle?: string;
 }
 
@@ -139,7 +167,7 @@ function namespaceIsPublic(groups: string[]): boolean {
   return groups.length === 1 && groups[0]?.trim() === '*';
 }
 
-function normalizeIndexTargets(
+export function normalizeIndexTargets(
   options: ReindexOptions,
   defaults: { attachmentsEnabled: boolean; semanticFactsEnabled: boolean }
 ): string[] {
@@ -205,7 +233,7 @@ function normalizeFilterValues(filters: ReindexTextFilters | undefined): Reindex
   };
 }
 
-function textMatchesFilters(value: string, filters: ReindexTextFilters | undefined): boolean {
+export function textMatchesFilters(value: string, filters: ReindexTextFilters | undefined): boolean {
   const normalized = value.toLowerCase();
   const effective = normalizeFilterValues(filters);
   const includeMatches = effective.include.length === 0
@@ -222,7 +250,7 @@ function normalizeCategoryName(value: string): string {
     .toLowerCase();
 }
 
-function categoriesMatchFilters(categories: string[], filters: ReindexTextFilters | undefined): boolean {
+export function categoriesMatchFilters(categories: string[], filters: ReindexTextFilters | undefined): boolean {
   const effective = normalizeFilterValues(filters);
   if (effective.include.length === 0 && effective.exclude.length === 0) return true;
   const values = new Set(categories.map(normalizeCategoryName));
@@ -236,6 +264,82 @@ function enrichmentToText(enrichment: ReindexLlmEnrichmentResult | undefined): s
   if (!enrichment) return '';
   const keywords = enrichment.keywords.length > 0 ? `AI keywords: ${enrichment.keywords.join(', ')}` : '';
   return [`AI summary: ${enrichment.summary}`, keywords].filter(Boolean).join('\n');
+}
+
+interface AttachmentCounters {
+  attachmentsRequested: boolean;
+  attachmentsActive: boolean;
+  documentPolicyEnabled: boolean;
+  attachmentsFound: number;
+  attachmentsProcessed: number;
+  attachmentsFailed: number;
+  attachmentsSkippedDisabled: number;
+  attachmentsSkippedNoInfo: number;
+  attachmentsSkippedNoDownload: number;
+  attachmentsSkippedEmpty: number;
+  attachmentTargetWrites: Record<string, number>;
+}
+
+function recordAttachmentTargetWrites(
+  counters: AttachmentCounters,
+  result: { targetWrites?: Record<string, number | undefined> } | undefined
+): void {
+  if (!result?.targetWrites) return;
+  for (const [target, chunks] of Object.entries(result.targetWrites)) {
+    if (typeof chunks !== 'number' || chunks <= 0) continue;
+    counters.attachmentTargetWrites[target] = (counters.attachmentTargetWrites[target] ?? 0) + chunks;
+  }
+}
+
+function attachmentProgressFields(
+  counters: AttachmentCounters,
+  current?: { filename: string; mime?: string; mode?: string }
+): Pick<
+  ReindexProgress,
+  | 'attachmentsRequested'
+  | 'attachmentsActive'
+  | 'documentPolicyEnabled'
+  | 'attachmentsFound'
+  | 'attachmentsProcessed'
+  | 'attachmentsFailed'
+  | 'attachmentsSkippedDisabled'
+  | 'attachmentsSkippedNoInfo'
+  | 'attachmentsSkippedNoDownload'
+  | 'attachmentsSkippedEmpty'
+  | 'attachmentTargetWrites'
+  | 'currentAttachmentFilename'
+  | 'currentAttachmentMime'
+  | 'currentAttachmentMode'
+> {
+  return {
+    ...counters,
+    currentAttachmentFilename: current?.filename,
+    currentAttachmentMime: current?.mime,
+    currentAttachmentMode: current?.mode,
+  };
+}
+
+async function validateGatewayAttachmentSchemaIfNeeded(
+  counters: AttachmentCounters,
+  searchIndexTargets: string[]
+): Promise<void> {
+  if (!counters.attachmentsActive || !searchIndexTargets.includes('bm25')) return;
+
+  const status = await getGatewaySearchIndexStatus();
+  if (status.status !== 'ok') {
+    throw new Error(`Gateway attachment index schema status is unavailable: ${status.error ?? status.httpStatus ?? 'unknown error'}`);
+  }
+  if (status.values?.attachmentColumnsReady === false) {
+    throw new Error('Gateway attachment index schema is not ready: attachment_mime, attachment_processing_mode and content_type columns are required before attachment reindex.');
+  }
+}
+
+function assertAttachmentWriteOk(
+  result: { status?: string; error?: string; httpStatus?: number } | undefined,
+  filename: string
+): void {
+  if (!result || result.status === 'ok') return;
+  throw new Error(`Attachment ${filename} was processed but Gateway index write failed: ${result.error ?? result.httpStatus ?? 'unknown error'}`);
 }
 
 async function applyCategoryFilters<T extends { title: string }>(
@@ -286,6 +390,20 @@ export async function runReindex(
   const llmEnrichmentEnabled = effectiveOptions.llmEnrichmentEnabled ?? false;
   const cmdbDynamicPagesEnabled = effectiveOptions.cmdbDynamicPagesEnabled ?? config.cmdbDynamicPagesEnabled;
   const maxPages = getMaxPages(effectiveOptions.maxPages);
+  const attachmentCounters: AttachmentCounters = {
+    attachmentsRequested: requestedAttachmentsEnabled,
+    attachmentsActive: !dryRun && attachmentsEnabled && documentPolicy.attachmentsEnabled,
+    documentPolicyEnabled: documentPolicy.attachmentsEnabled,
+    attachmentsFound: 0,
+    attachmentsProcessed: 0,
+    attachmentsFailed: 0,
+    attachmentsSkippedDisabled: 0,
+    attachmentsSkippedNoInfo: 0,
+    attachmentsSkippedNoDownload: 0,
+    attachmentsSkippedEmpty: 0,
+    attachmentTargetWrites: {},
+  };
+  await validateGatewayAttachmentSchemaIfNeeded(attachmentCounters, searchIndexTargets);
   if (effectiveOptions.source === 'qdrant_payload') {
     onProgress?.({
       phase: 'started',
@@ -303,6 +421,7 @@ export async function runReindex(
       embeddingCalls: 0,
       llmEnrichmentCalls: 0,
       estimatedPaidCalls: 0,
+      ...attachmentProgressFields(attachmentCounters),
     });
     const payloadSummary = await syncSearchIndexFromQdrantPayload({
       dryRun,
@@ -327,8 +446,7 @@ export async function runReindex(
       embeddingCalls: 0,
       llmEnrichmentCalls: 0,
       estimatedPaidCalls: 0,
-      attachmentsProcessed: 0,
-      attachmentsFailed: 0,
+      ...attachmentCounters,
       dynamicBlocksMatched: 0,
       dynamicSnapshotsIndexed: 0,
       dynamicSnapshotsMissed: 0,
@@ -353,6 +471,7 @@ export async function runReindex(
       embeddingCalls: 0,
       llmEnrichmentCalls: 0,
       estimatedPaidCalls: 0,
+      ...attachmentProgressFields(attachmentCounters),
     });
     return summary;
   }
@@ -368,6 +487,24 @@ export async function runReindex(
       + `then rerun auth test. Protected namespaces: ${protectedNamespaces.join(', ')}.`
     );
   }
+  onProgress?.({
+    phase: 'started',
+    profileId: effectiveOptions.profileId,
+    dryRun,
+    namespaces,
+    limitApplied: maxPages,
+    matchedPages: 0,
+    totalPages: 0,
+    processed: 0,
+    skipped: 0,
+    failed: 0,
+    totalChunks: 0,
+    indexTargets,
+    embeddingCalls: 0,
+    llmEnrichmentCalls: 0,
+    estimatedPaidCalls: 0,
+    ...attachmentProgressFields(attachmentCounters),
+  });
   const allPages = (
     await Promise.all(namespaces.map((namespace) => fetchAllPages(namespace)))
   ).flat().filter((page) => textMatchesFilters(page.title, effectiveOptions.titleFilters));
@@ -383,8 +520,6 @@ export async function runReindex(
   let embeddingCalls = 0;
   let llmEnrichmentCalls = 0;
   let estimatedPaidCalls = 0;
-  let attachmentsProcessed = 0;
-  let attachmentsFailed = 0;
   let dynamicBlocksMatched = 0;
   let dynamicSnapshotsIndexed = 0;
   let dynamicSnapshotsMissed = 0;
@@ -406,6 +541,7 @@ export async function runReindex(
     embeddingCalls,
     llmEnrichmentCalls,
     estimatedPaidCalls,
+    ...attachmentProgressFields(attachmentCounters),
   });
 
   for (const page of pages) {
@@ -429,6 +565,7 @@ export async function runReindex(
           embeddingCalls,
           llmEnrichmentCalls,
           estimatedPaidCalls,
+          ...attachmentProgressFields(attachmentCounters),
           currentTitle: page.title,
         });
         continue;
@@ -533,14 +670,20 @@ export async function runReindex(
         }
       }
 
-      if (!dryRun && attachmentsEnabled && documentPolicy.attachmentsEnabled) {
+      if (attachmentCounters.attachmentsActive) {
         const files = await fetchPageFiles(page.title);
+        attachmentCounters.attachmentsFound += files.length;
         for (const filename of files) {
           try {
+            let currentAttachment: { filename: string; mime?: string; mode?: string } = { filename };
             const fileInfo = await fetchFileInfo(filename);
-            if (!fileInfo) continue;
+            if (!fileInfo) {
+              attachmentCounters.attachmentsSkippedNoInfo++;
+              continue;
+            }
 
             const rule = getMimeProcessingRule(fileInfo.mime, documentPolicy);
+            currentAttachment = { filename, mime: fileInfo.mime, mode: rule.mode };
             const metadata = {
               filename,
               mimeType: fileInfo.mime,
@@ -548,12 +691,15 @@ export async function runReindex(
               mode: rule.mode,
             };
 
-            if (rule.mode === 'disabled') continue;
+            if (rule.mode === 'disabled') {
+              attachmentCounters.attachmentsSkippedDisabled++;
+              continue;
+            }
 
             if (rule.mode === 'metadata') {
               if (denseEnabled && embeddingConfig?.provider === 'openai_compatible') estimatedPaidCalls++;
               if (denseEnabled) embeddingCalls++;
-              await upsertAttachmentMetadata(
+              const writeResult = await upsertAttachmentMetadata(
                 page.pageid,
                 page.title,
                 filename,
@@ -569,19 +715,43 @@ export async function runReindex(
                   colbertCollection: effectiveOptions.colbertCollection,
                 }
               );
-              attachmentsProcessed++;
+              assertAttachmentWriteOk(writeResult, filename);
+              recordAttachmentTargetWrites(attachmentCounters, writeResult);
+              attachmentCounters.attachmentsProcessed++;
+              onProgress?.({
+                phase: 'page',
+                profileId: effectiveOptions.profileId,
+                dryRun,
+                namespaces,
+                matchedPages,
+                limitApplied,
+                totalPages: pages.length,
+                processed,
+                skipped,
+                failed,
+                totalChunks,
+                indexTargets,
+                embeddingCalls,
+                llmEnrichmentCalls,
+                estimatedPaidCalls,
+                ...attachmentProgressFields(attachmentCounters, currentAttachment),
+                currentTitle: page.title,
+              });
               continue;
             }
 
             const buffer = await downloadFile(fileInfo.url);
-            if (!buffer) continue;
+            if (!buffer) {
+              attachmentCounters.attachmentsSkippedNoDownload++;
+              continue;
+            }
 
             const result = await processAttachment(buffer, fileInfo.mime, filename, documentPolicy);
             if (result.text && result.text.trim().length > 0) {
               const attachmentChunks = splitText(result.text);
               if (denseEnabled && embeddingConfig?.provider === 'openai_compatible') estimatedPaidCalls += attachmentChunks.length;
               if (denseEnabled) embeddingCalls += attachmentChunks.length;
-              await upsertAttachmentChunks(
+              const writeResult = await upsertAttachmentChunks(
                 page.pageid,
                 page.title,
                 filename,
@@ -597,10 +767,13 @@ export async function runReindex(
                   colbertCollection: effectiveOptions.colbertCollection,
                 }
               );
+              assertAttachmentWriteOk(writeResult, filename);
+              recordAttachmentTargetWrites(attachmentCounters, writeResult);
             } else {
+              attachmentCounters.attachmentsSkippedEmpty++;
               if (denseEnabled && embeddingConfig?.provider === 'openai_compatible') estimatedPaidCalls++;
               if (denseEnabled) embeddingCalls++;
-              await upsertAttachmentMetadata(
+              const writeResult = await upsertAttachmentMetadata(
                 page.pageid,
                 page.title,
                 filename,
@@ -616,10 +789,31 @@ export async function runReindex(
                   colbertCollection: effectiveOptions.colbertCollection,
                 }
               );
+              assertAttachmentWriteOk(writeResult, filename);
+              recordAttachmentTargetWrites(attachmentCounters, writeResult);
             }
-            attachmentsProcessed++;
+            attachmentCounters.attachmentsProcessed++;
+            onProgress?.({
+              phase: 'page',
+              profileId: effectiveOptions.profileId,
+              dryRun,
+              namespaces,
+              matchedPages,
+              limitApplied,
+              totalPages: pages.length,
+              processed,
+              skipped,
+              failed,
+              totalChunks,
+              indexTargets,
+              embeddingCalls,
+              llmEnrichmentCalls,
+              estimatedPaidCalls,
+              ...attachmentProgressFields(attachmentCounters, currentAttachment),
+              currentTitle: page.title,
+            });
           } catch {
-            attachmentsFailed++;
+            attachmentCounters.attachmentsFailed++;
           }
         }
       }
@@ -640,6 +834,7 @@ export async function runReindex(
         embeddingCalls,
         llmEnrichmentCalls,
         estimatedPaidCalls,
+        ...attachmentProgressFields(attachmentCounters),
         currentTitle: page.title,
       });
     } catch {
@@ -660,6 +855,7 @@ export async function runReindex(
         embeddingCalls,
         llmEnrichmentCalls,
         estimatedPaidCalls,
+        ...attachmentProgressFields(attachmentCounters),
         currentTitle: page.title,
       });
     }
@@ -681,8 +877,7 @@ export async function runReindex(
     embeddingCalls,
     llmEnrichmentCalls,
     estimatedPaidCalls,
-    attachmentsProcessed,
-    attachmentsFailed,
+    ...attachmentCounters,
     dynamicBlocksMatched,
     dynamicSnapshotsIndexed,
     dynamicSnapshotsMissed,
@@ -708,6 +903,7 @@ export async function runReindex(
     embeddingCalls,
     llmEnrichmentCalls,
     estimatedPaidCalls,
+    ...attachmentProgressFields(attachmentCounters),
   });
 
   return summary;

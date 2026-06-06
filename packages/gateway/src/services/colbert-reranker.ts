@@ -6,6 +6,8 @@ import {
 } from './admin-platform-config.js';
 import type { SearchIndexPageInput } from './search-index.js';
 import { SearchChunk } from '../types/index.js';
+import { measureDependency } from './metrics.js';
+import { currentTraceHeaders } from './tracing.js';
 
 export interface ColbertRerankDiagnostics {
   rerankMode: RagAdminConfig['rerankMode'];
@@ -131,8 +133,15 @@ export function getColbertCandidateLimit(config: RagAdminConfig, fallbackLimit: 
 async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const headers = new Headers(init.headers);
+  for (const [key, value] of Object.entries(currentTraceHeaders())) {
+    headers.set(key, value);
+  }
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
+    return await measureDependency(
+      { dependency: 'colbert', operation: 'http' },
+      async () => fetch(url, { ...init, headers, signal: controller.signal })
+    );
   } catch (err) {
     if (err instanceof Error && err.name === 'AbortError') {
       throw new Error(`ColBERT request timed out after ${timeoutMs} ms`);

@@ -18,6 +18,12 @@ function optionalEnvBool(defaultValue: boolean, ...names: string[]): boolean {
   return defaultValue;
 }
 
+function envInt(name: string, defaultValue: number): number {
+  const value = process.env[name];
+  if (!value || !/^\d+$/.test(value)) return defaultValue;
+  return Number(value);
+}
+
 function envList(name: string, defaultValue: string[]): string[] {
   const value = process.env[name];
   if (!value) return defaultValue;
@@ -64,7 +70,9 @@ export interface SyncerConfig {
   pamTimeoutMs: number;
   ollamaBaseUrl: string;
   ollamaEmbeddingModel: string;
+  embeddingTimeoutMs: number;
   qdrantUrl: string;
+  qdrantApiKey?: string;
   qdrantCollection: string;
   redisUrl: string;
   databaseUrl: string;
@@ -72,6 +80,10 @@ export interface SyncerConfig {
   syncerPort: number;
   syncerAdminToken?: string;
   allowUnprotectedSyncerAdmin: boolean;
+  webhookSecret?: string;
+  webhookRequireSignature: boolean;
+  webhookTimestampToleranceSeconds: number;
+  webhookReplayTtlSeconds: number;
   chunkSize: number;
   chunkOverlap: number;
   namespaceAcl: Record<string, string[]>;
@@ -90,6 +102,9 @@ export interface SyncerConfig {
   logSyslogHost: string;
   logSyslogPort: number;
   healthCheckTimeoutMs: number;
+  httpBodyLimitBytes: number;
+  gracefulShutdownTimeoutMs: number;
+  reindexLockTtlSeconds: number;
 }
 
 export function parseDiagnosticLevel(value: string | undefined): DiagnosticLevel {
@@ -112,9 +127,18 @@ export function parseLogSinks(value: string | undefined): LogSink[] {
 const nodeEnv = env('NODE_ENV', 'development');
 const syncerAdminToken = optionalEnv('SYNCER_ADMIN_TOKEN');
 const allowUnprotectedSyncerAdmin = envBool('ALLOW_UNPROTECTED_SYNCER_ADMIN', nodeEnv !== 'production');
+const allowSqliteInProduction = envBool('ALLOW_SQLITE_IN_PRODUCTION', false);
+const databaseUrl = env(
+  'DATABASE_URL',
+  nodeEnv === 'production' ? undefined : 'sqlite://./state/wiki-ai.sqlite'
+);
 
 if (nodeEnv === 'production' && !syncerAdminToken) {
   throw new Error('SYNCER_ADMIN_TOKEN is required when NODE_ENV=production');
+}
+
+if (nodeEnv === 'production' && databaseUrl.startsWith('sqlite://') && !allowSqliteInProduction) {
+  throw new Error('DATABASE_URL must use Postgres in production; set ALLOW_SQLITE_IN_PRODUCTION=true only for local diagnostics');
 }
 
 export const config: SyncerConfig = {
@@ -155,14 +179,20 @@ export const config: SyncerConfig = {
   pamTimeoutMs: parseInt(optionalEnv('PAMTIMEOUTMS', 'Secrets__IndeedPamAapm__TimeoutMs') ?? '10000', 10),
   ollamaBaseUrl: env('OLLAMA_BASE_URL', 'http://localhost:11434'),
   ollamaEmbeddingModel: env('OLLAMA_EMBEDDING_MODEL', 'nomic-embed-text'),
+  embeddingTimeoutMs: envInt('EMBEDDING_TIMEOUT_MS', 15_000),
   qdrantUrl: env('QDRANT_URL', 'http://localhost:6333'),
+  qdrantApiKey: optionalEnv('QDRANT_API_KEY'),
   qdrantCollection: env('QDRANT_COLLECTION', 'wiki_chunks'),
   redisUrl: env('REDIS_URL', 'redis://localhost:16379/0'),
-  databaseUrl: env('DATABASE_URL', 'sqlite://./state/wiki-ai.sqlite'),
+  databaseUrl,
   gatewayBaseUrl: env('GATEWAY_BASE_URL', 'http://localhost:3000'),
   syncerPort: parseInt(env('SYNCER_PORT', '3001'), 10),
   syncerAdminToken,
   allowUnprotectedSyncerAdmin,
+  webhookSecret: optionalEnv('WIKIAI_WEBHOOK_SECRET', 'WEBHOOK_SECRET'),
+  webhookRequireSignature: envBool('WIKIAI_WEBHOOK_REQUIRE_SIGNATURE', nodeEnv === 'production'),
+  webhookTimestampToleranceSeconds: envInt('WIKIAI_WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS', 300),
+  webhookReplayTtlSeconds: envInt('WIKIAI_WEBHOOK_REPLAY_TTL_SECONDS', 900),
   chunkSize: parseInt(env('CHUNK_SIZE', '512'), 10),
   chunkOverlap: parseInt(env('CHUNK_OVERLAP', '50'), 10),
   // Namespace ID → allowed_groups mapping
@@ -201,4 +231,7 @@ export const config: SyncerConfig = {
   logSyslogHost: env('LOG_SYSLOG_HOST', '127.0.0.1'),
   logSyslogPort: parseInt(env('LOG_SYSLOG_PORT', '514'), 10),
   healthCheckTimeoutMs: parseInt(env('HEALTH_CHECK_TIMEOUT_MS', '2000'), 10),
+  httpBodyLimitBytes: envInt('HTTP_BODY_LIMIT_BYTES', 1_048_576),
+  gracefulShutdownTimeoutMs: envInt('GRACEFUL_SHUTDOWN_TIMEOUT_MS', 10_000),
+  reindexLockTtlSeconds: envInt('REINDEX_LOCK_TTL_SECONDS', 3600),
 };

@@ -1,4 +1,4 @@
-process.env.REDIS_URL ??= 'redis://localhost:16379/1';
+process.env.REDIS_URL ??= 'memory://test';
 process.env.DATABASE_URL ??= 'sqlite://:memory:';
 process.env.QDRANT_URL ??= 'http://localhost:6333';
 process.env.QDRANT_COLLECTION ??= 'test_chunks';

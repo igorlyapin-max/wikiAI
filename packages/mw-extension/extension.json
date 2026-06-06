@@ -84,6 +84,10 @@
       "value": "http://localhost:3001",
       "description": "Base URL of the Syncer webhook endpoint"
     },
+    "AIAssistantWebhookSecret": {
+      "value": "",
+      "description": "Shared HMAC-SHA256 secret for signing Syncer webhook events"
+    },
     "AIAssistantPageAclRules": {
       "value": [],
       "description": "Optional test-stand page-level read ACL rules. Each rule supports title or prefix and groups."

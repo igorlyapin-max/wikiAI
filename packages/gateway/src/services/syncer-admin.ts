@@ -1,4 +1,6 @@
 import { config } from '../config.js';
+import { measureDependency } from './metrics.js';
+import { currentTraceHeaders } from './tracing.js';
 
 export interface StartReindexRequest {
   profileId?: string;
@@ -92,14 +94,23 @@ export async function callSyncerAdmin(
 ): Promise<unknown> {
   const headers = new Headers(init.headers);
   headers.set('Content-Type', 'application/json');
+  for (const [key, value] of Object.entries(currentTraceHeaders())) {
+    headers.set(key, value);
+  }
   if (config.syncerAdminToken) {
     headers.set('x-wikiai-admin-token', config.syncerAdminToken);
   }
 
-  const res = await fetch(`${baseUrl}${path}`, {
-    ...init,
-    headers,
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), config.healthCheckTimeoutMs);
+  const res = await measureDependency(
+    { dependency: 'syncer', operation: path.replace(/[^A-Za-z0-9_.:-]/g, '_') },
+    async () => fetch(`${baseUrl}${path}`, {
+      ...init,
+      headers,
+      signal: controller.signal,
+    })
+  ).finally(() => clearTimeout(timeout));
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const message = typeof data === 'object' && data && 'message' in data

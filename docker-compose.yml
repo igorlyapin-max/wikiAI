@@ -2,15 +2,16 @@ version: "3.8"
 
 services:
   qdrant:
-    image: qdrant/qdrant:latest
+    image: ${QDRANT_IMAGE:-qdrant/qdrant:v1.12.5}
     ports:
-      - "6333:6333"
-      - "6334:6334"
+      - "127.0.0.1:${QDRANT_HTTP_PORT:-6333}:6333"
+      - "127.0.0.1:${QDRANT_GRPC_PORT:-6334}:6334"
     volumes:
       - qdrant_storage:/qdrant/storage
     environment:
       - QDRANT__SERVICE__HTTP_PORT=6333
       - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:?Set QDRANT_API_KEY in your environment}
     healthcheck:
       test: ["CMD", "bash", "-lc", ": >/dev/tcp/127.0.0.1/6333"]
       interval: 10s
@@ -40,6 +41,7 @@ services:
       - "127.0.0.1:8083:8080"
     environment:
       - QDRANT_URL=http://qdrant:6333
+      - QDRANT_API_KEY=${QDRANT_API_KEY:?Set QDRANT_API_KEY in your environment}
       - COLBERT_MODEL=${COLBERT_MODEL:-antoinelouis/colbert-xm}
       - COLBERT_COLLECTION=${COLBERT_COLLECTION:-wiki_colbert_chunks}
       - COLBERT_DEVICE=${COLBERT_DEVICE:-cpu}
@@ -95,16 +97,17 @@ services:
       context: ./packages/gateway
       dockerfile: Dockerfile
     ports:
-      - "127.0.0.1:3000:3000"
+      - "${WIKIAI_LAN_BIND:-127.0.0.1}:${GATEWAY_PORT:-3000}:3000"
     environment:
       - NODE_ENV=production
       - GATEWAY_PORT=3000
       - REDIS_URL=redis://host.docker.internal:16379/0
-      - DATABASE_URL=${DATABASE_URL:-sqlite:///app/state/wiki-ai.sqlite}
+      - DATABASE_URL=${DATABASE_URL:?Set DATABASE_URL to a Postgres connection string}
       - LITELLM_BASE_URL=http://host.docker.internal:4000/v1
       - LITELLM_API_KEY=${LITELLM_API_KEY:?Set LITELLM_API_KEY in your environment}
       - LITELLM_MODEL=${LITELLM_MODEL:-corp-openai-gpt-4.1-mini}
       - QDRANT_URL=http://qdrant:6333
+      - QDRANT_API_KEY=${QDRANT_API_KEY:?Set QDRANT_API_KEY in your environment}
       - QDRANT_COLLECTION=wiki_chunks
       - SYNCER_BASE_URL=http://syncer:3001
       - SYNCER_ADMIN_TOKEN=${SYNCER_ADMIN_TOKEN:?Set SYNCER_ADMIN_TOKEN in your environment}
@@ -141,8 +144,6 @@ services:
     depends_on:
       qdrant:
         condition: service_healthy
-    volumes:
-      - ./state:/app/state
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -182,8 +183,9 @@ services:
       - PAMPIN=${PAMPIN:-}
       - PAMTIMEOUTMS=${PAMTIMEOUTMS:-10000}
       - REDIS_URL=redis://host.docker.internal:16379/0
-      - DATABASE_URL=${DATABASE_URL:-sqlite:///app/state/wiki-ai.sqlite}
+      - DATABASE_URL=${DATABASE_URL:?Set DATABASE_URL to a Postgres connection string}
       - QDRANT_URL=http://qdrant:6333
+      - QDRANT_API_KEY=${QDRANT_API_KEY:?Set QDRANT_API_KEY in your environment}
       - QDRANT_COLLECTION=wiki_chunks
       - GATEWAY_BASE_URL=http://gateway:3000
       - OLLAMA_BASE_URL=http://ollama:11434
@@ -199,13 +201,13 @@ services:
       - LOG_SYSLOG_HOST=${LOG_SYSLOG_HOST:-host.docker.internal}
       - LOG_SYSLOG_PORT=${LOG_SYSLOG_PORT:-514}
       - HEALTH_CHECK_TIMEOUT_MS=${HEALTH_CHECK_TIMEOUT_MS:-2000}
+      - WIKIAI_WEBHOOK_SECRET=${WIKIAI_WEBHOOK_SECRET:?Set WIKIAI_WEBHOOK_SECRET in your environment}
+      - WIKIAI_WEBHOOK_REQUIRE_SIGNATURE=true
     depends_on:
       qdrant:
         condition: service_healthy
       ollama:
         condition: service_healthy
-    volumes:
-      - ./state:/app/state
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"

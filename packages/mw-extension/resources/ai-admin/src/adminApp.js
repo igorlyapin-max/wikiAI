@@ -24,6 +24,8 @@ export function initializeAIAdmin(options = {}) {
       let ragConfig = null;
       let webhookConfig = null;
       let chatRetentionConfig = null;
+      let chatManagementConfig = null;
+      let chatProfiles = [];
       let semanticAutofillConfig = null;
       let conflictDetectionConfig = null;
       let trustModels = [];
@@ -104,8 +106,11 @@ export function initializeAIAdmin(options = {}) {
       let semanticPropertyValues = {};
       let semanticPropertyValuesLoaded = false;
       let indexingProfiles = [];
+      let indexingAutomationConfig = null;
       let retrievalProfiles = [];
       let selectedRetrievalProfileId = null;
+      let selectedChatProfileId = null;
+      let chatDebugTraceLastResult = null;
       let categoryOptionsTimer = null;
       let categoryOptions = [];
       let wikiReferenceTimers = {};
@@ -222,6 +227,7 @@ export function initializeAIAdmin(options = {}) {
           ["#aiadmin-semantic-search-btn", "aiadmin-action-search-facts"],
           ["#aiadmin-semantic-refresh", "aiadmin-action-refresh-status"],
           ["#aiadmin-save-indexing-profile", "aiadmin-action-save-profile"],
+          ["#aiadmin-save-indexing-automation", "aiadmin-action-save-indexing-automation"],
           ["#aiadmin-refresh-audit", "aiadmin-action-refresh"],
           ["label[for=\"trust-model-id\"]", "aiadmin-field-model-id"],
           ["label[for=\"trust-model-name\"]", "aiadmin-field-name"],
@@ -285,6 +291,10 @@ export function initializeAIAdmin(options = {}) {
           ["label[for=\"idx-profile-title-exclude\"]", "aiadmin-field-title-exclude-csv"],
           ["label[for=\"idx-profile-category-include-search\"]", "aiadmin-field-category-include-csv"],
           ["label[for=\"idx-profile-category-exclude-search\"]", "aiadmin-field-category-exclude-csv"],
+          ["label[for=\"idx-automation-change-profile\"]", "aiadmin-field-change-indexing-profile"],
+          ["label[for=\"idx-automation-schedule-enabled\"]", "aiadmin-field-schedule-enabled"],
+          ["label[for=\"idx-automation-scheduled-profile\"]", "aiadmin-field-scheduled-indexing-profile"],
+          ["label[for=\"idx-automation-schedule-interval\"]", "aiadmin-field-schedule-min"],
           ["#idx-profile-title-include-help", "aiadmin-help-title-include-filter"],
           ["#idx-profile-title-exclude-help", "aiadmin-help-title-exclude-filter"],
           ["#idx-profile-category-include-help", "aiadmin-help-category-include-filter"],
@@ -294,14 +304,12 @@ export function initializeAIAdmin(options = {}) {
           ["#idx-profile-category-include-add", "aiadmin-action-add-filter-value"],
           ["#idx-profile-category-exclude-add", "aiadmin-action-add-filter-value"],
           ["label[for=\"idx-profile-document-policy\"]", "aiadmin-field-document-policy"],
-          ["label[for=\"idx-profile-runmode\"]", "aiadmin-field-run-mode"],
-          ["label[for=\"idx-profile-schedule\"]", "aiadmin-field-schedule-min"],
           ["label[for=\"idx-profile-attachments\"]", "aiadmin-field-attachments"],
           ["label[for=\"idx-profile-semantics\"]", "aiadmin-field-semantic-facts"],
           ["label[for=\"idx-profile-dryrun\"]", "aiadmin-field-dry-run-default"],
           ["label[for=\"aiadmin-reindex-profile\"]", "aiadmin-field-profile"],
           ["label[for=\"aiadmin-reindex-maxpages\"]", "aiadmin-field-max-pages"],
-          ["label[for=\"aiadmin-reindex-attachments\"]", "aiadmin-field-attachments"],
+          ["label[for=\"aiadmin-reindex-attachments\"]", "aiadmin-field-reindex-attachments"],
           ["label[for=\"aiadmin-reindex-dryrun\"]", "aiadmin-field-dry-run"],
           ["#aiadmin-trust-rule-condition-help", "aiadmin-help-trust-rule-condition"],
           ["#aiadmin-trust-rule-flags-help", "aiadmin-help-trust-rule-flags"],
@@ -314,7 +322,6 @@ export function initializeAIAdmin(options = {}) {
         const placeholderMap = [
           ["#ontology-fragment", "aiadmin-placeholder-document-fragment"],
           ["#idx-profile-maxpages", "aiadmin-placeholder-optional"],
-          ["#idx-profile-schedule", "aiadmin-placeholder-optional"],
           ["#aiadmin-reindex-maxpages", "aiadmin-placeholder-optional"],
           ["#aiadmin-reindex-llm-model", "aiadmin-placeholder-current-llm-model"],
           ["#trust-model-name", "aiadmin-placeholder-corporate-default"],
@@ -736,6 +743,8 @@ export function initializeAIAdmin(options = {}) {
           ["enabled", yesNo(values.enabled)],
           ["indexName", values.indexName || unknown()],
           ["documentCount", values.documentCount ?? unknown()],
+          ["attachmentDocumentCount", values.attachmentDocumentCount ?? 0],
+          ["sourceTypeCounts", (values.sourceTypeCounts || []).map((item) => `${item.sourceType}:${item.count}`).join(", ") || t("aiadmin-value-none")],
           ["analyzer", values.analyzer || unknown()],
           ["candidateLimit", values.candidateLimit ?? unknown()],
           ["error", values.error || ""]
@@ -751,6 +760,52 @@ export function initializeAIAdmin(options = {}) {
           tbody.appendChild(row);
         });
         root.appendChild(table);
+
+        const attachmentFilenames = Array.isArray(values.attachmentFilenames) ? values.attachmentFilenames : [];
+        const filenamesTitle = document.createElement("h4");
+        filenamesTitle.textContent = t("aiadmin-section-opensearch-attachments", "OpenSearch attachments");
+        root.appendChild(filenamesTitle);
+        if (attachmentFilenames.length === 0) {
+          const empty = document.createElement("div");
+          empty.className = "ai-admin-status-warning";
+          empty.textContent = t("aiadmin-status-opensearch-attachments-empty", "No attachment documents are indexed in OpenSearch.");
+          root.appendChild(empty);
+        } else {
+          const attachmentsTable = document.createElement("table");
+          attachmentsTable.className = "ai-admin-table";
+          attachmentsTable.innerHTML = tableHtml([
+            "aiadmin-table-filename",
+            "aiadmin-table-chunks"
+          ]);
+          const attachmentsBody = attachmentsTable.querySelector("tbody");
+          attachmentFilenames.forEach((item) => {
+            const row = document.createElement("tr");
+            [item.filename, item.count].forEach((cellValue) => {
+              const cell = document.createElement("td");
+              cell.textContent = String(cellValue ?? "");
+              row.appendChild(cell);
+            });
+            attachmentsBody.appendChild(row);
+          });
+          root.appendChild(attachmentsTable);
+        }
+      };
+
+      const renderOpenSearchAttachmentDiagnostics = (values = {}) => {
+        const searchIndex = values.searchIndex || {};
+        const openSearch = values.opensearch || {};
+        const samples = Array.isArray(openSearch.samples) ? openSearch.samples : [];
+        const sampleTitles = samples
+          .map((sample) => `${sample.title || unknown()}#${sample.chunkIndex ?? unknown()}`)
+          .join(", ");
+        const statusTextValue = [
+          `${t("aiadmin-value-bm25", "BM25/PostgreSQL")}: ${searchIndex.chunks ?? 0}`,
+          `OpenSearch: ${openSearch.chunks ?? 0}`,
+          values.mismatch ? t("aiadmin-status-attachment-index-mismatch", "recognized, but missing or incomplete in OpenSearch") : "",
+          sampleTitles || t("aiadmin-value-none"),
+          openSearch.error || "",
+        ].filter(Boolean).join("; ");
+        renderOpenSearchPreview(statusTextValue, !values.mismatch && openSearch.status !== "error");
       };
 
       const refreshOpenSearchIndexState = async () => {
@@ -780,7 +835,15 @@ export function initializeAIAdmin(options = {}) {
         const openSearchTitle = document.createElement("h3");
         openSearchTitle.textContent = t("aiadmin-section-opensearch", "OpenSearch");
         form.appendChild(openSearchTitle);
-        const enabledInput = appendCheckboxRow(form, "svc-opensearch-enabled", t("aiadmin-field-opensearch-enabled", "Enable OpenSearch"), openSearch.enabled);
+        const enabledInput = appendCheckboxRow(
+          form,
+          "svc-opensearch-enabled",
+          t("aiadmin-field-opensearch-enabled", "OpenSearch backend enabled"),
+          openSearch.enabled,
+          {
+            help: t("aiadmin-help-opensearch-enabled", "This is infrastructure readiness. Search profiles choose whether OpenSearch is used for retrieval."),
+          }
+        );
         const baseUrlInput = appendInputRow(
           form,
           "svc-opensearch-baseUrl",
@@ -845,6 +908,14 @@ export function initializeAIAdmin(options = {}) {
           `<button type="button" class="ai-admin-btn" id="aiadmin-rebuild-opensearch-index">${t("aiadmin-action-rebuild-opensearch-index", "Rebuild OpenSearch index")}</button>`
         ].join("");
         form.appendChild(preview);
+        const attachmentLookup = document.createElement("div");
+        attachmentLookup.className = "ai-admin-row";
+        attachmentLookup.innerHTML = [
+          `<label for="svc-opensearch-attachment-filename">${t("aiadmin-field-opensearch-attachment-filename", "Attachment filename")}</label>`,
+          `<input type="text" id="svc-opensearch-attachment-filename" value="Wikiai-architecture.pptx" />`,
+          `<button type="button" class="ai-admin-btn" id="aiadmin-check-opensearch-attachment">${t("aiadmin-action-check-attachment-index", "Check attachment")}</button>`
+        ].join("");
+        form.appendChild(attachmentLookup);
         const previewStatus = document.createElement("div");
         previewStatus.id = "aiadmin-opensearch-preview";
         previewStatus.className = "ai-admin-muted";
@@ -1141,7 +1212,7 @@ export function initializeAIAdmin(options = {}) {
           mappedGroups: capabilities.mappedGroupCount ?? new Set(Object.values(externalApiConfig.groupMappings || {}).flat()).size,
           warnings: warnings || ""
         });
-        renderRetrievalProfiles();
+        await renderRetrievalProfiles();
       };
 
       const collectExternalApiConfig = () => ({
@@ -1179,10 +1250,54 @@ export function initializeAIAdmin(options = {}) {
         ["colbert_v2", t("aiadmin-value-rerank-colbert-v2")]
       ];
 
-      const chatRetrievalQueryModeOptions = () => [
-        ["current_message", t("aiadmin-value-chat-retrieval-current-message", "Current query only")],
-        ["history_augmented", t("aiadmin-value-chat-retrieval-history-augmented", "Current query + history")]
+      const promptHistoryScopeOptions = () => [
+        ["current_session", t("aiadmin-value-chat-prompt-current-session", "Current chat session")],
+        ["current_user_active_sessions", t("aiadmin-value-chat-prompt-active-sessions", "Active chats of the same user")]
       ];
+
+      const retrievalHistoryModeOptions = () => [
+        ["current_message", t("aiadmin-value-chat-retrieval-current-message", "Current query only")],
+        ["current_session_questions", t("aiadmin-value-chat-retrieval-current-session-questions", "Current query + previous user questions")],
+        ["current_session_questions_and_answers", t("aiadmin-value-chat-retrieval-current-session-full", "Current query + previous questions and answers")]
+      ];
+
+      const legacyChatRetrievalModeForChatProfileId = (id) => [
+        "chat_followup_questions",
+        "chat_followup_full"
+      ].includes(id) ? "history_augmented" : "current_message";
+
+      const legacyChatProfileIdForRetrievalConfig = (config = {}) => config.chatRetrievalQueryMode === "history_augmented"
+        ? "chat_followup_full"
+        : "chat_current_session";
+
+      const chatProfileDisplayName = (profile = {}) => t(`aiadmin-chat-profile-name-${profile.id}`, profile.name || profile.id || unknown());
+      const chatProfileDisplayDescription = (profile = {}) => t(`aiadmin-chat-profile-description-${profile.id}`, profile.description || "");
+      const chatProfileOptions = () => {
+        const availableProfiles = chatProfiles.filter((profile) => profile.enabled !== false);
+        const sourceProfiles = availableProfiles.length > 0 ? availableProfiles : chatProfiles;
+        return sourceProfiles.map((profile) => [profile.id, `${chatProfileDisplayName(profile)} (${profile.id})`]);
+      };
+
+      const selectedChatProfile = () => chatProfiles.find((profile) => profile.id === selectedChatProfileId)
+        || chatProfiles.find((profile) => profile.id === chatManagementConfig?.defaultChatProfileId)
+        || chatProfiles[0]
+        || null;
+
+      const retrievalProfileChatProfileId = (profile) => profile?.chatProfileId
+        || profile?.chatProfile?.id
+        || legacyChatProfileIdForRetrievalConfig(profile?.config || {})
+        || chatManagementConfig?.defaultChatProfileId
+        || "chat_current_session";
+
+      const ensureChatProfilesLoaded = async () => {
+        if (chatProfiles.length > 0 && chatManagementConfig) return;
+        const data = await request("/api/admin/chat-management/config");
+        chatManagementConfig = data.values || {};
+        chatProfiles = data.chatProfiles || [];
+        if (!selectedChatProfileId) {
+          selectedChatProfileId = chatManagementConfig.defaultChatProfileId || chatProfiles[0]?.id || null;
+        }
+      };
 
       const optionLabel = (options, value, fallback = unknown()) => {
         const match = options.find((item) => item[0] === value);
@@ -1266,7 +1381,8 @@ export function initializeAIAdmin(options = {}) {
         includeSemanticHeader: value.includeSemanticHeader !== false,
       });
 
-      const renderRetrievalProfiles = () => {
+      const renderRetrievalProfiles = async () => {
+        await ensureChatProfilesLoaded();
         const root = document.getElementById("aiadmin-retrieval-profiles");
         if (!root) return;
         root.innerHTML = "";
@@ -1286,7 +1402,7 @@ export function initializeAIAdmin(options = {}) {
           "aiadmin-field-retrieval-top-k",
           "aiadmin-field-context-top-k",
           "aiadmin-field-context-max-chars",
-          "aiadmin-field-chat-retrieval-query-mode",
+          "aiadmin-field-chat-profile",
           "aiadmin-table-enabled",
           "aiadmin-table-external-api",
           "aiadmin-table-mcp",
@@ -1302,10 +1418,9 @@ export function initializeAIAdmin(options = {}) {
           appendTableCell(row, limits.retrievalTopK);
           appendTableCell(row, limits.contextTopK);
           appendTableCell(row, limits.contextMaxChars);
-          appendTableCell(row, optionLabel(
-            chatRetrievalQueryModeOptions(),
-            profile.config?.chatRetrievalQueryMode || "current_message"
-          ));
+          const chatProfileId = retrievalProfileChatProfileId(profile);
+          const chatProfile = chatProfiles.find((item) => item.id === chatProfileId) || profile.chatProfile;
+          appendTableCell(row, chatProfile ? chatProfileDisplayName(chatProfile) : chatProfileId);
           appendTableCell(row, yesNo(profile.enabled));
           appendTableCell(row, yesNo(profile.apiEnabled));
           appendTableCell(row, yesNo(profile.mcpEnabled));
@@ -1337,7 +1452,7 @@ export function initializeAIAdmin(options = {}) {
         appendInputRow(form, "retrieval-profile-retrieval-top-k", t("aiadmin-field-retrieval-top-k", "Retrieval top-k"), profileLimits.retrievalTopK, { type: "number", min: 1, max: 20 });
         appendInputRow(form, "retrieval-profile-context-top-k", t("aiadmin-field-context-top-k", "Context top-k"), profileLimits.contextTopK, { type: "number", min: 1, max: 50 });
         appendInputRow(form, "retrieval-profile-context-max-chars", t("aiadmin-field-context-max-chars", "Context max chars"), profileLimits.contextMaxChars, { type: "number", min: 1000, max: 200000 });
-        appendSelectRow(form, "retrieval-profile-chat-retrieval-query-mode", t("aiadmin-field-chat-retrieval-query-mode", "Chat retrieval history"), profile.config?.chatRetrievalQueryMode || "current_message", chatRetrievalQueryModeOptions());
+        appendSelectRow(form, "retrieval-profile-chat-profile", t("aiadmin-field-chat-profile", "Chat profile"), retrievalProfileChatProfileId(profile), chatProfileOptions());
         appendInputRow(form, "retrieval-profile-tags", t("aiadmin-field-tags-csv"), (profile.tags || []).join(", "));
         appendSelectRow(form, "retrieval-profile-search-mode", t("aiadmin-field-search-mode"), profile.config?.searchMode || "hybrid", retrievalModeOptions());
         appendSelectRow(form, "retrieval-profile-rerank-mode", t("aiadmin-field-rerank-mode"), profile.config?.rerankMode || "none", rerankModeOptions());
@@ -1373,7 +1488,7 @@ export function initializeAIAdmin(options = {}) {
 
         document.getElementById("retrieval-profile-select").addEventListener("change", (event) => {
           selectedRetrievalProfileId = event.target.value;
-          renderRetrievalProfiles();
+          renderRetrievalProfiles().catch((err) => statusText("aiadmin-retrieval-profile-status", err.message, false));
         });
       };
 
@@ -1383,6 +1498,7 @@ export function initializeAIAdmin(options = {}) {
         const retrievalTopK = Number(document.getElementById("retrieval-profile-retrieval-top-k").value);
         const contextTopK = Number(document.getElementById("retrieval-profile-context-top-k").value);
         const contextMaxChars = Number(document.getElementById("retrieval-profile-context-max-chars").value);
+        const chatProfileId = document.getElementById("retrieval-profile-chat-profile").value;
         return {
           id: document.getElementById("retrieval-profile-id").value.trim(),
           name: document.getElementById("retrieval-profile-name").value.trim(),
@@ -1392,13 +1508,14 @@ export function initializeAIAdmin(options = {}) {
           mcpEnabled: document.getElementById("retrieval-profile-mcp-enabled").checked,
           anonymousAllowed: document.getElementById("retrieval-profile-anonymous").checked,
           maxTopK: Number(document.getElementById("retrieval-profile-max-top-k").value),
+          chatProfileId,
           tags: document.getElementById("retrieval-profile-tags").value.split(",").map((value) => value.trim()).filter(Boolean),
           config: {
             ...base,
             retrievalTopK,
             contextTopK,
             contextMaxChars,
-            chatRetrievalQueryMode: document.getElementById("retrieval-profile-chat-retrieval-query-mode").value,
+            chatRetrievalQueryMode: legacyChatRetrievalModeForChatProfileId(chatProfileId),
             topK: retrievalTopK,
             maxContextChunks: contextTopK,
             maxContextChars: contextMaxChars,
@@ -1507,13 +1624,159 @@ export function initializeAIAdmin(options = {}) {
         dimensions: Number(document.getElementById("embedding-dimensions").value),
       });
 
+      const jsonText = (value) => JSON.stringify(value ?? null, null, 2);
+
+      const copyToClipboard = async (text) => {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(text);
+          return;
+        }
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.style.position = "fixed";
+        textarea.style.left = "-9999px";
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        textarea.remove();
+      };
+
+      const appendDebugPre = (root, title, value, options = {}) => {
+        const details = document.createElement("details");
+        details.open = Boolean(options.open);
+        const summary = document.createElement("summary");
+        summary.textContent = title;
+        const pre = document.createElement("pre");
+        pre.style.whiteSpace = "pre-wrap";
+        pre.style.maxHeight = "460px";
+        pre.style.overflow = "auto";
+        pre.textContent = typeof value === "string" ? value : jsonText(value);
+        details.append(summary, pre);
+        root.appendChild(details);
+      };
+
+      const renderChatDebugForm = () => {
+        const form = document.getElementById("aiadmin-chat-debug-form");
+        if (!form) return;
+        form.innerHTML = "";
+        const question = appendInputRow(
+          form,
+          "chat-debug-question",
+          t("aiadmin-field-chat-debug-question", "Debug question"),
+          "",
+          {
+            textarea: true,
+            placeholder: t("aiadmin-placeholder-chat-debug-question", "Введите один вопрос для полного debug trace")
+          }
+        );
+        question.rows = 4;
+        appendSelectRow(
+          form,
+          "chat-debug-retrieval-profile",
+          t("aiadmin-field-chat-debug-retrieval-profile", "Retrieval profile"),
+          "",
+          [
+            { value: "", label: t("aiadmin-value-current-mediawiki-profile", "MediaWiki default") },
+            ...(retrievalProfiles || []).map((profile) => ({
+              value: profile.id,
+              label: `${profile.name || profile.id} (${profile.id})`
+            }))
+          ]
+        );
+        appendInputRow(
+          form,
+          "chat-debug-topk",
+          t("aiadmin-field-chat-debug-topk", "topK"),
+          "",
+          { type: "number", min: 1, max: 20, placeholder: t("aiadmin-placeholder-optional", "optional") }
+        );
+        appendSelectRow(
+          form,
+          "chat-debug-verbosity",
+          t("aiadmin-field-chat-debug-verbosity", "Verbosity"),
+          "full",
+          [
+            { value: "full", label: "full" },
+            { value: "verbose", label: "verbose" },
+            { value: "basic", label: "basic" }
+          ]
+        );
+        appendCheckboxRow(
+          form,
+          "chat-debug-conflicts",
+          t("aiadmin-field-chat-debug-conflicts", "Run conflict detection"),
+          true
+        );
+      };
+
+      const collectChatDebugTrace = () => {
+        const message = document.getElementById("chat-debug-question").value.trim();
+        if (!message) throw new Error(t("aiadmin-field-chat-debug-question", "Debug question"));
+        const retrievalProfileId = document.getElementById("chat-debug-retrieval-profile").value.trim();
+        const topKValue = document.getElementById("chat-debug-topk").value.trim();
+        const payload = {
+          message,
+          verbosity: document.getElementById("chat-debug-verbosity").value,
+          runConflictDetection: document.getElementById("chat-debug-conflicts").checked,
+        };
+        if (retrievalProfileId) payload.retrievalProfileId = retrievalProfileId;
+        if (topKValue) payload.topK = Number(topKValue);
+        return payload;
+      };
+
+      const renderChatDebugTrace = (values) => {
+        chatDebugTraceLastResult = values;
+        const root = document.getElementById("aiadmin-chat-debug-result");
+        if (!root) return;
+        root.innerHTML = "";
+
+        const actions = document.createElement("div");
+        const copyJson = document.createElement("button");
+        copyJson.type = "button";
+        copyJson.className = "ai-admin-btn";
+        copyJson.textContent = t("aiadmin-action-copy-json", "Copy JSON");
+        copyJson.addEventListener("click", () => {
+          copyToClipboard(jsonText(chatDebugTraceLastResult)).catch((err) => {
+            statusText("aiadmin-chat-debug-status", err.message, false);
+          });
+        });
+        const copyPrompt = document.createElement("button");
+        copyPrompt.type = "button";
+        copyPrompt.className = "ai-admin-btn";
+        copyPrompt.textContent = t("aiadmin-action-copy-prompt", "Copy prompt");
+        copyPrompt.addEventListener("click", () => {
+          copyToClipboard(values.promptText || "").catch((err) => {
+            statusText("aiadmin-chat-debug-status", err.message, false);
+          });
+        });
+        actions.append(copyJson, copyPrompt);
+        root.appendChild(actions);
+
+        const summary = document.createElement("div");
+        summary.className = "ai-admin-muted";
+        summary.textContent = `traceId=${values.traceId || ""}; verbosity=${values.verbosity || ""}; answerChars=${(values.answer || "").length}`;
+        root.appendChild(summary);
+
+        appendDebugPre(root, "Answer", values.answer || "", { open: true });
+        appendDebugPre(root, "Final prompt", values.promptText || "", { open: true });
+        appendDebugPre(root, "Final LLM request", values.finalLlm?.request || {}, { open: true });
+        appendDebugPre(root, "Final LLM response", values.finalLlm || {}, { open: true });
+        appendDebugPre(root, "Retrieval diagnostics", values.diagnostics || {});
+        appendDebugPre(root, "Retrieval search", values.retrieval?.search || {});
+        appendDebugPre(root, "Chunks", values.retrieval?.chunks || {});
+        appendDebugPre(root, "Context", values.retrieval?.contextText || "");
+        appendDebugPre(root, "Conflict detector", values.conflict || {});
+      };
+
       const renderRagConfig = async () => {
-        const [data, indexData, trigramJobData] = await Promise.all([
+        const [data, indexData, trigramJobData, retrievalProfileData] = await Promise.all([
           request("/api/admin/rag/config"),
           request("/api/admin/search-index/status").catch(() => ({ values: null })),
-          request("/api/admin/search-index/trigram/backfill/status").catch(() => ({ values: null }))
+          request("/api/admin/search-index/trigram/backfill/status").catch(() => ({ values: null })),
+          request("/api/admin/retrieval-profiles").catch(() => ({ values: retrievalProfiles }))
         ]);
         ragConfig = data.values || {};
+        retrievalProfiles = retrievalProfileData.values || retrievalProfiles;
         const searchIndexStatus = indexData.values || {};
         const trigramJob = trigramJobData.values || null;
         if (trigramBackfillPollTimer) {
@@ -1537,6 +1800,7 @@ export function initializeAIAdmin(options = {}) {
         appendInputRow(form, "rag-minChunkLength", t("aiadmin-field-min-chunk-length"), ragConfig.minChunkLength, { type: "number", min: 1, max: 1024 });
         appendInputRow(form, "rag-maxChunksPerPage", t("aiadmin-field-max-chunks-per-page"), ragConfig.maxChunksPerPage, { type: "number", min: 1, max: 10000 });
         appendInputRow(form, "rag-chunkSeparators", t("aiadmin-field-chunk-separators-json"), JSON.stringify(ragConfig.chunkSeparators || []), { textarea: true });
+        renderChatDebugForm();
         const hybridTitle = document.createElement("h3");
         hybridTitle.textContent = t("aiadmin-section-hybrid-search");
         bm25Form.appendChild(hybridTitle);
@@ -1606,6 +1870,14 @@ export function initializeAIAdmin(options = {}) {
           backfill: yesNo(searchIndexStatus.trigramBackfillRecommended)
         });
         bm25Form.appendChild(trigramStatus);
+        const attachmentStatus = document.createElement("div");
+        attachmentStatus.className = searchIndexStatus.attachmentColumnsReady === false ? "ai-admin-status-warning" : "ai-admin-status-ok";
+        attachmentStatus.textContent = formatText("aiadmin-status-attachment-index", {
+          chunks: searchIndexStatus.attachmentChunks ?? 0,
+          pages: searchIndexStatus.attachmentPages ?? 0,
+          schema: yesNo(searchIndexStatus.attachmentColumnsReady !== false)
+        });
+        bm25Form.appendChild(attachmentStatus);
         const trigramJobStatus = document.createElement("div");
         trigramJobStatus.className = trigramJob?.status === "failed"
           ? "ai-admin-status-error"
@@ -1825,6 +2097,181 @@ export function initializeAIAdmin(options = {}) {
         retryBackoffMs: Number(document.getElementById("webhook-retryBackoffMs").value),
       });
 
+      const renderChatManagementConfig = async () => {
+        const data = await request("/api/admin/chat-management/config");
+        chatManagementConfig = data.values || {};
+        chatProfiles = data.chatProfiles || [];
+        if (!selectedChatProfileId || !chatProfiles.some((profile) => profile.id === selectedChatProfileId)) {
+          selectedChatProfileId = chatManagementConfig.defaultChatProfileId || chatProfiles[0]?.id || null;
+        }
+
+        const configRoot = document.getElementById("aiadmin-chat-management-config");
+        if (configRoot) {
+          configRoot.innerHTML = "";
+          appendSelectRow(
+            configRoot,
+            "chat-management-default-profile",
+            t("aiadmin-field-default-chat-profile", "Default chat profile"),
+            chatManagementConfig.defaultChatProfileId || "chat_current_session",
+            chatProfileOptions()
+          );
+          const actions = document.createElement("div");
+          actions.className = "ai-admin-row";
+          actions.innerHTML = [
+            `<button type="button" class="ai-admin-btn ai-admin-btn-primary" id="aiadmin-save-chat-management-config">${t("aiadmin-save")}</button>`,
+            `<span id="aiadmin-chat-management-status"></span>`
+          ].join("");
+          configRoot.appendChild(actions);
+          const effectiveProfile = chatProfiles.find((profile) => profile.id === chatManagementConfig.defaultChatProfileId);
+          const effective = document.createElement("div");
+          effective.className = "ai-admin-muted";
+          effective.textContent = effectiveProfile
+            ? formatText("aiadmin-status-chat-profile-effective", {
+              id: effectiveProfile.id,
+              prompt: optionLabel(promptHistoryScopeOptions(), effectiveProfile.promptHistoryScope),
+              retrieval: optionLabel(retrievalHistoryModeOptions(), effectiveProfile.retrievalHistoryMode),
+            }, "Default: {id}; prompt={prompt}; retrieval={retrieval}")
+            : "";
+          configRoot.appendChild(effective);
+          document.getElementById("aiadmin-save-chat-management-config").addEventListener("click", async () => {
+            try {
+              const saved = await request("/api/admin/chat-management/config", {
+                method: "POST",
+                body: JSON.stringify({
+                  defaultChatProfileId: document.getElementById("chat-management-default-profile").value,
+                }),
+              });
+              chatManagementConfig = saved.values || {};
+              chatProfiles = saved.chatProfiles || chatProfiles;
+              await renderChatManagementConfig();
+              await renderRetrievalProfiles();
+              statusText("aiadmin-chat-management-status", t("aiadmin-message-saved"));
+            } catch (err) {
+              statusText("aiadmin-chat-management-status", err.message, false);
+            }
+          });
+        }
+
+        const profilesRoot = document.getElementById("aiadmin-chat-profiles");
+        if (!profilesRoot) return;
+        profilesRoot.innerHTML = "";
+        const table = document.createElement("table");
+        table.className = "ai-admin-table";
+        table.innerHTML = tableHtml([
+          "aiadmin-table-id",
+          "aiadmin-table-name",
+          "aiadmin-field-prompt-history-scope",
+          "aiadmin-field-prompt-history-turns",
+          "aiadmin-field-retrieval-history-mode",
+          "aiadmin-field-retrieval-history-turns",
+          "aiadmin-table-enabled",
+          "aiadmin-table-defaults",
+          "aiadmin-table-type"
+        ]);
+        const tbody = table.querySelector("tbody");
+        chatProfiles.forEach((profile) => {
+          const row = document.createElement("tr");
+          row.className = `ai-admin-clickable-row${profile.id === selectedChatProfileId ? " ai-admin-row-selected" : ""}`;
+          row.addEventListener("click", () => {
+            selectedChatProfileId = profile.id;
+            renderChatManagementConfig().catch((err) => statusText("aiadmin-chat-profile-status", err.message, false));
+          });
+          appendTableCell(row, profile.id);
+          appendTableCell(row, chatProfileDisplayName(profile));
+          appendTableCell(row, optionLabel(promptHistoryScopeOptions(), profile.promptHistoryScope));
+          appendTableCell(row, profile.promptHistoryTurns);
+          appendTableCell(row, optionLabel(retrievalHistoryModeOptions(), profile.retrievalHistoryMode));
+          appendTableCell(row, profile.retrievalHistoryTurns);
+          appendTableCell(row, yesNo(profile.enabled));
+          appendTableCell(row, yesNo(profile.defaultForChat || profile.id === chatManagementConfig.defaultChatProfileId));
+          appendTableCell(row, profile.experimental ? "experimental" : "base");
+          tbody.appendChild(row);
+        });
+        profilesRoot.appendChild(table);
+
+        const profile = selectedChatProfile();
+        if (!profile) return;
+        const form = document.createElement("div");
+        form.id = "aiadmin-chat-profile-form";
+        form.className = "ai-admin-search-results";
+        profilesRoot.appendChild(form);
+        appendSelectRow(form, "chat-profile-select", t("aiadmin-field-chat-profile", "Chat profile"), profile.id, chatProfiles.map((item) => [item.id, `${chatProfileDisplayName(item)} (${item.id})`]));
+        appendInputRow(form, "chat-profile-id", t("aiadmin-field-profile-id"), profile.id, { readonly: true });
+        appendInputRow(form, "chat-profile-name", t("aiadmin-field-name"), chatProfileDisplayName(profile));
+        appendInputRow(form, "chat-profile-description", t("aiadmin-field-description"), chatProfileDisplayDescription(profile), { textarea: true });
+        appendCheckboxRow(form, "chat-profile-enabled", t("aiadmin-field-enabled"), profile.enabled);
+        appendCheckboxRow(form, "chat-profile-default", t("aiadmin-field-default-chat-profile", "Default chat profile"), profile.defaultForChat || profile.id === chatManagementConfig.defaultChatProfileId);
+        appendCheckboxRow(form, "chat-profile-experimental", t("aiadmin-field-experimental", "Experimental"), profile.experimental);
+        appendSelectRow(form, "chat-profile-prompt-scope", t("aiadmin-field-prompt-history-scope", "Prompt history scope"), profile.promptHistoryScope, promptHistoryScopeOptions());
+        appendInputRow(form, "chat-profile-prompt-turns", t("aiadmin-field-prompt-history-turns", "Prompt history turns"), profile.promptHistoryTurns, { type: "number", min: 0, max: 20 });
+        appendInputRow(form, "chat-profile-max-prompt-chars", t("aiadmin-field-max-prompt-history-chars", "Prompt history max chars"), profile.maxPromptHistoryChars, { type: "number", min: 0, max: 80000 });
+        appendSelectRow(form, "chat-profile-retrieval-mode", t("aiadmin-field-retrieval-history-mode", "Retrieval history mode"), profile.retrievalHistoryMode, retrievalHistoryModeOptions());
+        appendInputRow(form, "chat-profile-retrieval-turns", t("aiadmin-field-retrieval-history-turns", "Retrieval history turns"), profile.retrievalHistoryTurns, { type: "number", min: 0, max: 12 });
+        appendInputRow(form, "chat-profile-max-retrieval-chars", t("aiadmin-field-max-retrieval-history-chars", "Retrieval history max chars"), profile.maxRetrievalHistoryChars, { type: "number", min: 0, max: 12000 });
+        const actions = document.createElement("div");
+        actions.className = "ai-admin-row";
+        actions.innerHTML = [
+          `<button type="button" class="ai-admin-btn ai-admin-btn-primary" id="aiadmin-save-chat-profile">${t("aiadmin-action-save-profile")}</button>`,
+          `<button type="button" class="ai-admin-btn" id="aiadmin-restore-chat-profiles">${t("aiadmin-action-restore-chat-profiles", "Restore chat profiles")}</button>`,
+          `<button type="button" class="ai-admin-btn" id="aiadmin-refresh-chat-profiles">${t("aiadmin-action-refresh-status")}</button>`,
+          `<span id="aiadmin-chat-profile-status"></span>`
+        ].join("");
+        form.appendChild(actions);
+
+        document.getElementById("chat-profile-select").addEventListener("change", (event) => {
+          selectedChatProfileId = event.target.value;
+          renderChatManagementConfig().catch((err) => statusText("aiadmin-chat-profile-status", err.message, false));
+        });
+        document.getElementById("aiadmin-save-chat-profile").addEventListener("click", async () => {
+          try {
+            const saved = await request("/api/admin/chat-profiles", { method: "POST", body: JSON.stringify(collectChatProfile()) });
+            chatManagementConfig = saved.values || {};
+            chatProfiles = saved.chatProfiles || [];
+            await renderChatManagementConfig();
+            await renderRetrievalProfiles();
+            statusText("aiadmin-chat-profile-status", t("aiadmin-message-saved"));
+          } catch (err) {
+            statusText("aiadmin-chat-profile-status", err.message, false);
+          }
+        });
+        document.getElementById("aiadmin-restore-chat-profiles").addEventListener("click", async () => {
+          try {
+            const saved = await request("/api/admin/chat-profiles/restore-defaults", { method: "POST" });
+            chatManagementConfig = saved.values || {};
+            chatProfiles = saved.chatProfiles || [];
+            selectedChatProfileId = chatManagementConfig.defaultChatProfileId || chatProfiles[0]?.id || null;
+            await renderChatManagementConfig();
+            await renderRetrievalProfiles();
+            statusText("aiadmin-chat-profile-status", t("aiadmin-message-saved"));
+          } catch (err) {
+            statusText("aiadmin-chat-profile-status", err.message, false);
+          }
+        });
+        document.getElementById("aiadmin-refresh-chat-profiles").addEventListener("click", async () => {
+          try {
+            await renderChatManagementConfig();
+            statusText("aiadmin-chat-profile-status", t("aiadmin-message-refreshed"));
+          } catch (err) {
+            statusText("aiadmin-chat-profile-status", err.message, false);
+          }
+        });
+      };
+
+      const collectChatProfile = () => ({
+        id: document.getElementById("chat-profile-id").value.trim(),
+        name: document.getElementById("chat-profile-name").value.trim(),
+        description: document.getElementById("chat-profile-description").value.trim(),
+        enabled: document.getElementById("chat-profile-enabled").checked,
+        defaultForChat: document.getElementById("chat-profile-default").checked,
+        experimental: document.getElementById("chat-profile-experimental").checked,
+        promptHistoryScope: document.getElementById("chat-profile-prompt-scope").value,
+        promptHistoryTurns: Number(document.getElementById("chat-profile-prompt-turns").value),
+        maxPromptHistoryChars: Number(document.getElementById("chat-profile-max-prompt-chars").value),
+        retrievalHistoryMode: document.getElementById("chat-profile-retrieval-mode").value,
+        retrievalHistoryTurns: Number(document.getElementById("chat-profile-retrieval-turns").value),
+        maxRetrievalHistoryChars: Number(document.getElementById("chat-profile-max-retrieval-chars").value),
+      });
+
       const renderChatRetentionConfig = async () => {
         const data = await request("/api/admin/chat-retention/config");
         chatRetentionConfig = data.values || {};
@@ -1888,6 +2335,18 @@ export function initializeAIAdmin(options = {}) {
         },
       });
 
+      const displayChatSessionUser = (session) => {
+        const username = String(session.username || "").trim();
+        if (username && username !== "cached") return username;
+        if (Number(session.userId) > 0) return String(session.userId);
+        if (username === "cached") {
+          return formatText("aiadmin-value-chat-user-legacy", {
+            userId: session.userId ?? 0
+          }, "legacy cache user #{userId}");
+        }
+        return unknown();
+      };
+
       const renderChatSessionMessages = async (session) => {
         const root = document.getElementById("aiadmin-chat-session-detail");
         if (!root) return;
@@ -1903,7 +2362,7 @@ export function initializeAIAdmin(options = {}) {
 
           const meta = document.createElement("div");
           meta.className = "ai-admin-muted";
-          meta.textContent = `${t("aiadmin-table-user")}: ${session.username || session.userId}; ${t("aiadmin-table-status")}: ${session.status}; ${t("aiadmin-table-conversation")}: ${session.conversationId}; ${t("aiadmin-table-message-count")}: ${session.messageCount}`;
+          meta.textContent = `${t("aiadmin-table-user")}: ${displayChatSessionUser(session)}; ${t("aiadmin-table-status")}: ${session.status}; ${t("aiadmin-table-conversation")}: ${session.conversationId}; ${t("aiadmin-table-message-count")}: ${session.messageCount}`;
           root.appendChild(meta);
 
           if (messages.length === 0) {
@@ -1973,7 +2432,7 @@ export function initializeAIAdmin(options = {}) {
         const tbody = table.querySelector("tbody");
         sessions.forEach((session) => {
           const row = document.createElement("tr");
-          [session.title || session.conversationId, session.username || session.userId, session.status, session.messageCount, session.lastMessageAt || session.createdAt].forEach((value) => {
+          [session.title || session.conversationId, displayChatSessionUser(session), session.status, session.messageCount, session.lastMessageAt || session.createdAt].forEach((value) => {
             const cell = document.createElement("td");
             cell.textContent = String(value ?? "");
             row.appendChild(cell);
@@ -3385,6 +3844,19 @@ export function initializeAIAdmin(options = {}) {
           { value: "manual", label: t("aiadmin-value-conflict-mode-manual") },
         ]);
         appendInputRow(form, "conflict-model", t("aiadmin-field-conflict-model"), conflictDetectionConfig.model);
+        appendInputRow(
+          form,
+          "conflict-system-prompt",
+          t("aiadmin-field-conflict-system-prompt", "Conflict detection system prompt"),
+          conflictDetectionConfig.systemPrompt || "",
+          {
+            textarea: true,
+            help: t(
+              "aiadmin-help-conflict-system-prompt",
+              "Instruction sent as the system message to the LLM conflict detector. Runtime user question and sources are appended separately."
+            )
+          }
+        ).rows = 9;
         appendInputRow(form, "conflict-max-sources", t("aiadmin-field-conflict-max-sources"), conflictDetectionConfig.maxSources, { type: "number", min: 2, max: 10 });
         appendInputRow(form, "conflict-max-chars", t("aiadmin-field-conflict-max-chars-source"), conflictDetectionConfig.maxCharsPerSource, { type: "number", min: 300, max: 12000 });
         appendInputRow(form, "conflict-trust-gap", t("aiadmin-field-conflict-trust-gap"), conflictDetectionConfig.trustGapThreshold, { type: "number", min: 0, max: 1, step: "0.01" });
@@ -3396,6 +3868,7 @@ export function initializeAIAdmin(options = {}) {
         enabled: document.getElementById("conflict-enabled").checked,
         runMode: document.getElementById("conflict-runmode").value,
         model: document.getElementById("conflict-model").value.trim(),
+        systemPrompt: document.getElementById("conflict-system-prompt").value.trim(),
         maxSources: Number(document.getElementById("conflict-max-sources").value),
         maxCharsPerSource: Number(document.getElementById("conflict-max-chars").value),
         trustGapThreshold: Number(document.getElementById("conflict-trust-gap").value),
@@ -3485,6 +3958,86 @@ export function initializeAIAdmin(options = {}) {
         root.appendChild(table);
       };
 
+      const populateIndexingProfileSelect = (select, selectedId, options = {}) => {
+        if (!select) return;
+        const includeEmpty = Boolean(options.includeEmpty);
+        const emptyLabel = options.emptyLabel || t("aiadmin-value-none");
+        select.innerHTML = "";
+        if (includeEmpty) {
+          const empty = document.createElement("option");
+          empty.value = "";
+          empty.textContent = emptyLabel;
+          select.appendChild(empty);
+        }
+        indexingProfiles.forEach((profile) => {
+          const option = document.createElement("option");
+          option.value = profile.id;
+          option.textContent = `${profile.name} (${profile.id})`;
+          select.appendChild(option);
+        });
+        if (selectedId && indexingProfiles.some((profile) => profile.id === selectedId)) {
+          select.value = selectedId;
+        } else if (includeEmpty) {
+          select.value = "";
+        }
+      };
+
+      const populateIndexingAutomationProfileSelects = () => {
+        const automation = indexingAutomationConfig || {};
+        populateIndexingProfileSelect(
+          document.getElementById("idx-automation-change-profile"),
+          automation.changeIndexingProfileId,
+          { includeEmpty: true, emptyLabel: t("aiadmin-value-current-default") }
+        );
+        populateIndexingProfileSelect(
+          document.getElementById("idx-automation-scheduled-profile"),
+          automation.scheduledReindexProfileId,
+          { includeEmpty: true }
+        );
+      };
+
+      const renderIndexingAutomation = async () => {
+        const data = await request("/api/admin/indexing-automation");
+        indexingAutomationConfig = data.values || {
+          scheduleEnabled: false,
+          scheduleIntervalMinutes: 1440,
+        };
+        populateIndexingAutomationProfileSelects();
+        document.getElementById("idx-automation-schedule-enabled").checked = Boolean(indexingAutomationConfig.scheduleEnabled);
+        document.getElementById("idx-automation-schedule-interval").value = indexingAutomationConfig.scheduleIntervalMinutes || 1440;
+      };
+
+      const collectIndexingAutomation = () => ({
+        changeIndexingProfileId: document.getElementById("idx-automation-change-profile").value || null,
+        scheduledReindexProfileId: document.getElementById("idx-automation-scheduled-profile").value || null,
+        scheduleEnabled: document.getElementById("idx-automation-schedule-enabled").checked,
+        scheduleIntervalMinutes: Number(document.getElementById("idx-automation-schedule-interval").value || 1440),
+      });
+
+      const normalizeAttachmentTarget = (targets, attachmentsEnabled) => {
+        const normalized = Array.from(new Set(targets || []));
+        const hasAttachmentTarget = normalized.includes("attachments");
+        if (attachmentsEnabled && !hasAttachmentTarget) return [...normalized, "attachments"];
+        if (!attachmentsEnabled && hasAttachmentTarget) return normalized.filter((target) => target !== "attachments");
+        return normalized;
+      };
+
+      const attachmentTargetMismatch = (profile) => {
+        const hasAttachmentTarget = (profile.indexTargets || []).includes("attachments");
+        return hasAttachmentTarget !== Boolean(profile.attachmentsEnabled);
+      };
+
+      const syncIndexingAttachmentControls = (source) => {
+        const attachmentsInput = document.getElementById("idx-profile-attachments");
+        const attachmentTarget = document.querySelector(".idx-profile-target[value=\"attachments\"]");
+        if (!attachmentsInput || !attachmentTarget) return;
+        if (source === "target") {
+          attachmentsInput.checked = attachmentTarget.checked;
+        } else {
+          attachmentTarget.checked = attachmentsInput.checked;
+        }
+      };
+
       const renderIndexingProfiles = async () => {
         if (ontologyProperties.length === 0) {
           await loadOntologyProperties();
@@ -3494,7 +4047,9 @@ export function initializeAIAdmin(options = {}) {
         const root = document.getElementById("aiadmin-indexing-profiles");
         const select = document.getElementById("aiadmin-reindex-profile");
         root.innerHTML = "";
-        select.innerHTML = "";
+        const selectedReindexProfile = select?.value;
+        populateIndexingProfileSelect(select, selectedReindexProfile);
+        populateIndexingAutomationProfileSelects();
 
         const table = document.createElement("table");
         table.className = "ai-admin-table";
@@ -3508,11 +4063,6 @@ export function initializeAIAdmin(options = {}) {
         ]);
         const tbody = table.querySelector("tbody");
         indexingProfiles.forEach((profile) => {
-          const option = document.createElement("option");
-          option.value = profile.id;
-          option.textContent = `${profile.name} (${profile.id})`;
-          select.appendChild(option);
-
           const row = document.createElement("tr");
           [
             profile.id,
@@ -3520,7 +4070,14 @@ export function initializeAIAdmin(options = {}) {
             (profile.namespaces || []).join(", "),
             `title +${(profile.titleFilters?.include || []).join("|")} -${(profile.titleFilters?.exclude || []).join("|")}; category +${(profile.categoryFilters?.include || []).join("|")} -${(profile.categoryFilters?.exclude || []).join("|")}`,
             `${profile.chunkSize}/${profile.chunkOverlap}`,
-            `targets=${(profile.indexTargets || []).join(",")}; maxPages=${profile.maxPagesDefault ?? t("aiadmin-value-none")}; dryRun=${yesNo(profile.dryRunDefault)}; attachments=${yesNo(profile.attachmentsEnabled)}; semantic=${yesNo(profile.semanticFactsEnabled)}; run=${profile.runMode || "manual"}`,
+            [
+              `targets=${(profile.indexTargets || []).join(",")}`,
+              `maxPages=${profile.maxPagesDefault ?? t("aiadmin-value-none")}`,
+              `dryRun=${yesNo(profile.dryRunDefault)}`,
+              `attachments=${yesNo(profile.attachmentsEnabled)}`,
+              `semantic=${yesNo(profile.semanticFactsEnabled)}`,
+              attachmentTargetMismatch(profile) ? t("aiadmin-warning-index-profile-attachments-target-mismatch", "Attachment target and attachment checkbox are out of sync") : "",
+            ].filter(Boolean).join("; "),
           ].forEach((cellValue) => {
             const cell = document.createElement("td");
             cell.textContent = String(cellValue);
@@ -3541,8 +4098,6 @@ export function initializeAIAdmin(options = {}) {
           setCategoryFilterValues("include", first.categoryFilters?.include || []);
           setCategoryFilterValues("exclude", first.categoryFilters?.exclude || []);
           document.getElementById("idx-profile-document-policy").value = first.documentPolicyId || "default";
-          document.getElementById("idx-profile-runmode").value = first.runMode || "manual";
-          document.getElementById("idx-profile-schedule").value = first.scheduleIntervalMinutes || "";
           document.getElementById("idx-profile-maxpages").value = first.maxPagesDefault ?? "";
           document.getElementById("idx-profile-chunksize").value = first.chunkSize || "";
           document.getElementById("idx-profile-overlap").value = first.chunkOverlap || "";
@@ -3552,14 +4107,19 @@ export function initializeAIAdmin(options = {}) {
           document.querySelectorAll(".idx-profile-target").forEach((input) => {
             input.checked = targets.has(input.value);
           });
+          syncIndexingAttachmentControls();
           document.getElementById("idx-profile-dryrun").checked = Boolean(first.dryRunDefault);
         }
+        renderReindexPreflight();
       };
 
       const collectIndexingProfile = () => {
         const maxPages = document.getElementById("idx-profile-maxpages").value.trim();
-        const schedule = document.getElementById("idx-profile-schedule").value.trim();
         const id = document.getElementById("idx-profile-id").value.trim();
+        const attachmentsEnabled = document.getElementById("idx-profile-attachments").checked;
+        const rawIndexTargets = Array.from(document.querySelectorAll(".idx-profile-target"))
+          .filter((input) => input.checked)
+          .map((input) => input.value);
         const profile = {
           name: document.getElementById("idx-profile-name").value.trim(),
           namespaces: parseNumberCsv(document.getElementById("idx-profile-namespaces").value),
@@ -3572,11 +4132,8 @@ export function initializeAIAdmin(options = {}) {
             exclude: getCategoryFilterValues("exclude"),
           },
           documentPolicyId: document.getElementById("idx-profile-document-policy").value.trim() || "default",
-          runMode: document.getElementById("idx-profile-runmode").value,
-          indexTargets: Array.from(document.querySelectorAll(".idx-profile-target"))
-            .filter((input) => input.checked)
-            .map((input) => input.value),
-          attachmentsEnabled: document.getElementById("idx-profile-attachments").checked,
+          indexTargets: normalizeAttachmentTarget(rawIndexTargets, attachmentsEnabled),
+          attachmentsEnabled,
           semanticFactsEnabled: document.getElementById("idx-profile-semantics").checked,
           dryRunDefault: document.getElementById("idx-profile-dryrun").checked,
           ontologyVectorsEnabled: false,
@@ -3586,7 +4143,6 @@ export function initializeAIAdmin(options = {}) {
           maxPagesDefault: maxPages ? Number(maxPages) : null,
         };
         if (id) profile.id = id;
-        if (schedule) profile.scheduleIntervalMinutes = Number(schedule);
         return profile;
       };
 
@@ -3756,6 +4312,7 @@ export function initializeAIAdmin(options = {}) {
         const data = await request("/api/admin/document-processing");
         documentPolicy = data.values || { attachmentsEnabled: true, mimeTypes: {} };
         renderDocumentPolicy();
+        renderReindexPreflight();
       };
 
       const ontologyTemplateForName = (name) => ontologyPropertyTemplates[String(name || "").trim()] || null;
@@ -4346,6 +4903,37 @@ export function initializeAIAdmin(options = {}) {
 
       const isReindexTerminalState = (state) => ["idle", "completed", "failed"].includes(state);
 
+      const renderReindexPreflight = () => {
+        const root = document.getElementById("aiadmin-reindex-preflight");
+        if (!root) return;
+        const selected = indexingProfiles.find((profile) => profile.id === document.getElementById("aiadmin-reindex-profile")?.value);
+        if (!selected) {
+          root.className = "ai-admin-status-warning";
+          root.textContent = t("aiadmin-status-reindex-profile-missing", "Select an indexing profile before reindex.");
+          return;
+        }
+        const targets = selected.indexTargets || [];
+        const attachmentsRequested = Boolean(document.getElementById("aiadmin-reindex-attachments")?.checked);
+        const dryRun = Boolean(document.getElementById("aiadmin-reindex-dryrun")?.checked);
+        const attachmentTargetEnabled = targets.includes("attachments");
+        const policyEnabled = Boolean(documentPolicy?.attachmentsEnabled);
+        const attachmentsActive = attachmentsRequested && !dryRun && attachmentTargetEnabled && policyEnabled;
+        const searchTargets = targets.filter((target) => ["bm25", "opensearch", "colbert"].includes(target));
+        root.className = attachmentsActive
+          ? "ai-admin-status-ok"
+          : attachmentsRequested ? "ai-admin-status-warning" : "ai-admin-muted";
+        root.textContent = formatText("aiadmin-reindex-preflight", {
+          profile: `${selected.name} (${selected.id})`,
+          requested: yesNo(attachmentsRequested),
+          active: yesNo(attachmentsActive),
+          policy: yesNo(policyEnabled),
+          target: yesNo(attachmentTargetEnabled),
+          dryRun: yesNo(dryRun),
+          targets: targets.join(", ") || t("aiadmin-value-none"),
+          searchTargets: searchTargets.join(", ") || t("aiadmin-value-none"),
+        });
+      };
+
       const renderReindexStatus = async () => {
         const root = document.getElementById("aiadmin-reindex-status");
         try {
@@ -4382,6 +4970,60 @@ export function initializeAIAdmin(options = {}) {
             current.className = "ai-admin-muted";
             current.textContent = formatText("aiadmin-reindex-current-title", { title: currentTitle });
             root.appendChild(current);
+          }
+
+          const attachmentSkipped =
+            firstDefined(progress.attachmentsSkippedDisabled, summary.attachmentsSkippedDisabled, 0)
+            + firstDefined(progress.attachmentsSkippedNoInfo, summary.attachmentsSkippedNoInfo, 0)
+            + firstDefined(progress.attachmentsSkippedNoDownload, summary.attachmentsSkippedNoDownload, 0)
+            + firstDefined(progress.attachmentsSkippedEmpty, summary.attachmentsSkippedEmpty, 0);
+          const attachmentCounters = document.createElement("div");
+          const attachmentsRequested = Boolean(firstDefined(progress.attachmentsRequested, summary.attachmentsRequested, false));
+          const attachmentsActive = Boolean(firstDefined(progress.attachmentsActive, summary.attachmentsActive, false));
+          attachmentCounters.className = attachmentsActive
+            ? "ai-admin-status-ok"
+            : attachmentsRequested ? "ai-admin-status-warning" : "ai-admin-muted";
+          attachmentCounters.textContent = formatText("aiadmin-reindex-attachment-counters", {
+            requested: yesNo(attachmentsRequested),
+            active: yesNo(attachmentsActive),
+            policy: yesNo(Boolean(firstDefined(progress.documentPolicyEnabled, summary.documentPolicyEnabled, false))),
+            found: firstDefined(progress.attachmentsFound, summary.attachmentsFound, 0),
+            processed: firstDefined(progress.attachmentsProcessed, summary.attachmentsProcessed, 0),
+            failed: firstDefined(progress.attachmentsFailed, summary.attachmentsFailed, 0),
+            skipped: attachmentSkipped
+          });
+          root.appendChild(attachmentCounters);
+
+          const attachmentTargetWrites = firstDefined(progress.attachmentTargetWrites, summary.attachmentTargetWrites, {});
+          const targetWriteText = Object.entries(attachmentTargetWrites || {})
+            .map(([target, count]) => `${target}:${count}`)
+            .join(", ");
+          const targetWrites = document.createElement("div");
+          targetWrites.className = targetWriteText ? "ai-admin-muted" : "ai-admin-status-warning";
+          targetWrites.textContent = formatText("aiadmin-reindex-attachment-target-writes", {
+            targets: firstDefined(progress.indexTargets, summary.indexTargets, []).join(", ") || t("aiadmin-value-none"),
+            writes: targetWriteText || t("aiadmin-value-none"),
+          });
+          root.appendChild(targetWrites);
+
+          const documentPolicyEnabled = Boolean(firstDefined(progress.documentPolicyEnabled, summary.documentPolicyEnabled, false));
+          if (attachmentsRequested && !documentPolicyEnabled) {
+            const warning = document.createElement("div");
+            warning.className = "ai-admin-status-warning";
+            warning.textContent = t("aiadmin-warning-reindex-attachments-policy-disabled", "Attachments were requested for this run, but document recognition policy is disabled.");
+            root.appendChild(warning);
+          }
+
+          const currentAttachment = firstDefined(progress.currentAttachmentFilename, summary.currentAttachmentFilename);
+          if (currentAttachment) {
+            const attachment = document.createElement("div");
+            attachment.className = "ai-admin-muted";
+            attachment.textContent = formatText("aiadmin-reindex-current-attachment", {
+              filename: currentAttachment,
+              mime: firstDefined(progress.currentAttachmentMime, summary.currentAttachmentMime, unknown()),
+              mode: firstDefined(progress.currentAttachmentMode, summary.currentAttachmentMode, unknown())
+            });
+            root.appendChild(attachment);
           }
 
           if (status.error) {
@@ -4546,6 +5188,21 @@ export function initializeAIAdmin(options = {}) {
         }
       });
       document.addEventListener("click", async (event) => {
+        if (event.target?.id !== "aiadmin-check-opensearch-attachment") return;
+        try {
+          ensureOpenSearchBaseUrl();
+          const filename = document.getElementById("svc-opensearch-attachment-filename")?.value || "";
+          const data = await request("/api/admin/opensearch/attachment-diagnostics", {
+            method: "POST",
+            body: JSON.stringify({ filename, limit: 5 }),
+          });
+          renderOpenSearchAttachmentDiagnostics(data.values || {});
+          await refreshOpenSearchIndexState();
+        } catch (err) {
+          renderOpenSearchPreview(err.message, false);
+        }
+      });
+      document.addEventListener("click", async (event) => {
         if (event.target?.id !== "aiadmin-rebuild-opensearch-index") return;
         try {
           const profile = await rebuildOpenSearchIndex();
@@ -4600,7 +5257,7 @@ export function initializeAIAdmin(options = {}) {
         try {
           const data = await request("/api/admin/retrieval-profiles");
           retrievalProfiles = data.values || [];
-          renderRetrievalProfiles();
+          await renderRetrievalProfiles();
           await renderMediaWikiProfileConfig();
           statusText("aiadmin-retrieval-profile-status", t("aiadmin-message-refreshed"));
         } catch (err) {
@@ -4624,7 +5281,7 @@ export function initializeAIAdmin(options = {}) {
           };
           retrievalProfiles = [duplicate, ...retrievalProfiles];
           selectedRetrievalProfileId = duplicate.id;
-          renderRetrievalProfiles();
+          await renderRetrievalProfiles();
           statusText("aiadmin-retrieval-profile-status", t("aiadmin-message-refreshed"));
         } catch (err) {
           statusText("aiadmin-retrieval-profile-status", err.message, false);
@@ -4636,6 +5293,20 @@ export function initializeAIAdmin(options = {}) {
           renderLlmTest(data.values || {});
         } catch (err) {
           statusText("aiadmin-settings-status", err.message, false);
+        }
+      });
+      document.getElementById("aiadmin-run-chat-debug").addEventListener("click", async () => {
+        try {
+          statusText("aiadmin-chat-debug-status", t("aiadmin-loading"));
+          const data = await request("/api/admin/chat/debug-trace", {
+            method: "POST",
+            timeoutMs: 120000,
+            body: JSON.stringify(collectChatDebugTrace())
+          });
+          renderChatDebugTrace(data.values || {});
+          statusText("aiadmin-chat-debug-status", t("aiadmin-message-test-completed"));
+        } catch (err) {
+          statusText("aiadmin-chat-debug-status", err.message, false);
         }
       });
       document.getElementById("aiadmin-save-embedding-config").addEventListener("click", async () => {
@@ -5050,14 +5721,32 @@ export function initializeAIAdmin(options = {}) {
       document.getElementById("aiadmin-refresh-audit").addEventListener("click", () => {
         renderAuditLog();
       });
+      document.getElementById("idx-profile-attachments").addEventListener("change", () => {
+        syncIndexingAttachmentControls("checkbox");
+      });
+      document.querySelector(".idx-profile-target[value=\"attachments\"]")?.addEventListener("change", () => {
+        syncIndexingAttachmentControls("target");
+      });
       document.getElementById("aiadmin-save-indexing-profile").addEventListener("click", async () => {
         try {
           await request("/api/admin/indexing-profiles", { method: "POST", body: JSON.stringify(collectIndexingProfile()) });
           await renderIndexingProfiles();
+          await renderIndexingAutomation();
           await renderIndexingSchedulerStatus();
           statusText("aiadmin-indexing-profile-status", t("aiadmin-message-saved"));
         } catch (err) {
           statusText("aiadmin-indexing-profile-status", err.message, false);
+        }
+      });
+      document.getElementById("aiadmin-save-indexing-automation").addEventListener("click", async () => {
+        try {
+          const data = await request("/api/admin/indexing-automation", { method: "POST", body: JSON.stringify(collectIndexingAutomation()) });
+          indexingAutomationConfig = data.values || indexingAutomationConfig;
+          await renderIndexingAutomation();
+          await renderIndexingSchedulerStatus();
+          statusText("aiadmin-indexing-automation-status", t("aiadmin-message-saved"));
+        } catch (err) {
+          statusText("aiadmin-indexing-automation-status", err.message, false);
         }
       });
       document.getElementById("aiadmin-reindex-profile").addEventListener("change", () => {
@@ -5066,7 +5755,10 @@ export function initializeAIAdmin(options = {}) {
         document.getElementById("aiadmin-reindex-attachments").checked = Boolean(selected.attachmentsEnabled);
         document.getElementById("aiadmin-reindex-dryrun").checked = Boolean(selected.dryRunDefault);
         document.getElementById("aiadmin-reindex-maxpages").value = selected.maxPagesDefault ?? "";
+        renderReindexPreflight();
       });
+      document.getElementById("aiadmin-reindex-attachments").addEventListener("change", renderReindexPreflight);
+      document.getElementById("aiadmin-reindex-dryrun").addEventListener("change", renderReindexPreflight);
       document.getElementById("aiadmin-save-settings").addEventListener("click", async () => {
         try {
           await request("/api/admin/llm/config", { method: "POST", body: JSON.stringify(collectSettings()) });
@@ -5270,6 +5962,7 @@ export function initializeAIAdmin(options = {}) {
       renderEmbeddingConfig().catch((err) => statusText("aiadmin-embedding-status", err.message, false));
       renderRagConfig().catch((err) => statusText("aiadmin-rag-status", err.message, false));
       renderWebhookConfig().catch((err) => statusText("aiadmin-webhook-status", err.message, false));
+      renderChatManagementConfig().catch((err) => statusText("aiadmin-chat-management-status", err.message, false));
       renderChatRetentionConfig().catch((err) => statusText("aiadmin-chat-retention-status", err.message, false));
       renderSemanticAutofillConfig().catch((err) => statusText("aiadmin-autofill-status", err.message, false));
       renderTrustModels().catch((err) => statusText("aiadmin-trust-model-status", err.message, false));
@@ -5280,6 +5973,7 @@ export function initializeAIAdmin(options = {}) {
       renderSensitiveProperties().catch((err) => statusText("aiadmin-sensitive-status", err.message, false));
       renderSemanticStatus();
       renderIndexingProfiles().catch((err) => statusText("aiadmin-indexing-profile-status", err.message, false));
+      renderIndexingAutomation().catch((err) => statusText("aiadmin-indexing-automation-status", err.message, false));
       renderIndexingSchedulerStatus().catch((err) => statusText("aiadmin-indexing-profile-status", err.message, false));
       startReindexStatusPolling();
       renderAuditLog();

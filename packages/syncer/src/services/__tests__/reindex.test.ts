@@ -5,24 +5,32 @@ import { runReindex, validateReindexPreflight } from '../reindex.js';
 const fetchAllPages = vi.hoisted(() => vi.fn());
 const fetchPageContent = vi.hoisted(() => vi.fn());
 const fetchPageCategories = vi.hoisted(() => vi.fn());
+const fetchPageFiles = vi.hoisted(() => vi.fn());
+const fetchFileInfo = vi.hoisted(() => vi.fn());
+const downloadFile = vi.hoisted(() => vi.fn());
 const fetchSemanticFacts = vi.hoisted(() => vi.fn());
 const getMediaWikiServiceAuthStatus = vi.hoisted(() => vi.fn());
 const upsertChunks = vi.hoisted(() => vi.fn());
 const upsertCmdbDynamicSnapshotChunks = vi.hoisted(() => vi.fn());
+const upsertAttachmentChunks = vi.hoisted(() => vi.fn());
+const upsertAttachmentMetadata = vi.hoisted(() => vi.fn());
 const syncSearchIndexFromQdrantPayload = vi.hoisted(() => vi.fn());
 const fetchEffectiveEmbeddingConfig = vi.hoisted(() => vi.fn());
 const fetchIndexingProfiles = vi.hoisted(() => vi.fn());
 const enrichPageForReindex = vi.hoisted(() => vi.fn());
+const getGatewaySearchIndexStatus = vi.hoisted(() => vi.fn());
 const extractCmdbDynamicSources = vi.hoisted(() => vi.fn());
 const fetchCmdbDynamicSnapshotChunks = vi.hoisted(() => vi.fn());
+const getDocumentProcessingConfig = vi.hoisted(() => vi.fn());
+const getMimeProcessingRule = vi.hoisted(() => vi.fn());
 
 vi.mock('../mediawiki.js', () => ({
   fetchAllPages,
   fetchPageContent,
   fetchPageCategories,
-  fetchPageFiles: vi.fn(),
-  fetchFileInfo: vi.fn(),
-  downloadFile: vi.fn(),
+  fetchPageFiles,
+  fetchFileInfo,
+  downloadFile,
   fetchSemanticFacts,
   getMediaWikiServiceAuthStatus,
   semanticFactsToText: (facts: Record<string, string[]>) => Object.entries(facts)
@@ -33,8 +41,8 @@ vi.mock('../mediawiki.js', () => ({
 vi.mock('../qdrant.js', () => ({
   upsertChunks,
   upsertCmdbDynamicSnapshotChunks,
-  upsertAttachmentChunks: vi.fn(),
-  upsertAttachmentMetadata: vi.fn(),
+  upsertAttachmentChunks,
+  upsertAttachmentMetadata,
   syncSearchIndexFromQdrantPayload,
 }));
 
@@ -44,14 +52,15 @@ vi.mock('../cmdbdynamicpages.js', () => ({
 }));
 
 vi.mock('../document-policy.js', () => ({
-  getDocumentProcessingConfig: vi.fn(async () => ({ attachmentsEnabled: true, mimeTypes: {} })),
-  getMimeProcessingRule: vi.fn(() => ({ mode: 'metadata' })),
+  getDocumentProcessingConfig,
+  getMimeProcessingRule,
 }));
 
 vi.mock('../gateway.js', () => ({
   fetchEffectiveEmbeddingConfig,
   fetchIndexingProfiles,
   enrichPageForReindex,
+  getGatewaySearchIndexStatus,
 }));
 
 describe('runReindex', () => {
@@ -65,6 +74,9 @@ describe('runReindex', () => {
     fetchAllPages.mockReset();
     fetchPageContent.mockReset();
     fetchPageCategories.mockReset();
+    fetchPageFiles.mockReset();
+    fetchFileInfo.mockReset();
+    downloadFile.mockReset();
     fetchSemanticFacts.mockReset();
     getMediaWikiServiceAuthStatus.mockReset();
     getMediaWikiServiceAuthStatus.mockReturnValue({
@@ -78,6 +90,20 @@ describe('runReindex', () => {
     });
     upsertChunks.mockReset();
     upsertCmdbDynamicSnapshotChunks.mockReset();
+    upsertAttachmentChunks.mockReset();
+    upsertAttachmentMetadata.mockReset();
+    upsertAttachmentChunks.mockResolvedValue({
+      status: 'ok',
+      url: 'gateway',
+      chunks: 1,
+      targetWrites: { bm25: 1, opensearch: 1 },
+    });
+    upsertAttachmentMetadata.mockResolvedValue({
+      status: 'ok',
+      url: 'gateway',
+      chunks: 1,
+      targetWrites: { bm25: 1, opensearch: 1 },
+    });
     syncSearchIndexFromQdrantPayload.mockReset();
     syncSearchIndexFromQdrantPayload.mockResolvedValue({
       qdrantPoints: 2,
@@ -89,6 +115,16 @@ describe('runReindex', () => {
     fetchEffectiveEmbeddingConfig.mockReset();
     fetchIndexingProfiles.mockReset();
     fetchIndexingProfiles.mockResolvedValue([]);
+    getGatewaySearchIndexStatus.mockReset();
+    getGatewaySearchIndexStatus.mockResolvedValue({
+      status: 'ok',
+      url: 'gateway',
+      values: { attachmentColumnsReady: true },
+    });
+    getDocumentProcessingConfig.mockReset();
+    getDocumentProcessingConfig.mockResolvedValue({ attachmentsEnabled: true, mimeTypes: {} });
+    getMimeProcessingRule.mockReset();
+    getMimeProcessingRule.mockReturnValue({ mode: 'metadata' });
     fetchEffectiveEmbeddingConfig.mockResolvedValue({
       provider: 'ollama',
       baseUrl: 'http://localhost:11434',
@@ -138,6 +174,65 @@ describe('runReindex', () => {
     expect(upsertChunks).toHaveBeenCalledTimes(1);
     expect(upsertChunks.mock.calls[0][5]).toBe('2024-01-15T10:00:00Z');
     expect(upsertChunks.mock.calls[0][6]).toEqual({ 'Тип документа': ['FAQ'] });
+  });
+
+  it('reports attachment counters during reindex', async () => {
+    fetchAllPages.mockResolvedValueOnce([
+      { pageid: 1, ns: 0, title: 'Page With Files' },
+    ]);
+    fetchPageContent.mockResolvedValueOnce({
+      pageid: 1,
+      ns: 0,
+      title: 'Page With Files',
+      content: 'Page body',
+      lastModified: '2026-06-06T04:00:00Z',
+    });
+    fetchPageFiles.mockResolvedValueOnce(['Manual.pdf', 'Missing.pptx']);
+    fetchFileInfo
+      .mockResolvedValueOnce({
+        filename: 'Manual.pdf',
+        mime: 'application/pdf',
+        size: 1234,
+        url: 'http://wiki/files/manual.pdf',
+      })
+      .mockResolvedValueOnce(null);
+    const progress: Array<{ attachmentsFound?: number; attachmentsProcessed?: number; currentAttachmentFilename?: string }> = [];
+
+    const summary = await runReindex({
+      attachmentsEnabled: true,
+      semanticFactsEnabled: false,
+      indexTargets: ['bm25', 'attachments'],
+    }, (entry) => progress.push(entry));
+
+    expect(getGatewaySearchIndexStatus).toHaveBeenCalled();
+    expect(upsertAttachmentMetadata).toHaveBeenCalledTimes(1);
+    expect(summary).toMatchObject({
+      attachmentsRequested: true,
+      attachmentsActive: true,
+      documentPolicyEnabled: true,
+      attachmentsFound: 2,
+      attachmentsProcessed: 1,
+      attachmentsFailed: 0,
+      attachmentsSkippedNoInfo: 1,
+      attachmentTargetWrites: { bm25: 1, opensearch: 1 },
+    });
+    expect(progress.some((entry) => entry.currentAttachmentFilename === 'Manual.pdf')).toBe(true);
+  });
+
+  it('rejects attachment BM25 reindex when Gateway attachment schema is not ready', async () => {
+    getGatewaySearchIndexStatus.mockResolvedValueOnce({
+      status: 'ok',
+      url: 'gateway',
+      values: { attachmentColumnsReady: false },
+    });
+
+    await expect(runReindex({
+      attachmentsEnabled: true,
+      semanticFactsEnabled: false,
+      indexTargets: ['bm25', 'attachments'],
+    })).rejects.toThrow('Gateway attachment index schema is not ready');
+
+    expect(fetchAllPages).not.toHaveBeenCalled();
   });
 
   it('reindexes all matched pages when maxPages is not set', async () => {

@@ -114,7 +114,38 @@ describe('conflict detection', () => {
       trustScore: 0.9,
     });
     expect(callLiteLLM).toHaveBeenCalledTimes(1);
+    expect(callLiteLLM.mock.calls[0][0][0]).toMatchObject({
+      role: 'system',
+      content: expect.stringContaining('wiki-источники на противоречия'),
+    });
     expect(callLiteLLM.mock.calls[0][0][1].content).toContain('trustScore=0.90');
+  });
+
+  it('uses the configured conflict detection system prompt', async () => {
+    await setConflictDetectionConfig({
+      systemPrompt: 'Custom conflict detector prompt. Return JSON only.',
+    });
+    callLiteLLM.mockResolvedValue({
+      choices: [
+        {
+          message: {
+            content: JSON.stringify({
+              hasConflict: false,
+              confidence: 0.95,
+              summary: 'No conflict.',
+              conflictingSources: [],
+            }),
+          },
+        },
+      ],
+    });
+
+    await detectConflicts('VPN?', chunks);
+
+    expect(callLiteLLM.mock.calls[0][0][0]).toEqual({
+      role: 'system',
+      content: 'Custom conflict detector prompt. Return JSON only.',
+    });
   });
 
   it('does not show a chat warning when confident detector finds no contradiction', async () => {

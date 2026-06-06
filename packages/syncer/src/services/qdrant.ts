@@ -6,7 +6,10 @@ import type { CmdbDynamicSnapshotChunk } from './cmdbdynamicpages.js';
 import type { SemanticFacts } from './mediawiki.js';
 import { toIndexPlainText } from './text-normalization.js';
 
-export const qdrant = new QdrantClient({ url: config.qdrantUrl });
+export const qdrant = new QdrantClient({
+  url: config.qdrantUrl,
+  ...(config.qdrantApiKey ? { apiKey: config.qdrantApiKey } : {}),
+});
 
 export interface ChunkPayload {
   page_id: number;
@@ -380,8 +383,8 @@ export async function upsertAttachmentMetadata(
   lastModified: string,
   metadata: Record<string, unknown>,
   options: IndexWriteOptions = {}
-): Promise<void> {
-  await upsertAttachmentChunks(
+): Promise<SearchIndexNotificationResult | undefined> {
+  return upsertAttachmentChunks(
     pageId,
     pageTitle,
     filename,

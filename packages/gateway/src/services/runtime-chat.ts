@@ -10,15 +10,23 @@ import {
   getEffectiveContextTopK,
   getEffectiveRetrievalTopK,
   getChatRetentionAdminConfig,
+  getConflictDetectionConfig,
   getRagAdminConfig,
   type ChatRetentionConfig,
   type RagAdminConfig,
 } from './admin-platform-config.js';
 import { applyTrustPolicyToChunks } from './trust-runtime.js';
-import { buildConflictInstruction, detectConflictsForChat } from './conflict-detection.js';
+import {
+  buildConflictInstruction,
+  detectConflictsForChat,
+  detectConflictsWithTrace,
+  type ConflictDetectionTrace,
+} from './conflict-detection.js';
 import {
   ChatRetentionLimitError,
+  getUserChatSessionMessages,
   getSqlChatHistory,
+  listUserChatSessions,
   recordChatMessage,
 } from './chat-store.js';
 import { buildWikiPageUrl, type WikiPageUrlOptions } from './mediawiki-url.js';
@@ -31,17 +39,37 @@ import {
 } from './colbert-reranker.js';
 import { principalSessionHash } from './principal-auth.js';
 import { RuntimeHttpError } from './runtime-errors.js';
-import { logOperationalError } from './logging.js';
+import { logOperationalError, logOperationalEvent } from './logging.js';
 import { AuthenticatedPrincipal, SearchChunk } from '../types/index.js';
 import {
   resolveRuntimeRetrievalProfile,
   type RetrievalProfileSurface,
   type ResolvedRetrievalProfile,
 } from './retrieval-profiles.js';
+import {
+  resolveChatProfileForRetrievalProfile,
+  type ChatProfile,
+  type RetrievalHistoryMode,
+} from './chat-profiles.js';
 
 type RetrievalHistoryMessage = { role: string; content: string };
 type LlmMessage = { role: string; content: string };
 type RetrievalQueryMode = RagAdminConfig['chatRetrievalQueryMode'];
+
+function assertChatPrincipalCanPersist(principal: AuthenticatedPrincipal): void {
+  if (principal.authMode !== 'mediawiki_cookie') return;
+  if (principal.userId > 0 && principal.username !== 'cached' && principal.username !== 'anonymous') return;
+
+  logOperationalEvent('warn', 'chat.invalid_mediawiki_principal', {
+    authMode: principal.authMode,
+    userId: principal.userId,
+    usernameState: principal.username === 'cached' ? 'legacy_cached' : principal.username === 'anonymous' ? 'anonymous' : 'invalid',
+  });
+  throw new RuntimeHttpError(401, {
+    error: 'Invalid MediaWiki principal',
+    message: 'Refresh MediaWiki session and retry',
+  });
+}
 
 export interface RuntimeChatInput {
   message: string;
@@ -53,6 +81,10 @@ export interface RuntimeChatInput {
   aclMode?: PrincipalAclMode;
   retrievalProfileId?: string;
   retrievalProfileSurface?: RetrievalProfileSurface;
+  dryRun?: boolean;
+  disableHistory?: boolean;
+  runConflictDetection?: boolean;
+  includeDebugTrace?: boolean;
 }
 
 export interface RuntimeChatSource {
@@ -75,6 +107,7 @@ export interface PreparedRuntimeChat {
   sources: RuntimeChatSource[];
   conflict: Awaited<ReturnType<typeof detectConflictsForChat>>;
   retrievalDiagnostics: Record<string, unknown>;
+  debugTrace?: RuntimeChatDebugTrace;
 }
 
 export interface RuntimeChatCompletionResponse {
@@ -88,19 +121,53 @@ export interface RuntimeChatCompletionResponse {
 
 export type RuntimeChatSseWriter = (payload: Record<string, unknown> | '[DONE]') => void;
 
+export interface RuntimeChatDebugTrace {
+  ragConfig: RagAdminConfig;
+  chatProfile: Pick<
+    ChatProfile,
+    | 'id'
+    | 'name'
+    | 'promptHistoryScope'
+    | 'promptHistoryTurns'
+    | 'retrievalHistoryMode'
+    | 'retrievalHistoryTurns'
+  >;
+  search: {
+    mode: string;
+    limit: number;
+    aclCandidateLimit: number;
+    diagnostics: Record<string, unknown>;
+  };
+  chunks: {
+    raw: SearchChunk[];
+    readable: SearchChunk[];
+    trusted: SearchChunk[];
+    reranked: SearchChunk[];
+    context: SearchChunk[];
+  };
+  contextText: string;
+  conflictTrace?: ConflictDetectionTrace | {
+    skippedReason: 'disabled_by_request' | 'show_conflict_block_disabled';
+  } | {
+    error: string;
+  };
+}
+
 function compactText(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
 }
 
 function truncateText(value: string, maxChars: number): string {
   const compact = compactText(value);
+  if (maxChars <= 0) return '';
   if (compact.length <= maxChars) return compact;
+  if (maxChars <= 3) return compact.slice(0, maxChars);
   return `${compact.slice(0, maxChars - 3).trimEnd()}...`;
 }
 
 export interface ChatRetrievalQuery {
   query: string;
-  mode: RetrievalQueryMode;
+  mode: RetrievalQueryMode | RetrievalHistoryMode;
   historyInjected: boolean;
 }
 
@@ -145,8 +212,121 @@ export function buildChatRetrievalQuery(
 function countRetrievalHistoryMessages(history: RetrievalHistoryMessage[]): number {
   return history
     .filter((historyMessage) => historyMessage.role === 'user' || historyMessage.role === 'assistant')
-    .slice(-4)
     .length;
+}
+
+function selectHistoryMessages(
+  history: RetrievalHistoryMessage[],
+  roles: Set<string>,
+  turns: number,
+  maxChars: number
+): RetrievalHistoryMessage[] {
+  if (turns <= 0 || maxChars <= 0) return [];
+  const recent = history
+    .filter((historyMessage) => roles.has(historyMessage.role) && compactText(historyMessage.content))
+    .slice(-turns);
+  const selected: RetrievalHistoryMessage[] = [];
+  let remaining = maxChars;
+
+  for (const historyMessage of recent.slice().reverse()) {
+    if (remaining <= 0) break;
+    const content = truncateText(historyMessage.content, remaining);
+    if (!content) continue;
+    selected.push({ role: historyMessage.role, content });
+    remaining -= content.length;
+  }
+
+  return selected.reverse();
+}
+
+function selectRetrievalHistory(
+  history: RetrievalHistoryMessage[],
+  profile: ChatProfile
+): RetrievalHistoryMessage[] {
+  if (profile.retrievalHistoryMode === 'current_message') return [];
+  const roles = profile.retrievalHistoryMode === 'current_session_questions'
+    ? new Set<string>(['user'])
+    : new Set<string>(['user', 'assistant']);
+  return selectHistoryMessages(
+    history,
+    roles,
+    profile.retrievalHistoryTurns,
+    profile.maxRetrievalHistoryChars
+  );
+}
+
+function buildChatRetrievalQueryForProfile(
+  currentMessage: string,
+  history: RetrievalHistoryMessage[],
+  profile: ChatProfile
+): ChatRetrievalQuery {
+  const maxChars = profile.maxRetrievalHistoryChars || 1200;
+  if (profile.retrievalHistoryMode === 'current_message') {
+    return {
+      query: truncateText(currentMessage, maxChars),
+      mode: profile.retrievalHistoryMode,
+      historyInjected: false,
+    };
+  }
+
+  const selected = selectRetrievalHistory(history, profile);
+  const parts = [compactText(currentMessage)].filter(Boolean);
+  for (const historyMessage of selected) {
+    const label = historyMessage.role === 'user' ? 'Предыдущий вопрос' : 'Предыдущий ответ';
+    parts.push(`${label}: ${historyMessage.content}`);
+  }
+
+  const result = parts.join('\n');
+  return {
+    query: result.length <= maxChars ? result : result.slice(0, maxChars).trimEnd(),
+    mode: profile.retrievalHistoryMode,
+    historyInjected: selected.length > 0,
+  };
+}
+
+async function loadPromptHistory(input: {
+  profile: ChatProfile;
+  currentHistory: RetrievalHistoryMessage[];
+  principal: AuthenticatedPrincipal;
+  conversationId: string;
+}): Promise<RetrievalHistoryMessage[]> {
+  const roles = new Set<string>(['user', 'assistant']);
+  if (input.profile.promptHistoryScope === 'current_session' || input.principal.userId <= 0) {
+    return selectHistoryMessages(
+      input.currentHistory,
+      roles,
+      input.profile.promptHistoryTurns,
+      input.profile.maxPromptHistoryChars
+    );
+  }
+
+  const activeSessions = await listUserChatSessions(input.principal.userId, 'active', 10).catch(() => []);
+  const activeMessages: Array<RetrievalHistoryMessage & { createdAt: string }> = [];
+  for (const session of activeSessions) {
+    if (session.conversationId === input.conversationId) continue;
+    const messages = await getUserChatSessionMessages(session.id, input.principal.userId).catch(() => []);
+    for (const message of messages) {
+      if (message.role !== 'user' && message.role !== 'assistant') continue;
+      activeMessages.push({
+        role: message.role,
+        content: message.content,
+        createdAt: message.createdAt,
+      });
+    }
+  }
+
+  const combined = [
+    ...activeMessages
+      .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt))
+      .map(({ role, content }) => ({ role, content })),
+    ...input.currentHistory,
+  ];
+  return selectHistoryMessages(
+    combined,
+    roles,
+    input.profile.promptHistoryTurns,
+    input.profile.maxPromptHistoryChars
+  );
 }
 
 function clampTopK(topK: number | undefined, maxTopK: number | undefined): number | undefined {
@@ -245,6 +425,7 @@ function profileDiagnostics(selection: ResolvedRetrievalProfile | undefined): Re
 }
 
 export async function prepareRuntimeChat(input: RuntimeChatInput): Promise<PreparedRuntimeChat> {
+  assertChatPrincipalCanPersist(input.principal);
   const message = input.message.trim();
   const convId = input.conversationId ?? `${input.principal.userId}-${Date.now()}`;
   const sessionHash = principalSessionHash(input.principal);
@@ -256,30 +437,45 @@ export async function prepareRuntimeChat(input: RuntimeChatInput): Promise<Prepa
     input.retrievalProfileSurface ?? 'api'
   );
   const ragConfig = profileSelection?.effectiveConfig ?? await getRagAdminConfig();
+  const chatProfile = await resolveChatProfileForRetrievalProfile(profileSelection?.profile);
 
-  const sqlHistory = await getSqlChatHistory(sessionHash, convId, input.principal.userId);
-  const fullHistory = sqlHistory.length > 0 ? sqlHistory : await getChatHistory(sessionHash, convId);
-  const history = fullHistory.slice(-4);
-  const retrievalQueryDecision = buildChatRetrievalQuery(message, history, ragConfig.chatRetrievalQueryMode);
+  const sqlHistory = input.disableHistory
+    ? []
+    : await getSqlChatHistory(sessionHash, convId, input.principal.userId);
+  const fullHistory = input.disableHistory
+    ? []
+    : sqlHistory.length > 0 ? sqlHistory : await getChatHistory(sessionHash, convId);
+  const promptHistory = input.disableHistory
+    ? []
+    : await loadPromptHistory({
+      profile: chatProfile,
+      currentHistory: fullHistory,
+      principal: input.principal,
+      conversationId: convId,
+    });
+  const retrievalHistory = input.disableHistory ? [] : selectRetrievalHistory(fullHistory, chatProfile);
+  const retrievalQueryDecision = buildChatRetrievalQueryForProfile(message, fullHistory, chatProfile);
   const retrievalQuery = retrievalQueryDecision.query;
 
-  try {
-    await recordChatMessage({
-      sessionHash,
-      conversationId: convId,
-      userId: input.principal.userId,
-      username: input.principal.username,
-      role: 'user',
-      content: message,
-    }, chatRetention);
-  } catch (err) {
-    if (err instanceof ChatRetentionLimitError) {
-      throw new RuntimeHttpError(429, {
-        error: 'Chat retention limit exceeded',
-        message: err.message,
-      });
+  if (!input.dryRun) {
+    try {
+      await recordChatMessage({
+        sessionHash,
+        conversationId: convId,
+        userId: input.principal.userId,
+        username: input.principal.username,
+        role: 'user',
+        content: message,
+      }, chatRetention);
+    } catch (err) {
+      if (err instanceof ChatRetentionLimitError) {
+        throw new RuntimeHttpError(429, {
+          error: 'Chat retention limit exceeded',
+          message: err.message,
+        });
+      }
+      logOperationalError('chat.sql_user_history_write_error', err);
     }
-    logOperationalError('chat.sql_user_history_write_error', err);
   }
 
   const topKLimit = profileSelection
@@ -317,7 +513,30 @@ export async function prepareRuntimeChat(input: RuntimeChatInput): Promise<Prepa
   const contextTopK = getEffectiveContextTopK(ragConfig, effectiveTopK);
   const contextMaxChars = getEffectiveContextMaxChars(ragConfig);
   const contextChunks = verifiedChunks.slice(0, contextTopK);
-  const conflict = await detectConflictsForChat(retrievalQuery, verifiedChunks);
+  let conflict: Awaited<ReturnType<typeof detectConflictsForChat>> = null;
+  let conflictTrace: RuntimeChatDebugTrace['conflictTrace'];
+  if (input.runConflictDetection === false) {
+    if (input.includeDebugTrace) conflictTrace = { skippedReason: 'disabled_by_request' };
+  } else if (input.includeDebugTrace) {
+    const conflictConfig = await getConflictDetectionConfig();
+    if (!conflictConfig.showConflictBlock) {
+      conflictTrace = { skippedReason: 'show_conflict_block_disabled' };
+    } else {
+      try {
+        const checked = await detectConflictsWithTrace(retrievalQuery, verifiedChunks, { config: conflictConfig });
+        conflictTrace = checked.trace;
+        if (checked.result.checked && (checked.result.hasConflict || checked.result.lowTrust)) {
+          conflict = checked.result;
+        }
+      } catch (err) {
+        const error = err instanceof Error ? err.message : 'Unknown conflict detection error';
+        conflictTrace = { error };
+        logOperationalError('conflict_detection.error', err);
+      }
+    }
+  } else {
+    conflict = await detectConflictsForChat(retrievalQuery, verifiedChunks);
+  }
   const diagnostics = isColbertFullSearchEnabled(ragConfig)
     ? search.diagnostics
     : {
@@ -325,14 +544,16 @@ export async function prepareRuntimeChat(input: RuntimeChatInput): Promise<Prepa
       ...reranked.diagnostics,
     };
 
-  await appendChatMessage(sessionHash, convId, { role: 'user', content: message }, chatTtlSeconds);
+  if (!input.dryRun) {
+    await appendChatMessage(sessionHash, convId, { role: 'user', content: message }, chatTtlSeconds);
+  }
 
   const contextText = formatChunksForPrompt(contextChunks, { maxChars: contextMaxChars });
   const messages: LlmMessage[] = [
     { role: 'system', content: runtime.systemPrompt },
     ...(contextText ? [{ role: 'system', content: `Documents for answer:\n${contextText}` }] : []),
     ...(conflict ? [{ role: 'system', content: buildConflictInstruction(conflict) }] : []),
-    ...history,
+    ...promptHistory,
     { role: 'user', content: message },
   ];
 
@@ -352,11 +573,17 @@ export async function prepareRuntimeChat(input: RuntimeChatInput): Promise<Prepa
       ...profileDiagnostics(profileSelection),
       aclMode,
       authMode: input.principal.authMode,
+      chatProfileId: chatProfile.id,
+      chatProfileName: chatProfile.name,
+      promptHistoryScope: chatProfile.promptHistoryScope,
+      promptHistoryMessagesUsed: countRetrievalHistoryMessages(promptHistory),
+      retrievalHistoryMode: chatProfile.retrievalHistoryMode,
+      retrievalHistoryMessagesUsed: countRetrievalHistoryMessages(retrievalHistory),
       originalMessage: message,
       retrievalQuery,
       retrievalQueryMode: retrievalQueryDecision.mode,
       historyInjectedIntoRetrieval: retrievalQueryDecision.historyInjected,
-      historyMessagesUsed: countRetrievalHistoryMessages(history),
+      historyMessagesUsed: countRetrievalHistoryMessages(promptHistory),
       requestedTopK: input.topK ?? null,
       retrievalTopK: fallbackTopK,
       effectiveTopK,
@@ -369,6 +596,32 @@ export async function prepareRuntimeChat(input: RuntimeChatInput): Promise<Prepa
       finalSources: sources.length,
       contextSources: contextChunks.length,
     },
+    debugTrace: input.includeDebugTrace ? {
+      ragConfig,
+      chatProfile: {
+        id: chatProfile.id,
+        name: chatProfile.name,
+        promptHistoryScope: chatProfile.promptHistoryScope,
+        promptHistoryTurns: chatProfile.promptHistoryTurns,
+        retrievalHistoryMode: chatProfile.retrievalHistoryMode,
+        retrievalHistoryTurns: chatProfile.retrievalHistoryTurns,
+      },
+      search: {
+        mode: search.mode,
+        limit: search.limit,
+        aclCandidateLimit: search.aclCandidateLimit,
+        diagnostics: { ...diagnostics },
+      },
+      chunks: {
+        raw: search.chunks,
+        readable: readableChunks,
+        trusted: trustedChunks,
+        reranked: verifiedChunks,
+        context: contextChunks,
+      },
+      contextText,
+      ...(conflictTrace ? { conflictTrace } : {}),
+    } : undefined,
   };
 }
 

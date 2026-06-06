@@ -1,4 +1,6 @@
 import { config } from '../config.js';
+import { measureDependency } from './metrics.js';
+import { currentTraceHeaders } from './tracing.js';
 
 export interface TrustRecalculationNotification {
   pageId: number;
@@ -24,6 +26,14 @@ export interface EffectiveEmbeddingConfigResult {
   model: string;
   dimensions: number;
   apiKeyConfigured: boolean;
+}
+
+export interface IndexingAutomationConfigResult {
+  changeIndexingProfileId?: string;
+  scheduledReindexProfileId?: string;
+  scheduleEnabled: boolean;
+  scheduleIntervalMinutes: number;
+  updatedAt?: string;
 }
 
 export interface GatewayEmbeddingResult {
@@ -70,6 +80,23 @@ export interface SearchIndexNotificationResult {
   url: string;
   httpStatus?: number;
   chunks?: number;
+  targetWrites?: {
+    bm25?: number;
+    opensearch?: number;
+    colbert?: number;
+  };
+  error?: string;
+}
+
+export interface GatewaySearchIndexStatusResult {
+  status: 'ok' | 'error';
+  url: string;
+  httpStatus?: number;
+  values?: {
+    attachmentColumnsReady?: boolean;
+    attachmentChunks?: number;
+    attachmentPages?: number;
+  };
   error?: string;
 }
 
@@ -154,16 +181,16 @@ async function sendGatewayJson(
   const url = buildGatewayUrl(path);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const headers: Record<string, string> = { 'Content-Type': 'application/json', ...currentTraceHeaders() };
   if (config.syncerAdminToken) headers['x-wikiai-admin-token'] = config.syncerAdminToken;
 
   try {
-    const response = await fetch(url, {
+    const response = await measureDependency({ dependency: 'gateway', operation: path.replace(/[^A-Za-z0-9_.:-]/g, '_') }, async () => fetch(url, {
       method: 'POST',
       headers,
       body: JSON.stringify(payload),
       signal: controller.signal,
-    });
+    }));
 
     return {
       ok: response.ok,
@@ -216,11 +243,33 @@ export async function syncSearchIndexPage(
   try {
     const response = await sendGatewayJson('/api/internal/search-index/page', notification);
     let chunks: number | undefined;
+    let targetWrites: SearchIndexNotificationResult['targetWrites'];
     try {
-      const body = JSON.parse(response.body) as { values?: { chunks?: unknown } };
+      const body = JSON.parse(response.body) as {
+        values?: {
+          chunks?: unknown;
+          chunksByTarget?: unknown;
+          colbertIndex?: { chunks?: unknown };
+          openSearchIndex?: { chunks?: unknown };
+        };
+      };
       chunks = typeof body.values?.chunks === 'number' ? body.values.chunks : undefined;
+      const chunksByTarget = body.values?.chunksByTarget && typeof body.values.chunksByTarget === 'object'
+        && !Array.isArray(body.values.chunksByTarget)
+        ? body.values.chunksByTarget as Record<string, unknown>
+        : {};
+      targetWrites = {
+        bm25: typeof chunksByTarget.bm25 === 'number' ? chunksByTarget.bm25 : undefined,
+        opensearch: typeof chunksByTarget.opensearch === 'number'
+          ? chunksByTarget.opensearch
+          : typeof body.values?.openSearchIndex?.chunks === 'number' ? body.values.openSearchIndex.chunks : undefined,
+        colbert: typeof chunksByTarget.colbert === 'number'
+          ? chunksByTarget.colbert
+          : typeof body.values?.colbertIndex?.chunks === 'number' ? body.values.colbertIndex.chunks : undefined,
+      };
     } catch {
       chunks = undefined;
+      targetWrites = undefined;
     }
 
     return {
@@ -228,6 +277,7 @@ export async function syncSearchIndexPage(
       url: response.url,
       httpStatus: response.status,
       chunks,
+      targetWrites,
       error: response.ok ? undefined : response.body,
     };
   } catch (err) {
@@ -262,15 +312,15 @@ async function fetchGatewayJson<T>(path: string, timeoutMs = 15_000): Promise<T>
   const url = buildGatewayUrl(path);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = { ...currentTraceHeaders() };
   if (config.syncerAdminToken) headers['x-wikiai-admin-token'] = config.syncerAdminToken;
 
   try {
-    const response = await fetch(url, {
+    const response = await measureDependency({ dependency: 'gateway', operation: path.replace(/[^A-Za-z0-9_.:-]/g, '_') }, async () => fetch(url, {
       method: 'GET',
       headers,
       signal: controller.signal,
-    });
+    }));
     if (!response.ok) {
       throw new Error(`Gateway HTTP ${response.status}: ${await response.text().catch(() => '')}`);
     }
@@ -289,6 +339,17 @@ export async function fetchEffectiveEmbeddingConfig(): Promise<EffectiveEmbeddin
 export async function fetchIndexingProfiles(): Promise<unknown[]> {
   const body = await fetchGatewayJson<{ values?: unknown }>('/api/internal/indexing-profiles');
   return Array.isArray(body.values) ? body.values : [];
+}
+
+export async function fetchIndexingAutomationConfig(): Promise<IndexingAutomationConfigResult> {
+  const body = await fetchGatewayJson<{ values?: IndexingAutomationConfigResult }>('/api/internal/indexing-automation');
+  return {
+    scheduleEnabled: Boolean(body.values?.scheduleEnabled),
+    scheduleIntervalMinutes: body.values?.scheduleIntervalMinutes ?? 1440,
+    changeIndexingProfileId: body.values?.changeIndexingProfileId,
+    scheduledReindexProfileId: body.values?.scheduledReindexProfileId,
+    updatedAt: body.values?.updatedAt,
+  };
 }
 
 export async function fetchGatewayEmbedding(text: string): Promise<GatewayEmbeddingResult> {
@@ -359,19 +420,36 @@ export async function recordSemanticAutofillApplied(
   }
 }
 
+export async function getGatewaySearchIndexStatus(): Promise<GatewaySearchIndexStatusResult> {
+  try {
+    const body = await fetchGatewayJson<{ values?: GatewaySearchIndexStatusResult['values'] }>('/api/internal/search-index/status');
+    return {
+      status: 'ok',
+      url: buildGatewayUrl('/api/internal/search-index/status'),
+      values: body.values,
+    };
+  } catch (err) {
+    return {
+      status: 'error',
+      url: buildGatewayUrl('/api/internal/search-index/status'),
+      error: err instanceof Error ? err.message : 'Unknown Gateway search index status error',
+    };
+  }
+}
+
 export async function fetchIndexedSmwProperties(): Promise<IndexedSmwPropertiesResult> {
   const url = buildGatewayUrl('/api/internal/smw/indexed-properties');
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15_000);
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const headers: Record<string, string> = { 'Content-Type': 'application/json', ...currentTraceHeaders() };
   if (config.syncerAdminToken) headers['x-wikiai-admin-token'] = config.syncerAdminToken;
 
   try {
-    const response = await fetch(url, {
+    const response = await measureDependency({ dependency: 'gateway', operation: 'smw_indexed_properties' }, async () => fetch(url, {
       method: 'GET',
       headers,
       signal: controller.signal,
-    });
+    }));
     const body = await response.json().catch(() => ({})) as { values?: unknown };
     if (!response.ok || !Array.isArray(body.values)) {
       return {

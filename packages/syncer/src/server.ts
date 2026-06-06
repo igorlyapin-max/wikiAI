@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import { config } from './config.js';
 import {
   fetchPageContent,
+  fetchPageCategories,
   fetchSemanticFacts,
   editPageContent,
   getMediaWikiServiceAuthStatus,
@@ -18,20 +19,64 @@ import {
   notifyTrustRecalculation,
   recordSemanticAutofillApplied,
 } from './services/gateway.js';
-import { getWebhookTitle, normalizeEvent, WebhookBody } from './services/webhook.js';
-import { getReindexJobStatus, startReindexJob } from './services/reindex-job.js';
-import { ReindexOptions } from './services/reindex.js';
+import {
+  getWebhookTitle,
+  normalizeEvent,
+  parseWebhookBody,
+  verifyWebhookSignature,
+  WebhookBody,
+} from './services/webhook.js';
+import { getSharedReindexJobStatus, startReindexJob } from './services/reindex-job.js';
+import {
+  categoriesMatchFilters,
+  normalizeIndexTargets,
+  ReindexOptions,
+  textMatchesFilters,
+} from './services/reindex.js';
+import {
+  applyIndexingProfileDefaults,
+  getChangeIndexingProfileFromAdminStorage,
+  StoredIndexingProfile,
+} from './services/indexing-profile-store.js';
 import { applySemanticAutofillPatch } from './services/semantic-autofill.js';
 import { qdrant } from './services/qdrant.js';
 import {
   createFastifyLoggerOptions,
   diagnosticStartupFields,
 } from './services/logging.js';
-import { registerMetrics } from './services/metrics.js';
+import { recordHealthCheckMetric, registerMetrics } from './services/metrics.js';
+import { timingSafeEqualString } from './services/security.js';
+import { currentTraceHeaders, enterTraceContext, getTraceContext, traceContextFromHeaders } from './services/tracing.js';
+import { rememberOnce, redis } from './services/redis.js';
 import { extractCmdbDynamicSources, fetchCmdbDynamicSnapshotChunks } from './services/cmdbdynamicpages.js';
 import { toIndexPlainText } from './services/text-normalization.js';
 
-const app = Fastify({ logger: createFastifyLoggerOptions() });
+const app = Fastify({
+  logger: createFastifyLoggerOptions(),
+  bodyLimit: config.httpBodyLimitBytes,
+});
+
+app.addHook('onRequest', async (request, reply) => {
+  const traceContext = traceContextFromHeaders(request.headers);
+  enterTraceContext(traceContext);
+  reply.header('x-request-id', traceContext.requestId);
+  if (traceContext.traceparent) reply.header('traceparent', traceContext.traceparent);
+});
+
+app.setErrorHandler((err, request, reply) => {
+  const error = err as { statusCode?: unknown; message?: unknown };
+  const statusCode = typeof error.statusCode === 'number' && error.statusCode >= 400 ? error.statusCode : 500;
+  const message = typeof error.message === 'string' ? error.message : 'Unknown request error';
+  request.log.error(
+    { event: 'syncer.request_error', err, requestId: getTraceContext()?.requestId },
+    'Syncer request failed'
+  );
+  reply.status(statusCode).send({
+    error: statusCode === 413 ? 'Payload too large' : 'Request failed',
+    message: statusCode >= 500 && config.nodeEnv === 'production' ? 'Internal server error' : message,
+    requestId: getTraceContext()?.requestId,
+  });
+});
 
 registerMetrics(app, 'syncer');
 
@@ -131,7 +176,7 @@ function parseReindexOptions(body: unknown): ReindexOptions {
 
 function hasAdminAccess(headers: Record<string, unknown>): boolean {
   if (!config.syncerAdminToken) return config.allowUnprotectedSyncerAdmin;
-  return headers['x-wikiai-admin-token'] === config.syncerAdminToken;
+  return timingSafeEqualString(headers['x-wikiai-admin-token'], config.syncerAdminToken);
 }
 
 interface HealthCheck {
@@ -166,8 +211,16 @@ async function withTimeout<T>(operation: Promise<T>, label: string): Promise<T> 
 async function fetchWithTimeout(url: string, init: RequestInit = {}): Promise<Response> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), config.healthCheckTimeoutMs);
+  const headers = new Headers(init.headers);
+  for (const [key, value] of Object.entries(currentTraceHeaders())) {
+    headers.set(key, value);
+  }
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
+    return await fetch(url, {
+      ...init,
+      headers,
+      signal: controller.signal,
+    });
   } finally {
     clearTimeout(timeout);
   }
@@ -177,9 +230,13 @@ async function runCheck(name: string, operation: () => Promise<void>): Promise<H
   const start = Date.now();
   try {
     await withTimeout(operation(), name);
-    return { status: 'ok', latencyMs: Date.now() - start };
+    const latencyMs = Date.now() - start;
+    recordHealthCheckMetric({ check: name, ok: true, latencyMs });
+    return { status: 'ok', latencyMs };
   } catch (err) {
-    return { status: 'error', latencyMs: Date.now() - start, error: err instanceof Error ? err.message : 'Unknown error' };
+    const latencyMs = Date.now() - start;
+    recordHealthCheckMetric({ check: name, ok: false, latencyMs });
+    return { status: 'error', latencyMs, error: err instanceof Error ? err.message : 'Unknown error' };
   }
 }
 
@@ -222,8 +279,84 @@ function isWikiAiServiceEdit(body: WebhookBody): boolean {
   );
 }
 
+async function deletePageIndexes(pageId: number): Promise<unknown> {
+  await qdrant.delete(config.qdrantCollection, {
+    filter: { must: [{ key: 'page_id', match: { value: pageId } }] },
+  });
+  return deleteSearchIndexPage(pageId);
+}
+
+async function resolveWebhookIndexingProfile(): Promise<{
+  profile?: StoredIndexingProfile;
+  options: ReindexOptions;
+}> {
+  const profile = await getChangeIndexingProfileFromAdminStorage();
+  if (!profile) return { options: {} };
+  if (profile.enabled === false) return { profile, options: { profileId: profile.id } };
+  return {
+    profile,
+    options: applyIndexingProfileDefaults({}, profile),
+  };
+}
+
+async function pageMatchesWebhookProfile(
+  page: { ns: number; title: string },
+  options: ReindexOptions
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  if (options.namespaces && !options.namespaces.includes(page.ns)) {
+    return { ok: false, reason: 'profile_namespace_filter' };
+  }
+  if (!textMatchesFilters(page.title, options.titleFilters)) {
+    return { ok: false, reason: 'profile_title_filter' };
+  }
+  const filters = options.categoryFilters;
+  if ((filters?.include?.length ?? 0) === 0 && (filters?.exclude?.length ?? 0) === 0) {
+    return { ok: true };
+  }
+  const categories = await fetchPageCategories(page.title);
+  if (!categoriesMatchFilters(categories, filters)) {
+    return { ok: false, reason: 'profile_category_filter' };
+  }
+  return { ok: true };
+}
+
 app.post('/webhook/page', async (request, reply) => {
-  const body = request.body as WebhookBody;
+  let body: WebhookBody;
+  try {
+    body = parseWebhookBody(request.body);
+  } catch (err) {
+    reply.status(400).send({
+      error: 'Invalid webhook payload',
+      message: err instanceof Error ? err.message : 'Webhook payload validation failed',
+    });
+    return;
+  }
+
+  if (config.webhookRequireSignature || config.webhookSecret) {
+    if (!config.webhookSecret) {
+      reply.status(503).send({ error: 'Webhook signature secret is not configured' });
+      return;
+    }
+    const verification = verifyWebhookSignature({
+      headers: request.headers,
+      body,
+      secret: config.webhookSecret,
+      toleranceSeconds: config.webhookTimestampToleranceSeconds,
+    });
+    if (!verification.ok || !verification.replayKey) {
+      reply.status(401).send({ error: 'Invalid webhook signature', reason: verification.reason });
+      return;
+    }
+    const firstSeen = await rememberOnce(
+      `syncer:webhook:replay:${verification.replayKey}`,
+      config.webhookReplayTtlSeconds
+    );
+    if (!firstSeen) {
+      reply.status(409).send({ error: 'Webhook replay rejected' });
+      return;
+    }
+  }
+
   const event = normalizeEvent(body.event);
   const title = getWebhookTitle(body);
 
@@ -235,11 +368,7 @@ app.post('/webhook/page', async (request, reply) => {
   request.log.info({ event: 'syncer.webhook_received', webhookEvent: event, title }, 'Webhook received');
 
   if (event === 'delete') {
-    // Delete all chunks for page
-    await qdrant.delete(config.qdrantCollection, {
-      filter: { must: [{ key: 'page_id', match: { value: body.page_id } }] },
-    });
-    const searchIndexSync = await deleteSearchIndexPage(body.page_id);
+    const searchIndexSync = await deletePageIndexes(body.page_id);
     reply.send({ status: 'deleted', page_id: body.page_id, search_index_sync: searchIndexSync });
     return;
   }
@@ -256,16 +385,75 @@ app.post('/webhook/page', async (request, reply) => {
       return;
     }
 
-    const indexedSmwProperties = config.smwSyncEnabled ? await fetchIndexedSmwProperties() : undefined;
-    const semanticFacts = config.smwSyncEnabled
+    let webhookProfile: Awaited<ReturnType<typeof resolveWebhookIndexingProfile>>;
+    try {
+      webhookProfile = await resolveWebhookIndexingProfile();
+    } catch (err) {
+      reply.status(409).send({
+        error: 'Indexing profile unavailable',
+        message: err instanceof Error ? err.message : 'Unknown indexing profile error',
+      });
+      return;
+    }
+    if (webhookProfile.profile?.enabled === false) {
+      const searchIndexSync = await deletePageIndexes(page.pageid);
+      reply.send({
+        status: 'skipped',
+        reason: 'profile_disabled',
+        profile_id: webhookProfile.profile.id,
+        page_id: page.pageid,
+        title: page.title,
+        search_index_sync: searchIndexSync,
+      });
+      return;
+    }
+
+    const profileMatch = await pageMatchesWebhookProfile(page, webhookProfile.options);
+    if (!profileMatch.ok) {
+      const searchIndexSync = await deletePageIndexes(page.pageid);
+      reply.send({
+        status: 'skipped',
+        reason: profileMatch.reason,
+        profile_id: webhookProfile.options.profileId,
+        page_id: page.pageid,
+        title: page.title,
+        search_index_sync: searchIndexSync,
+      });
+      return;
+    }
+
+    const requestedSemanticFactsEnabled = webhookProfile.options.semanticFactsEnabled ?? config.smwSyncEnabled;
+    const indexTargets = normalizeIndexTargets(webhookProfile.options, {
+      attachmentsEnabled: webhookProfile.options.attachmentsEnabled ?? false,
+      semanticFactsEnabled: requestedSemanticFactsEnabled,
+    });
+    const denseEnabled = indexTargets.includes('dense');
+    const searchIndexTargets = indexTargets.filter((target) => (
+      target === 'bm25' || target === 'colbert' || target === 'opensearch'
+    ));
+    const semanticFactsEnabled = requestedSemanticFactsEnabled && indexTargets.includes('semanticFacts');
+    const indexedSmwProperties = semanticFactsEnabled
+      ? webhookProfile.options.smwProperties
+        ? { properties: webhookProfile.options.smwProperties, source: 'profile' as const }
+        : await fetchIndexedSmwProperties()
+      : undefined;
+    const indexedSmwPropertiesError = indexedSmwProperties && 'error' in indexedSmwProperties
+      ? indexedSmwProperties.error
+      : undefined;
+    const semanticFacts = semanticFactsEnabled
       ? await fetchSemanticFacts(page.title, indexedSmwProperties?.properties)
       : {};
     const rawContent = page.content;
     const pageIndexText = toIndexPlainText(rawContent);
     const semanticText = semanticFactsToText(semanticFacts);
     const indexText = [semanticText, pageIndexText].filter(Boolean).join('\n\n');
-    const chunks = splitText(indexText);
-    const allowedGroups = getAllowedGroups(page.ns);
+    const chunkOptions = {
+      chunkSize: webhookProfile.options.chunkSize,
+      chunkOverlap: webhookProfile.options.chunkOverlap,
+      chunkSeparators: webhookProfile.options.chunkSeparators,
+    };
+    const chunks = splitText(indexText, chunkOptions);
+    const allowedGroups = getAllowedGroups(page.ns, webhookProfile.options.namespaceAcl ?? config.namespaceAcl);
     const searchIndexSync = await upsertChunks(
       page.pageid,
       page.title,
@@ -273,7 +461,14 @@ app.post('/webhook/page', async (request, reply) => {
       chunks,
       allowedGroups,
       page.lastModified ?? body.timestamp,
-      semanticFacts
+      semanticFacts,
+      undefined,
+      {
+        denseEnabled,
+        searchIndexTargets,
+        colbertModel: webhookProfile.options.colbertModel,
+        colbertCollection: webhookProfile.options.colbertCollection,
+      }
     );
     let dynamicBlocks: unknown;
     if (config.cmdbDynamicPagesEnabled) {
@@ -281,7 +476,7 @@ app.post('/webhook/page', async (request, reply) => {
         const sources = extractCmdbDynamicSources(rawContent, page.title);
         const snapshotChunks = await fetchCmdbDynamicSnapshotChunks(sources);
         const expandedSnapshotChunks = snapshotChunks.flatMap((snapshot) =>
-          splitText(snapshot.text).map((chunk) => ({ ...snapshot, text: chunk.text }))
+          splitText(snapshot.text, chunkOptions).map((chunk) => ({ ...snapshot, text: chunk.text }))
         );
         const syncResult = expandedSnapshotChunks.length > 0
           ? await upsertCmdbDynamicSnapshotChunks(
@@ -290,7 +485,13 @@ app.post('/webhook/page', async (request, reply) => {
             page.ns,
             expandedSnapshotChunks,
             allowedGroups,
-            page.lastModified ?? body.timestamp
+            page.lastModified ?? body.timestamp,
+            {
+              denseEnabled,
+              searchIndexTargets,
+              colbertModel: webhookProfile.options.colbertModel,
+              colbertCollection: webhookProfile.options.colbertCollection,
+            }
           )
           : undefined;
         dynamicBlocks = {
@@ -368,13 +569,15 @@ app.post('/webhook/page', async (request, reply) => {
 
     reply.send({
       status: 'indexed',
+      profile_id: webhookProfile.options.profileId,
+      index_targets: indexTargets,
       page_id: page.pageid,
       title: page.title,
       chunks: chunks.length,
       allowed_groups: allowedGroups,
       semantic_facts: Object.keys(semanticFacts).length,
       smw_properties_source: indexedSmwProperties?.source,
-      smw_properties_error: indexedSmwProperties?.error,
+      smw_properties_error: indexedSmwPropertiesError,
       search_index_sync: searchIndexSync,
       dynamic_blocks: dynamicBlocks,
       trust_recalculation: trustRecalculation,
@@ -399,7 +602,7 @@ app.post('/admin/reindex', async (request, reply) => {
     reply.status(409).send({
       error: 'Unable to start reindex',
       message: err instanceof Error ? err.message : 'Unknown reindex error',
-      status: getReindexJobStatus(),
+      status: await getSharedReindexJobStatus(),
     });
   }
 });
@@ -410,7 +613,7 @@ app.get('/admin/reindex/status', async (request, reply) => {
     return;
   }
 
-  reply.send({ status: getReindexJobStatus() });
+  reply.send({ status: await getSharedReindexJobStatus() });
 });
 
 app.get('/admin/mediawiki-service-auth/status', async (request, reply) => {
@@ -443,7 +646,44 @@ app.get('/health', async (_request, reply) => {
   reply.status(health.status === 'healthy' ? 200 : 503).send(health);
 });
 
+app.addHook('onClose', async () => {
+  await redis.quit();
+});
+
 async function start(): Promise<void> {
+  let closing = false;
+
+  async function shutdown(signal: NodeJS.Signals | 'unhandledRejection' | 'uncaughtException'): Promise<void> {
+    if (closing) return;
+    closing = true;
+    app.log.info({ event: 'syncer.shutdown_signal', signal }, 'Syncer shutdown requested');
+    const timeout = setTimeout(() => {
+      app.log.error({ event: 'syncer.shutdown_timeout', signal }, 'Syncer shutdown timed out');
+      process.exit(1);
+    }, config.gracefulShutdownTimeoutMs);
+    timeout.unref();
+    try {
+      await app.close();
+      clearTimeout(timeout);
+      process.exit(0);
+    } catch (err) {
+      clearTimeout(timeout);
+      app.log.error({ event: 'syncer.shutdown_error', err }, 'Syncer shutdown failed');
+      process.exit(1);
+    }
+  }
+
+  process.once('SIGTERM', () => void shutdown('SIGTERM'));
+  process.once('SIGINT', () => void shutdown('SIGINT'));
+  process.once('unhandledRejection', (reason) => {
+    app.log.fatal({ event: 'syncer.unhandled_rejection', err: reason }, 'Unhandled rejection');
+    void shutdown('unhandledRejection');
+  });
+  process.once('uncaughtException', (err) => {
+    app.log.fatal({ event: 'syncer.uncaught_exception', err }, 'Uncaught exception');
+    void shutdown('uncaughtException');
+  });
+
   try {
     await app.listen({ port: config.syncerPort, host: '0.0.0.0' });
     app.log.info(

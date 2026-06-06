@@ -80,6 +80,15 @@ export function parseCorsOrigins(value: string | undefined, nodeEnv: string): st
 }
 
 const nodeEnv = env('NODE_ENV', 'development');
+const allowSqliteInProduction = envBoolean('ALLOW_SQLITE_IN_PRODUCTION', false);
+const databaseUrl = env(
+  'DATABASE_URL',
+  nodeEnv === 'production' ? undefined : 'sqlite://./state/wiki-ai.sqlite'
+);
+
+if (nodeEnv === 'production' && databaseUrl.startsWith('sqlite://') && !allowSqliteInProduction) {
+  throw new Error('DATABASE_URL must use Postgres in production; set ALLOW_SQLITE_IN_PRODUCTION=true only for local diagnostics');
+}
 
 export const DEFAULT_OPENSEARCH_BASE_URL = 'http://opensearch:9200';
 
@@ -110,9 +119,10 @@ export const config: AppConfig = {
   opensearchTextBoost: envFloat('OPENSEARCH_TEXT_BOOST', 1.0),
   opensearchCandidateLimit: envInt('OPENSEARCH_CANDIDATE_LIMIT', 50),
   qdrantUrl: env('QDRANT_URL', 'http://localhost:6333'),
+  qdrantApiKey: process.env.QDRANT_API_KEY,
   qdrantCollection: env('QDRANT_COLLECTION', 'wiki_chunks'),
   redisUrl: env('REDIS_URL', 'redis://localhost:16379/0'),
-  databaseUrl: env('DATABASE_URL', 'sqlite://./state/wiki-ai.sqlite'),
+  databaseUrl,
   syncerBaseUrl: env('SYNCER_BASE_URL', 'http://localhost:3001'),
   syncerAdminToken: process.env.SYNCER_ADMIN_TOKEN,
   smwSyncProperties: envList('SMW_SYNC_PROPERTIES', [
@@ -147,4 +157,8 @@ export const config: AppConfig = {
   logSyslogHost: env('LOG_SYSLOG_HOST', '127.0.0.1'),
   logSyslogPort: envInt('LOG_SYSLOG_PORT', 514),
   healthCheckTimeoutMs: envInt('HEALTH_CHECK_TIMEOUT_MS', 2000),
+  httpBodyLimitBytes: envInt('HTTP_BODY_LIMIT_BYTES', 1_048_576),
+  embeddingTimeoutMs: envInt('EMBEDDING_TIMEOUT_MS', 15_000),
+  gracefulShutdownTimeoutMs: envInt('GRACEFUL_SHUTDOWN_TIMEOUT_MS', 10_000),
+  schedulerLockTtlSeconds: envInt('SCHEDULER_LOCK_TTL_SECONDS', 300),
 };

@@ -778,7 +778,15 @@ export class SqliteAdminStore implements AdminStore {
     const now = new Date().toISOString();
     for (const migration of ADMIN_MIGRATIONS) {
       for (const statement of migration.sqlite) {
-        this.db.exec(statement);
+        try {
+          this.db.exec(statement);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          if (/duplicate column name/i.test(message) && /^\s*ALTER\s+TABLE/i.test(statement)) {
+            continue;
+          }
+          throw err;
+        }
       }
       this.db
         .prepare('INSERT OR IGNORE INTO ai_schema_migrations (version, applied_at) VALUES (?, ?)')

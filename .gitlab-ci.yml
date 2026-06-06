@@ -23,7 +23,7 @@ variables:
     - npm ci --cache .npm --prefer-offline
 
 .syncer_node:
-  image: node:20
+  image: node:24
   cache:
     key:
       files:
@@ -32,6 +32,42 @@ variables:
       - packages/syncer/.npm/
   before_script:
     - cd packages/syncer
+    - npm ci --cache .npm --prefer-offline
+
+.ai_assistant_node:
+  image: node:24
+  cache:
+    key:
+      files:
+        - packages/mw-extension/resources/ai-assistant/package-lock.json
+    paths:
+      - packages/mw-extension/resources/ai-assistant/.npm/
+  before_script:
+    - cd packages/mw-extension/resources/ai-assistant
+    - npm ci --cache .npm --prefer-offline
+
+.ai_admin_node:
+  image: node:24
+  cache:
+    key:
+      files:
+        - packages/mw-extension/resources/ai-admin/package-lock.json
+    paths:
+      - packages/mw-extension/resources/ai-admin/.npm/
+  before_script:
+    - cd packages/mw-extension/resources/ai-admin
+    - npm ci --cache .npm --prefer-offline
+
+.wiki_ui_node:
+  image: node:24
+  cache:
+    key:
+      files:
+        - packages/wiki-ui/package-lock.json
+    paths:
+      - packages/wiki-ui/.npm/
+  before_script:
+    - cd packages/wiki-ui
     - npm ci --cache .npm --prefer-offline
 
 validate:repo:
@@ -72,6 +108,33 @@ syncer:test:
     - npm test
     - npm run test:coverage
 
+ai-assistant:test:
+  extends: .ai_assistant_node
+  stage: test
+  script:
+    - npm test
+    - npm run test:coverage
+
+ai-admin:test:
+  extends: .ai_admin_node
+  stage: test
+  script:
+    - npm test
+    - npm run test:coverage
+
+wiki-ui:test:
+  extends: .wiki_ui_node
+  stage: test
+  script:
+    - npm test
+    - npm run test:coverage
+
+mcp-adapter:test:
+  image: node:24
+  stage: test
+  script:
+    - npm --prefix packages/mcp-adapter test
+
 gateway:typecheck:
   extends: .gateway_node
   stage: typecheck
@@ -96,6 +159,24 @@ syncer:build:
   script:
     - npm run build
 
+ai-assistant:build:
+  extends: .ai_assistant_node
+  stage: build
+  script:
+    - npm run build
+
+ai-admin:build:
+  extends: .ai_admin_node
+  stage: build
+  script:
+    - npm run build
+
+wiki-ui:build:
+  extends: .wiki_ui_node
+  stage: build
+  script:
+    - npm run build
+
 mw-extension:package:
   image: node:24
   stage: build
@@ -116,6 +197,8 @@ docker:build:
   script:
     - docker build -t "wiki-ai-gateway-ci:${CI_COMMIT_SHORT_SHA}" packages/gateway
     - docker build -t "wiki-ai-syncer-ci:${CI_COMMIT_SHORT_SHA}" packages/syncer
+    - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.57.1 image --exit-code 1 --severity HIGH,CRITICAL --no-progress "wiki-ai-gateway-ci:${CI_COMMIT_SHORT_SHA}"
+    - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.57.1 image --exit-code 1 --severity HIGH,CRITICAL --no-progress "wiki-ai-syncer-ci:${CI_COMMIT_SHORT_SHA}"
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH'
@@ -125,6 +208,14 @@ security:secret-scan:
   stage: security
   script:
     - node scripts/secret-scan.mjs
+
+security:gitleaks:
+  image:
+    name: zricethezav/gitleaks:v8.24.2
+    entrypoint: [""]
+  stage: security
+  script:
+    - gitleaks detect --source . --redact --verbose
 
 security:npm-audit:
   image: node:24

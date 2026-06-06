@@ -8,6 +8,7 @@ const getMediaWikiServiceAuthStatus = vi.hoisted(() => vi.fn());
 const upsertChunks = vi.hoisted(() => vi.fn());
 const fetchEffectiveEmbeddingConfig = vi.hoisted(() => vi.fn());
 const fetchIndexingProfiles = vi.hoisted(() => vi.fn());
+const fetchIndexingAutomationConfig = vi.hoisted(() => vi.fn());
 const enrichPageForReindex = vi.hoisted(() => vi.fn());
 
 vi.mock('../mediawiki.js', () => ({
@@ -38,6 +39,7 @@ vi.mock('../document-policy.js', () => ({
 vi.mock('../gateway.js', () => ({
   fetchEffectiveEmbeddingConfig,
   fetchIndexingProfiles,
+  fetchIndexingAutomationConfig,
   enrichPageForReindex,
 }));
 
@@ -69,6 +71,11 @@ describe('runReindex profile Gateway storage', () => {
     });
     fetchIndexingProfiles.mockReset();
     fetchIndexingProfiles.mockResolvedValue([]);
+    fetchIndexingAutomationConfig.mockReset();
+    fetchIndexingAutomationConfig.mockResolvedValue({
+      scheduleEnabled: false,
+      scheduleIntervalMinutes: 1440,
+    });
     enrichPageForReindex.mockReset();
     enrichPageForReindex.mockResolvedValue({
       summary: 'Profile enrichment summary',
@@ -80,6 +87,30 @@ describe('runReindex profile Gateway storage', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it('loads change indexing profile assignment from Gateway automation config', async () => {
+    fetchIndexingAutomationConfig.mockResolvedValueOnce({
+      changeIndexingProfileId: 'change-profile',
+      scheduleEnabled: false,
+      scheduleIntervalMinutes: 1440,
+    });
+    fetchIndexingProfiles.mockResolvedValueOnce([
+      {
+        id: 'change-profile',
+        enabled: true,
+        namespaces: [0],
+        titleFilters: { include: ['Runbook'], exclude: [] },
+      },
+    ]);
+
+    const { getChangeIndexingProfileFromAdminStorage } = await import('../indexing-profile-store.js');
+
+    await expect(getChangeIndexingProfileFromAdminStorage()).resolves.toMatchObject({
+      id: 'change-profile',
+      namespaces: [0],
+      titleFilters: { include: ['Runbook'], exclude: [] },
+    });
   });
 
   it('loads indexing profile defaults from Gateway admin storage', async () => {

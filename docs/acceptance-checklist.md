@@ -142,6 +142,9 @@
 
 ## Chat Retention
 
+- [ ] `GET /api/admin/chat-management/config` возвращает `defaultChatProfileId`, `selectedProfile` и список `chatProfiles`.
+- [ ] `POST /api/admin/chat-profiles` сохраняет `promptHistoryScope`, `retrievalHistoryMode`, лимиты истории и флаг `experimental`.
+- [ ] `Профили поиска` сохраняют `chatProfileId`, а чат показывает в diagnostics `chatProfileId`, `promptHistoryScope` и `retrievalHistoryMode`.
 - [ ] Retention config сохраняется.
 - [ ] `GET /api/admin/chat-retention/config` возвращает `metadata.redisTtlSeconds`.
 - [ ] Default chat retention: `retentionMode=archive`, `activeDays=7`; активные чаты старше 7 дней попадают в `Архив`.
@@ -149,7 +152,7 @@
 - [ ] Export settings не включают secrets.
 - [ ] Chat message создает или обновляет SQL session registry.
 - [ ] Streaming chat возвращает `conversation` SSE event, и второй вопрос в UI продолжает тот же `conversationId`.
-- [ ] Второй вопрос в активном чате использует недавний контекст этой session для RAG retrieval без LLM rewrite и без распознавания специальных фраз.
+- [ ] Второй вопрос в активном чате использует недавний контекст этой session для prompt; retrieval использует историю только если выбранный chat profile это разрешает.
 - [ ] Пользовательская вкладка `Чат` показывает собственные активные/архивные sessions и открывает сохраненные сообщения.
 - [ ] Session в пользовательской вкладке называется первым вопросом пользователя, длинное название обрезается.
 - [ ] На карточках бесед нет кнопок `Архив`/`Экспорт`; экспорт доступен одной кнопкой `Выгрузить архив` только в режиме `Архив`.
@@ -160,7 +163,7 @@
 - [ ] `archive_oldest` архивирует старую активную session.
 - [ ] `delete_oldest` очищает старую session и сообщения.
 - [ ] `GET /api/admin/chat-sessions` показывает sessions и registry counters.
-- [ ] В админке `Хранение чатов` кнопка `Открыть` показывает сообщения выбранной session; ручных кнопок `Archive`/`Export JSON` на строке session нет.
+- [ ] В админке `Управление чатами` кнопка `Открыть` показывает сообщения выбранной session; ручных кнопок `Archive`/`Export JSON` на строке session нет.
 - [ ] `POST /api/admin/chat-sessions/:id/archive` создает архив.
 - [ ] `POST /api/admin/chat-sessions/:id/export` создает export в выбранном формате.
 

@@ -51,7 +51,7 @@
   - `Индексация`;
   - `Распознавание документов`;
   - `Модель доверия`;
-  - `Хранение чатов`;
+  - `Управление чатами`;
   - `Онтологические векторы`;
   - `Логи`.
 - [x] Перенести текущие блоки:
@@ -61,7 +61,7 @@
   - reindex -> `Индексация`;
   - service health -> `Обзор` и `Сервисы`.
 
-Статус: реализовано. Добавлены вкладки `Обзор`, `Сервисы`, `LLM`, `Embeddings`, `Webhook`, `RAG / Chunking`, `Индексация`, `Распознавание документов`, `Модель доверия`, `Хранение чатов`, `Онтологические векторы`, `Логи`; текущие runtime/settings/document/semantic/reindex/chat-retention/trust-preview блоки разнесены по ним.
+Статус: реализовано. Добавлены вкладки `Обзор`, `Сервисы`, `LLM`, `Embeddings`, `Webhook`, `RAG / Chunking`, `Индексация`, `Распознавание документов`, `Модель доверия`, `Управление чатами`, `Онтологические векторы`, `Логи`; текущие runtime/settings/document/semantic/reindex/chat-management/chat-retention/trust-preview блоки разнесены по ним.
 
 ### 3. Operational Config
 
@@ -144,7 +144,7 @@
 - [x] Применить лимиты к реестру chat sessions.
 - [x] Admin API для просмотра sessions/messages, ручного archive и export.
 
-Статус: Gateway пишет историю в SQL registry и сохраняет Redis как быстрый runtime cache. `maxActiveChats`, `maxTotalChats` и `onLimitExceeded` применяются при создании новой активной сессии; default policy архивирует активные чаты через 7 дней. UI вкладки `Хранение чатов` показывает registry counters, последние chat sessions и read-only просмотр выбранной session; пользовательская вкладка `Чат` показывает active/archive историю с названием из первого вопроса и выгрузкой всего собственного архива.
+Статус: Gateway пишет историю в SQL registry и сохраняет Redis как быстрый runtime cache. `maxActiveChats`, `maxTotalChats` и `onLimitExceeded` применяются при создании новой активной сессии; default policy архивирует активные чаты через 7 дней. UI вкладки `Управление чатами` показывает chat profiles, registry counters, последние chat sessions и read-only просмотр выбранной session; пользовательская вкладка `Чат` показывает active/archive историю с названием из первого вопроса и выгрузкой всего собственного архива.
 
 ### 9. Ontology Vectors
 
@@ -184,6 +184,9 @@
 - [x] `POST /api/admin/trust-scores/recalculate`
 - [x] `GET/POST /api/admin/trust-recalculation/config`
 - [x] `POST /api/internal/trust/recalculate-page`
+- [x] `GET/POST /api/admin/chat-management/config`
+- [x] `GET/POST /api/admin/chat-profiles`
+- [x] `POST /api/admin/chat-profiles/restore-defaults`
 - [x] `GET/POST /api/admin/chat-retention/config`
 - [x] `GET /api/admin/chat-sessions`
 - [x] `GET /api/admin/chat-sessions/:id/messages`

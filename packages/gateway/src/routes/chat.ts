@@ -1,4 +1,5 @@
 import { FastifyInstance, FastifyRequest } from 'fastify';
+import { z } from 'zod';
 import { config } from '../config.js';
 import { mwAuthMiddleware, AuthenticatedRequest } from '../middleware/auth.js';
 import {
@@ -27,6 +28,15 @@ import { getMediaWikiProfileConfig } from '../services/mediawiki-profile-config.
 import { ChatRequest } from '../types/index.js';
 
 export { buildChatRetrievalQuery };
+
+const chatRequestSchema = z.object({
+  message: z.string().trim().min(1),
+  conversationId: z.string().trim().min(1).optional(),
+  stream: z.boolean().optional(),
+  topK: z.number().int().min(1).max(20).optional(),
+  retrievalProfileId: z.string().trim().min(1).optional(),
+  context: z.unknown().optional(),
+}).strict();
 
 function readHeader(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
@@ -204,15 +214,20 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
       ],
     },
     async (request, reply) => {
-      const { message, conversationId, stream: requestedStream, topK } = request.body;
+      const parsed = chatRequestSchema.safeParse(request.body);
+      if (!parsed.success) {
+        if (parsed.error.issues.some((issue) => issue.path[0] === 'message' && issue.code === 'too_small')) {
+          reply.status(400).send({ error: 'Message is required' });
+          return;
+        }
+        reply.status(400).send({ error: 'Invalid chat request', issues: parsed.error.issues });
+        return;
+      }
+
+      const { message, conversationId, stream: requestedStream, topK } = parsed.data;
       const stream = requestedStream ?? true;
       const mwUser = (request as AuthenticatedRequest).mwUser!;
       const cookie = (request as AuthenticatedRequest).sessionCookie;
-
-      if (!message || message.trim().length === 0) {
-        reply.status(400).send({ error: 'Message is required' });
-        return;
-      }
 
       try {
         const mediaWikiProfile = await getMediaWikiProfileConfig();

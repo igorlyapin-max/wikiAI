@@ -13,6 +13,7 @@
     "test:integration:local": "node scripts/integration-local.mjs",
     "test:smoke:llm": "node scripts/smoke-litellm.mjs",
     "migrate:postgres": "node scripts/migrate-sqlite-to-postgres.mjs",
+    "repair:cached-chat-sessions": "node scripts/repair-cached-chat-sessions.mjs",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
   },

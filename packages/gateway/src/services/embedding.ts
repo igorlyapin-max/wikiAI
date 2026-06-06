@@ -1,4 +1,32 @@
 import { buildServiceUrl, getEffectiveEmbeddingConfig } from './admin-platform-config.js';
+import { config } from '../config.js';
+import { measureDependency } from './metrics.js';
+import { currentTraceHeaders } from './tracing.js';
+
+async function fetchEmbeddingWithTimeout(url: string, init: RequestInit): Promise<Response> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), config.embeddingTimeoutMs);
+    try {
+      return await measureDependency(
+        { dependency: 'embedding', operation: 'embed' },
+        async () => fetch(url, { ...init, signal: controller.signal })
+      );
+    } catch (err) {
+      lastError = err instanceof Error && err.name === 'AbortError'
+        ? new Error(`Embedding provider request timed out after ${config.embeddingTimeoutMs}ms`)
+        : err;
+      if (attempt === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        continue;
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  throw lastError;
+}
 
 export async function getEmbedding(text: string): Promise<number[]> {
   const embeddingConfig = await getEffectiveEmbeddingConfig();
@@ -9,9 +37,9 @@ export async function getEmbedding(text: string): Promise<number[]> {
     headers.Authorization = `Bearer ${embeddingConfig.apiKey}`;
   }
 
-  const res = await fetch(url, {
+  const res = await fetchEmbeddingWithTimeout(url, {
     method: 'POST',
-    headers,
+    headers: { ...headers, ...currentTraceHeaders() },
     body: JSON.stringify(isOpenAiCompatible
       ? { model: embeddingConfig.model, input: text, dimensions: embeddingConfig.dimensions }
       : { model: embeddingConfig.model, prompt: text }),

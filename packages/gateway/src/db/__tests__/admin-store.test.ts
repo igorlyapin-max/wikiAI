@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import path from 'node:path';
+import { tmpdir } from 'node:os';
 
 const pgConnect = vi.hoisted(() => vi.fn());
 const pgPoolQuery = vi.hoisted(() => vi.fn());
@@ -86,6 +89,28 @@ describe('admin store', () => {
     });
 
     store.close();
+  });
+
+  it('keeps sqlite migrations idempotent for attachment metadata columns', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'wikiai-admin-store-'));
+    const filename = path.join(dir, 'wiki-ai.sqlite');
+    try {
+      const first = new SqliteAdminStore(filename);
+      first.close();
+
+      const second = new SqliteAdminStore(filename);
+      const columns = (second.getDatabase().prepare('PRAGMA table_info(ai_search_chunks)').all() as Array<{ name: string }>)
+        .map((row) => row.name);
+
+      expect(columns).toEqual(expect.arrayContaining([
+        'attachment_mime',
+        'attachment_processing_mode',
+        'content_type',
+      ]));
+      second.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('runs postgres migrations and reads JSONB values through pg pool', async () => {

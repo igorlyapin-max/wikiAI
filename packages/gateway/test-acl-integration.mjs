@@ -1,6 +1,9 @@
 import { QdrantClient } from '@qdrant/js-client-rest';
 
-const qdrant = new QdrantClient({ url: 'http://localhost:6333' });
+const qdrant = new QdrantClient({
+  url: process.env.QDRANT_URL ?? 'http://localhost:6333',
+  ...(process.env.QDRANT_API_KEY ? { apiKey: process.env.QDRANT_API_KEY } : {}),
+});
 const COLLECTION = 'wiki_chunks';
 
 function makeVector(seed) {

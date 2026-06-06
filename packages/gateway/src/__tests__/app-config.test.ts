@@ -9,6 +9,15 @@ describe('gateway app config', () => {
     ]);
   });
 
+  it('allows explicit LAN demo origins when provided', () => {
+    expect(
+      parseCorsOrigins(
+        ' http://192.168.1.50:8082,http://localhost:8082,http://127.0.0.1:8082,http://192.168.1.50:8082 ',
+        'production'
+      )
+    ).toEqual(['http://192.168.1.50:8082', 'http://localhost:8082', 'http://127.0.0.1:8082']);
+  });
+
   it('disables default CORS origins in production', () => {
     expect(parseCorsOrigins(undefined, 'production')).toEqual([]);
   });

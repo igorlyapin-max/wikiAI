@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { getAdminSqliteDatabase, resetAdminStoreForTests } from '../../db/admin-store.js';
 import {
+  getSearchIndexAttachmentDiagnostics,
   getSearchIndexStatus,
   getTrigramBackfillJobStatus,
   searchLexicalChunks,
@@ -47,6 +48,22 @@ describe('search index metadata', () => {
       attachmentFilename: 'archive.zip',
       attachmentMime: 'application/zip',
       attachmentProcessingMode: 'metadata',
+    });
+    await expect(getSearchIndexStatus()).resolves.toMatchObject({
+      attachmentChunks: 1,
+      attachmentPages: 1,
+      attachmentFilenames: [{ filename: 'archive.zip', chunks: 1, pages: 1 }],
+      attachmentColumnsReady: true,
+    });
+    await expect(getSearchIndexAttachmentDiagnostics('archive.zip')).resolves.toMatchObject({
+      filename: 'archive.zip',
+      chunks: 1,
+      pages: 1,
+      found: true,
+      samples: [expect.objectContaining({
+        pageId: 7,
+        attachmentFilename: 'archive.zip',
+      })],
     });
 
     const mermaid = await searchLexicalChunks('graph', 5);

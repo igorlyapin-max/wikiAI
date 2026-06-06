@@ -1,4 +1,5 @@
 import { FastifyInstance, FastifyRequest } from 'fastify';
+import { z } from 'zod';
 import { mwOptionalAuthMiddleware, AuthenticatedRequest } from '../middleware/auth.js';
 import { type WikiPageUrlOptions } from '../services/mediawiki-url.js';
 import { executeRuntimeSearch } from '../services/runtime-search.js';
@@ -10,6 +11,13 @@ import {
   getMediaWikiProfileConfigStatus,
 } from '../services/mediawiki-profile-config.js';
 import { SearchRequest } from '../types/index.js';
+
+const searchRequestSchema = z.object({
+  query: z.string().trim().min(1),
+  topK: z.number().int().min(1).max(20).optional(),
+  retrievalProfileId: z.string().trim().min(1).optional(),
+  context: z.unknown().optional(),
+}).strict();
 
 function readHeader(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
@@ -50,14 +58,19 @@ export async function searchRoutes(app: FastifyInstance): Promise<void> {
       ],
     },
     async (request, reply) => {
-      const { query, topK } = request.body;
-      const mwUser = (request as AuthenticatedRequest).mwUser!;
-      const cookie = (request as AuthenticatedRequest).sessionCookie;
-
-      if (!query || query.trim().length === 0) {
-        reply.status(400).send({ error: 'Query is required' });
+      const parsed = searchRequestSchema.safeParse(request.body);
+      if (!parsed.success) {
+        if (parsed.error.issues.some((issue) => issue.path[0] === 'query' && issue.code === 'too_small')) {
+          reply.status(400).send({ error: 'Query is required' });
+          return;
+        }
+        reply.status(400).send({ error: 'Invalid search request', issues: parsed.error.issues });
         return;
       }
+
+      const { query, topK } = parsed.data;
+      const mwUser = (request as AuthenticatedRequest).mwUser!;
+      const cookie = (request as AuthenticatedRequest).sessionCookie;
 
       try {
         const mediaWikiProfile = await getMediaWikiProfileConfig();

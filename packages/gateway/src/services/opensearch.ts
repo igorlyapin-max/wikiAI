@@ -22,6 +22,31 @@ export interface OpenSearchStatus {
   timeoutMs: number;
   tlsRejectUnauthorized: boolean;
   documentCount?: number;
+  sourceTypeCounts?: Array<{ sourceType: string; count: number }>;
+  attachmentDocumentCount?: number;
+  attachmentFilenames?: Array<{ filename: string; count: number }>;
+  error?: string;
+}
+
+export interface OpenSearchAttachmentDiagnostics {
+  status: 'ok' | 'disabled' | 'error';
+  ready: boolean;
+  enabled: boolean;
+  indexName: string;
+  filename: string;
+  chunks: number;
+  found: boolean;
+  samples: Array<{
+    id: number;
+    pageId: number;
+    title: string;
+    sourceType?: string;
+    attachmentFilename?: string;
+    attachmentMime?: string;
+    attachmentProcessingMode?: string;
+    chunkIndex?: number;
+    totalChunks?: number;
+  }>;
   error?: string;
 }
 
@@ -365,6 +390,38 @@ function hitArray(body: JsonRecord | undefined): unknown[] {
   return Array.isArray(items) ? items : [];
 }
 
+function aggregationBuckets(body: JsonRecord | undefined, name: string): Array<{ key: unknown; doc_count?: unknown }> {
+  const aggregations = body?.aggregations;
+  if (!aggregations || typeof aggregations !== 'object' || Array.isArray(aggregations)) return [];
+  const aggregation = (aggregations as Record<string, unknown>)[name];
+  if (!aggregation || typeof aggregation !== 'object' || Array.isArray(aggregation)) return [];
+  const buckets = (aggregation as { buckets?: unknown }).buckets;
+  return Array.isArray(buckets) ? buckets as Array<{ key: unknown; doc_count?: unknown }> : [];
+}
+
+function filterDocCount(body: JsonRecord | undefined, name: string): number {
+  const aggregations = body?.aggregations;
+  if (!aggregations || typeof aggregations !== 'object' || Array.isArray(aggregations)) return 0;
+  const aggregation = (aggregations as Record<string, unknown>)[name];
+  if (!aggregation || typeof aggregation !== 'object' || Array.isArray(aggregation)) return 0;
+  return readNumber((aggregation as { doc_count?: unknown }).doc_count);
+}
+
+function openSearchAttachmentSample(hit: unknown): OpenSearchAttachmentDiagnostics['samples'][number] {
+  const source = hitSource(hit);
+  return {
+    id: readNumber(source.chunkId),
+    pageId: readNumber(source.pageId),
+    title: typeof source.title === 'string' ? source.title : '',
+    sourceType: typeof source.sourceType === 'string' ? source.sourceType : undefined,
+    attachmentFilename: typeof source.attachmentFilename === 'string' ? source.attachmentFilename : undefined,
+    attachmentMime: typeof source.attachmentMime === 'string' ? source.attachmentMime : undefined,
+    attachmentProcessingMode: typeof source.attachmentProcessingMode === 'string' ? source.attachmentProcessingMode : undefined,
+    chunkIndex: typeof source.chunkIndex === 'number' ? source.chunkIndex : undefined,
+    totalChunks: typeof source.totalChunks === 'number' ? source.totalChunks : undefined,
+  };
+}
+
 function searchBody(query: string, limit: number, config: EffectiveOpenSearchConfig): JsonRecord {
   const fields = [
     `title^${config.titleBoost}`,
@@ -577,6 +634,88 @@ export async function searchOpenSearchChunksWithDiagnostics(
   }
 }
 
+export async function getOpenSearchAttachmentDiagnostics(
+  filename: string,
+  limit = 5
+): Promise<OpenSearchAttachmentDiagnostics> {
+  const config = await getEffectiveOpenSearchConfig();
+  const normalizedFilename = filename.trim();
+  const normalizedLimit = normalizeLimit(limit, 5);
+  const base = {
+    enabled: config.enabled,
+    indexName: config.indexName,
+    filename: normalizedFilename,
+    chunks: 0,
+    found: false,
+    samples: [],
+  };
+  if (!config.enabled) {
+    return {
+      ...base,
+      status: 'disabled',
+      ready: false,
+      error: 'OpenSearch is disabled',
+    };
+  }
+  const configError = getEnabledConfigError(config);
+  if (configError) {
+    return {
+      ...base,
+      status: 'error',
+      ready: false,
+      error: configError,
+    };
+  }
+
+  try {
+    const { response, body } = await requestJson<JsonRecord>(config, `/${indexName(config)}/_search`, {
+      method: 'POST',
+      body: JSON.stringify({
+        size: normalizedLimit,
+        track_total_hits: true,
+        _source: [
+          'chunkId',
+          'pageId',
+          'title',
+          'sourceType',
+          'attachmentFilename',
+          'attachmentMime',
+          'attachmentProcessingMode',
+          'chunkIndex',
+          'totalChunks',
+        ],
+        query: {
+          term: {
+            attachmentFilename: normalizedFilename,
+          },
+        },
+        sort: [
+          { pageId: 'asc' },
+          { chunkIndex: 'asc' },
+        ],
+      }),
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const hits = hitArray(body);
+    const chunks = totalHits(body);
+    return {
+      ...base,
+      status: 'ok',
+      ready: true,
+      chunks,
+      found: chunks > 0,
+      samples: hits.map(openSearchAttachmentSample),
+    };
+  } catch (err) {
+    return {
+      ...base,
+      status: 'error',
+      ready: false,
+      error: err instanceof Error ? err.message : 'Unknown OpenSearch attachment diagnostics error',
+    };
+  }
+}
+
 export async function getOpenSearchStatus(): Promise<OpenSearchStatus> {
   const config = await getEffectiveOpenSearchConfig();
   const base = {
@@ -618,12 +757,47 @@ export async function getOpenSearchStatus(): Promise<OpenSearchStatus> {
         error: `OpenSearch index is not ready: HTTP ${head.status}`,
       };
     }
-    const count = await requestJson<{ count?: unknown }>(config, `/${indexName(config)}/_count`, { method: 'GET' });
+    const [count, aggregation] = await Promise.all([
+      requestJson<{ count?: unknown }>(config, `/${indexName(config)}/_count`, { method: 'GET' }),
+      requestJson<JsonRecord>(config, `/${indexName(config)}/_search`, {
+        method: 'POST',
+        body: JSON.stringify({
+          size: 0,
+          aggs: {
+            sourceTypes: {
+              terms: { field: 'sourceType', size: 20 },
+            },
+            attachmentDocs: {
+              filter: {
+                bool: {
+                  should: [
+                    { term: { sourceType: 'attachment' } },
+                    { exists: { field: 'attachmentFilename' } },
+                  ],
+                  minimum_should_match: 1,
+                },
+              },
+            },
+            attachmentFilenames: {
+              terms: { field: 'attachmentFilename', size: 20 },
+            },
+          },
+        }),
+      }),
+    ]);
+    if (!aggregation.response.ok) throw new Error(`OpenSearch aggregation failed with HTTP ${aggregation.response.status}`);
     return {
       ...base,
       status: 'ok',
       ready: true,
       documentCount: readNumber(count.body?.count),
+      sourceTypeCounts: aggregationBuckets(aggregation.body, 'sourceTypes')
+        .filter((bucket) => typeof bucket.key === 'string')
+        .map((bucket) => ({ sourceType: String(bucket.key), count: readNumber(bucket.doc_count) })),
+      attachmentDocumentCount: filterDocCount(aggregation.body, 'attachmentDocs'),
+      attachmentFilenames: aggregationBuckets(aggregation.body, 'attachmentFilenames')
+        .filter((bucket) => typeof bucket.key === 'string')
+        .map((bucket) => ({ filename: String(bucket.key), count: readNumber(bucket.doc_count) })),
     };
   } catch (err) {
     return {

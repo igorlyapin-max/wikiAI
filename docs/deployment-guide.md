@@ -42,9 +42,9 @@ MediaWiki; для заказчика сборка должна быть част
 
 Базовые переменные:
 
-- `DATABASE_URL` - admin/config/chat/search state DB, default
-  `sqlite://./state/wiki-ai.sqlite`; production-ready mode supports
-  `postgres://...` / `postgresql://...`.
+- `DATABASE_URL` - admin/config/chat/search state DB. SQLite remains the
+  dev/test/pilot default, but `NODE_ENV=production` requires Postgres unless
+  `ALLOW_SQLITE_IN_PRODUCTION=true` is set for local diagnostics.
 - `MW_BASE_URL` - внутренний URL MediaWiki API для Gateway/Syncer.
 - `MW_PUBLIC_BASE_URL` - внешний URL MediaWiki для ссылок на источники в браузере.
 - `MW_API_PATH`
@@ -73,6 +73,8 @@ MediaWiki; для заказчика сборка должна быть част
   claim'ов, defaults: `sub`, `preferred_username`, `groups`.
 - `REDIS_URL`
 - `QDRANT_URL`
+- `QDRANT_API_KEY` - required for the production compose profile; pass the same
+  value to Gateway, Syncer, ColBERT and Qdrant.
 - `QDRANT_COLLECTION`
 - `OPENSEARCH_ENABLED` - включает OpenSearch lexical backend. Default `false`.
 - `OPENSEARCH_BASE_URL` - URL OpenSearch из Gateway container, default `http://opensearch:9200`. Не путайте с host URL: `http://127.0.0.1:9200` подходит для ручной проверки с машины, но не для Gateway внутри Docker network.
@@ -174,9 +176,9 @@ Health endpoints:
 - `GET /live` - process liveness без проверки зависимостей.
 - `GET /ready` - readiness с bounded checks зависимостей.
 - `GET /health` - backward-compatible readiness alias.
-- `GET /metrics` - Prometheus-compatible process/request metrics. Публикуйте
-  только во внутренней сети, через allowlist reverse proxy или collector
-  sidecar.
+- `GET /metrics` - Prometheus-compatible process/request/dependency/health/
+  scheduler metrics. Публикуйте только во внутренней сети, через allowlist
+  reverse proxy или collector sidecar.
 
 Для временной диагностики:
 
@@ -238,6 +240,15 @@ curl -s -X POST http://127.0.0.1:3000/api/admin/reindex \
   -d '{"source":"qdrant_payload","indexTargets":["opensearch"],"dryRun":false}'
 ```
 
+Если OpenSearch должен искать по вложениям, дополнительно проверьте цепочку:
+`Распознавание документов` включает нужный MIME, indexing profile имеет
+`attachmentsEnabled=true` и targets `attachments,opensearch`, manual reindex
+запущен с галкой `Обрабатывать вложения в этом запуске`, а во вкладке
+`OpenSearch` `attachmentDocumentCount` и проверка filename показывают нужный
+файл. Если файл есть в BM25/PostgreSQL, но отсутствует в OpenSearch, повторите
+reindex с target `opensearch`; изменение retrieval profile само по себе
+OpenSearch index не наполняет.
+
 OpenSearch vector search не является production default в этой версии. Qdrant
 остается dense-vector backend; OpenSearch используется как lexical/relevance
 layer и может быть усилен ColBERT rerank через profile
@@ -293,6 +304,59 @@ CORS_ORIGINS=http://127.0.0.1:8082,http://localhost:8082
 покажет `NetworkError when attempting to fetch resource`. Для production
 same-origin reverse proxy можно не открывать CORS, но тогда `/api/*` на wiki
 origin должен проксироваться на Gateway.
+
+### LAN Demo Mode
+
+Для онлайн-демонстрации в доверенной локальной сети можно открыть Gateway на
+LAN-интерфейсе, сохранив обычный `localhost` режим по умолчанию. TLS и
+additional production hardening для этого стенда не требуются.
+
+1. Узнайте LAN IP host машины:
+
+```bash
+hostname -I
+ip -4 addr
+```
+
+На Windows используйте `ipconfig`, на macOS - `ipconfig getifaddr en0`.
+
+2. Создайте LAN env file и замените `192.168.1.50` на реальный IP:
+
+```bash
+cp .env.lan-demo.example .env.lan-demo
+```
+
+```env
+WIKIAI_LAN_HOST=192.168.1.50
+WIKIAI_LAN_BIND=0.0.0.0
+MW_PUBLIC_BASE_URL=http://192.168.1.50:8082
+CORS_ORIGINS=http://192.168.1.50:8082,http://localhost:8082,http://127.0.0.1:8082
+```
+
+`WIKIAI_LAN_BIND=0.0.0.0` слушает все host interfaces. Если нужно привязаться
+только к одному интерфейсу, укажите сам LAN IP.
+
+3. Запустите стек с LAN override:
+
+```bash
+docker compose --env-file .env --env-file .env.lan-demo \
+  -f docker-compose.yml -f docker-compose.lan-demo.yml up -d
+```
+
+4. В MediaWiki `LocalSettings.php` используйте LAN-facing URLs для браузера и
+container/internal URLs для server-side calls:
+
+```php
+$wgServer = 'http://192.168.1.50:8082';
+$wgAIAssistantGatewayUrl = 'http://gateway:3000';
+$wgAIAssistantGatewayPublicUrl = 'http://192.168.1.50:3000';
+$wgAIAssistantSyncerUrl = 'http://syncer:3001';
+```
+
+Для демонстрации с другого устройства в той же сети должны открываться
+`http://192.168.1.50:8082/`, `http://192.168.1.50:3000/live`, а
+`Special:AIAssistant` должен выполнять browser requests к
+`http://192.168.1.50:3000`.
 
 ### Same-Origin WikiAI Edge Proxy
 

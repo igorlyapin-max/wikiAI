@@ -24,16 +24,19 @@ const filterReadableChunks = vi.hoisted(() => vi.fn());
 const callLiteLLM = vi.hoisted(() => vi.fn());
 const detectConflictsForChat = vi.hoisted(() => vi.fn());
 const buildConflictInstruction = vi.hoisted(() => vi.fn());
+const fetchUserInfo = vi.hoisted(() => vi.fn(async () => ({
+  username: 'ChatUser',
+  userId: 77,
+  groups: ['user', 'ai-it'],
+})));
 
 vi.mock('../../services/mediawiki.js', () => ({
-  fetchUserInfo: vi.fn(async () => ({
-    username: 'ChatUser',
-    userId: 77,
-    groups: ['user', 'ai-it'],
-  })),
+  fetchUserInfo,
 }));
 
 vi.mock('../../services/redis.js', () => ({
+  getCachedUserInfo: vi.fn(async () => null),
+  cacheUserInfo: vi.fn(async () => undefined),
   getCachedUserGroups: vi.fn(async () => null),
   cacheUserGroups: vi.fn(async () => undefined),
   getChatHistory: vi.fn(async (sessionId: string, conversationId: string) => {
@@ -125,6 +128,12 @@ describe('chat routes', () => {
     callLiteLLM.mockReset();
     detectConflictsForChat.mockReset();
     buildConflictInstruction.mockReset();
+    fetchUserInfo.mockReset();
+    fetchUserInfo.mockResolvedValue({
+      username: 'ChatUser',
+      userId: 77,
+      groups: ['user', 'ai-it'],
+    });
     getEmbedding.mockResolvedValue([0.1, 0.2, 0.3]);
     searchRagChunks.mockResolvedValue({
       chunks,
@@ -254,6 +263,33 @@ describe('chat routes', () => {
       { role: 'assistant', content: 'Use MFA for VPN.' },
     ]);
 
+    await app.close();
+  });
+
+  it('rejects legacy cached MediaWiki principals before storing chat history', async () => {
+    fetchUserInfo.mockResolvedValueOnce({
+      username: 'cached',
+      userId: 0,
+      groups: ['ai-it'],
+    });
+    const app = await makeApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/chat',
+      headers: { cookie: 'mw=legacy', origin: 'http://127.0.0.1:8082' },
+      payload: {
+        message: 'Проверка legacy cache',
+        conversationId: 'conv-legacy',
+        stream: false,
+      },
+    });
+
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toMatchObject({
+      error: 'Invalid MediaWiki principal',
+    });
+    await expect(getSqlChatHistory('mw=legacy', 'conv-legacy', 0)).resolves.toEqual([]);
+    expect(callLiteLLM).not.toHaveBeenCalled();
     await app.close();
   });
 
@@ -511,7 +547,104 @@ describe('chat routes', () => {
     expect(ragQuery).toContain('Предыдущий ответ: Молекулярная гастрономия использует научные методы приготовления.');
     expect(res.json().diagnostics).toMatchObject({
       retrievalProfileId: 'test_mediawiki_history_augmented',
-      retrievalQueryMode: 'history_augmented',
+      chatProfileId: 'chat_followup_full',
+      retrievalHistoryMode: 'current_session_questions_and_answers',
+      retrievalHistoryMessagesUsed: 2,
+      retrievalQueryMode: 'current_session_questions_and_answers',
+      historyInjectedIntoRetrieval: true,
+      historyMessagesUsed: 2,
+    });
+    expect(res.json().diagnostics.retrievalQuery).toBe(ragQuery);
+    const llmMessages = callLiteLLM.mock.calls[0][0] as Array<{ role: string; content: string }>;
+    expect(llmMessages).toEqual(expect.arrayContaining([
+      { role: 'user', content: 'Расскажи про молекулярную гастрономию' },
+      { role: 'assistant', content: 'Молекулярная гастрономия использует научные методы приготовления.' },
+    ]));
+
+    await app.close();
+  });
+
+  it('uses chat profile settings to add only previous user questions to retrieval', async () => {
+    const template = (await getDefaultRetrievalProfiles()).find((profile) => profile.id === 'semantic_broad');
+    if (!template) throw new Error('semantic_broad retrieval profile template is missing');
+    await upsertRetrievalProfile({
+      id: 'test_mediawiki_followup_questions',
+      name: 'Test MediaWiki follow-up questions',
+      description: 'Test profile with question-only retrieval history',
+      enabled: true,
+      apiEnabled: false,
+      mcpEnabled: false,
+      anonymousAllowed: false,
+      maxTopK: 20,
+      chatProfileId: 'chat_followup_questions',
+      tags: ['test'],
+      config: {
+        ...template.config,
+        chatRetrievalQueryMode: 'current_message',
+        searchMode: 'vector_only',
+        rerankMode: 'none',
+        colbertEnabled: false,
+      },
+    });
+    await setMediaWikiProfileConfig({ defaultRetrievalProfileId: 'test_mediawiki_followup_questions' });
+    const retention = {
+      retentionMode: 'archive' as const,
+      activeDays: 7,
+      recentDays: 7,
+      archiveDays: 365,
+      maxPinnedChats: 20,
+      maxActiveChats: 200,
+      maxTotalChats: 1000,
+      onLimitExceeded: 'delete_oldest' as const,
+      exportOptions: {
+        formats: ['json' as const],
+        includeMetadata: true,
+        includeSources: true,
+        includeMessages: true,
+      },
+    };
+    await recordChatMessage({
+      sessionHash: 'mw=1',
+      conversationId: 'conv-followup-questions',
+      userId: 77,
+      username: 'ChatUser',
+      role: 'user',
+      content: 'Расскажи про молекулярную гастрономию',
+    }, retention);
+    await recordChatMessage({
+      sessionHash: 'mw=1',
+      conversationId: 'conv-followup-questions',
+      userId: 77,
+      username: 'ChatUser',
+      role: 'assistant',
+      content: 'Молекулярная гастрономия использует научные методы приготовления.',
+    }, retention);
+
+    const app = await makeApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/chat',
+      headers: { cookie: 'mw=1', origin: 'http://127.0.0.1:8082' },
+      payload: {
+        message: 'Еще раз про кухню?',
+        conversationId: 'conv-followup-questions',
+        stream: false,
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const ragQuery = searchRagChunks.mock.calls[0][0].query as string;
+    expect(ragQuery).toContain('Еще раз про кухню?');
+    expect(ragQuery).toContain('Предыдущий вопрос: Расскажи про молекулярную гастрономию');
+    expect(ragQuery).not.toContain('Предыдущий ответ:');
+    expect(res.json().diagnostics).toMatchObject({
+      retrievalProfileId: 'test_mediawiki_followup_questions',
+      chatProfileId: 'chat_followup_questions',
+      promptHistoryScope: 'current_session',
+      promptHistoryMessagesUsed: 2,
+      retrievalHistoryMode: 'current_session_questions',
+      retrievalHistoryMessagesUsed: 1,
+      retrievalQueryMode: 'current_session_questions',
       historyInjectedIntoRetrieval: true,
       historyMessagesUsed: 2,
     });

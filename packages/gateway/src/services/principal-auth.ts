@@ -1,4 +1,5 @@
 import { createHash, webcrypto } from 'node:crypto';
+import { config as appConfig } from '../config.js';
 import { AuthenticatedPrincipal, MWUserInfo } from '../types/index.js';
 import { ExternalApiConfig } from './external-api-config.js';
 
@@ -175,14 +176,44 @@ async function fetchJwks(jwksUrl: string): Promise<Jwk[]> {
   }
 }
 
+function validateHttpsUrl(value: string, label: string): void {
+  if (appConfig.nodeEnv !== 'production') return;
+  const parsed = new URL(value);
+  if (parsed.protocol !== 'https:') {
+    throw new Error(`${label} must use HTTPS in production`);
+  }
+}
+
+function validateOidcTransport(configValue: ExternalApiConfig): void {
+  validateHttpsUrl(configValue.oidc.issuer, 'OIDC issuer');
+  validateHttpsUrl(configValue.oidc.jwksUrl, 'OIDC JWKS URL');
+}
+
+function hasValidRsaModulus(key: Jwk): boolean {
+  if (typeof key.n !== 'string') return false;
+  try {
+    return base64UrlDecode(key.n).byteLength >= 256;
+  } catch {
+    return false;
+  }
+}
+
 function selectJwk(keys: Jwk[], header: JwtHeader): Jwk | undefined {
-  return keys.find((key) => {
-    if (header.kid && key.kid !== header.kid) return false;
+  if (!header.kid) {
+    throw new Error('OIDC token kid header is required');
+  }
+
+  const matches = keys.filter((key) => {
+    if (key.kid !== header.kid) return false;
     if (key.kty !== 'RSA') return false;
     if (key.alg && key.alg !== 'RS256') return false;
     if (key.use && key.use !== 'sig') return false;
-    return typeof key.n === 'string' && typeof key.e === 'string';
+    return hasValidRsaModulus(key) && typeof key.e === 'string';
   });
+  if (matches.length > 1) {
+    throw new Error('OIDC JWKS contains duplicate matching kid entries');
+  }
+  return matches[0];
 }
 
 async function verifyJwtSignature(input: {
@@ -245,6 +276,7 @@ export async function authenticateOidcBearerToken(
   if (!externalOidcIsConfigured(configValue)) {
     throw new Error('OIDC is not configured');
   }
+  validateOidcTransport(configValue);
 
   const parts = token.split('.');
   if (parts.length !== 3 || parts.some((part) => part.length === 0)) {

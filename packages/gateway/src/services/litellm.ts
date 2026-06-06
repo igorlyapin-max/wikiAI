@@ -1,4 +1,6 @@
 import { buildServiceUrl, getEffectiveLlmConfig } from './admin-platform-config.js';
+import { measureDependency } from './metrics.js';
+import { currentTraceHeaders } from './tracing.js';
 
 export interface ChatCompletionChunk {
   id: string;
@@ -28,11 +30,12 @@ export async function* streamChatCompletion(
   const timeoutId = setTimeout(() => controller.abort(), effectiveTimeout);
 
   try {
-    const res = await fetch(url, {
+    const res = await measureDependency({ dependency: 'litellm', operation: 'stream_chat' }, async () => fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${effectiveConfig.apiKey}`,
+        ...currentTraceHeaders(),
       },
       body: JSON.stringify({
         model: model ?? effectiveConfig.model,
@@ -42,7 +45,7 @@ export async function* streamChatCompletion(
         max_tokens: effectiveConfig.maxTokens,
       }),
       signal: controller.signal,
-    });
+    }));
 
     clearTimeout(timeoutId);
 
@@ -124,11 +127,12 @@ export async function callLiteLLM(
   const timeoutId = setTimeout(() => controller.abort(), effectiveTimeout);
 
   try {
-    const res = await fetch(url, {
+    const res = await measureDependency({ dependency: 'litellm', operation: 'chat' }, async () => fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${effectiveConfig.apiKey}`,
+        ...currentTraceHeaders(),
       },
       body: JSON.stringify({
         model: model ?? effectiveConfig.model,
@@ -138,7 +142,7 @@ export async function callLiteLLM(
         max_tokens: effectiveConfig.maxTokens,
       }),
       signal: controller.signal,
-    });
+    }));
 
     clearTimeout(timeoutId);
 

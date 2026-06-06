@@ -1,4 +1,7 @@
 import { ReindexOptions, ReindexProgress, ReindexSummary, runReindex, validateReindexPreflight } from './reindex.js';
+import { config } from '../config.js';
+import { setSchedulerLockStatus } from './metrics.js';
+import { acquireRedisLock, readJson, writeJson } from './redis.js';
 
 export type ReindexJobState = 'idle' | 'running' | 'completed' | 'failed';
 
@@ -12,9 +15,20 @@ export interface ReindexJobStatus {
 }
 
 let currentJob: ReindexJobStatus = { state: 'idle' };
+const REINDEX_STATUS_KEY = 'syncer:reindex:status';
+const REINDEX_LOCK_KEY = 'syncer:reindex:lock';
 
 export function getReindexJobStatus(): ReindexJobStatus {
   return currentJob;
+}
+
+export async function getSharedReindexJobStatus(): Promise<ReindexJobStatus> {
+  return (await readJson<ReindexJobStatus>(REINDEX_STATUS_KEY)) ?? currentJob;
+}
+
+async function setReindexJobStatus(status: ReindexJobStatus): Promise<void> {
+  currentJob = status;
+  await writeJson(REINDEX_STATUS_KEY, status, Math.max(config.reindexLockTtlSeconds, 3600));
 }
 
 export async function startReindexJob(options: ReindexOptions = {}): Promise<ReindexJobStatus> {
@@ -22,9 +36,14 @@ export async function startReindexJob(options: ReindexOptions = {}): Promise<Rei
     throw new Error('Reindex job is already running');
   }
   await validateReindexPreflight(options);
+  const lock = await acquireRedisLock(REINDEX_LOCK_KEY, config.reindexLockTtlSeconds);
+  if (!lock) {
+    throw new Error('Reindex job is already running on another replica');
+  }
+  setSchedulerLockStatus('syncer_reindex', true);
 
   const startedAt = new Date().toISOString();
-  currentJob = {
+  await setReindexJobStatus({
     state: 'running',
     startedAt,
     progress: {
@@ -43,13 +62,24 @@ export async function startReindexJob(options: ReindexOptions = {}): Promise<Rei
       embeddingCalls: 0,
       llmEnrichmentCalls: 0,
       estimatedPaidCalls: 0,
+      attachmentsRequested: Boolean(options.attachmentsEnabled),
+      attachmentsActive: false,
+      documentPolicyEnabled: false,
+      attachmentsFound: 0,
+      attachmentsProcessed: 0,
+      attachmentsFailed: 0,
+      attachmentsSkippedDisabled: 0,
+      attachmentsSkippedNoInfo: 0,
+      attachmentsSkippedNoDownload: 0,
+      attachmentsSkippedEmpty: 0,
+      attachmentTargetWrites: {},
     },
-  };
+  });
 
   void runReindex(options, (progress) => {
-    currentJob = { ...currentJob, progress };
+    void setReindexJobStatus({ ...currentJob, progress });
   }).then((summary) => {
-    currentJob = {
+    return setReindexJobStatus({
       state: 'completed',
       startedAt,
       finishedAt: summary.finishedAt,
@@ -69,17 +99,31 @@ export async function startReindexJob(options: ReindexOptions = {}): Promise<Rei
         embeddingCalls: summary.embeddingCalls,
         llmEnrichmentCalls: summary.llmEnrichmentCalls,
         estimatedPaidCalls: summary.estimatedPaidCalls,
+        attachmentsRequested: summary.attachmentsRequested,
+        attachmentsActive: summary.attachmentsActive,
+        documentPolicyEnabled: summary.documentPolicyEnabled,
+        attachmentsFound: summary.attachmentsFound,
+        attachmentsProcessed: summary.attachmentsProcessed,
+        attachmentsFailed: summary.attachmentsFailed,
+        attachmentsSkippedDisabled: summary.attachmentsSkippedDisabled,
+        attachmentsSkippedNoInfo: summary.attachmentsSkippedNoInfo,
+        attachmentsSkippedNoDownload: summary.attachmentsSkippedNoDownload,
+        attachmentsSkippedEmpty: summary.attachmentsSkippedEmpty,
+        attachmentTargetWrites: summary.attachmentTargetWrites,
       },
       summary,
-    };
+    });
   }).catch((err) => {
-    currentJob = {
+    return setReindexJobStatus({
       state: 'failed',
       startedAt,
       finishedAt: new Date().toISOString(),
       progress: currentJob.progress,
       error: err instanceof Error ? err.message : 'Unknown reindex error',
-    };
+    });
+  }).finally(() => {
+    setSchedulerLockStatus('syncer_reindex', false);
+    void lock.release();
   });
 
   return currentJob;

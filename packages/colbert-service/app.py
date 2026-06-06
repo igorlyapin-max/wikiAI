@@ -23,13 +23,14 @@ def env(name: str, default: str) -> str:
 
 
 QDRANT_URL = env("QDRANT_URL", "http://qdrant:6333")
+QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY") or None
 COLBERT_MODEL = env("COLBERT_MODEL", DEFAULT_MODEL)
 COLBERT_COLLECTION = env("COLBERT_COLLECTION", DEFAULT_COLLECTION)
 COLBERT_DEVICE = env("COLBERT_DEVICE", "cpu")
 COLBERT_MAX_TOKENS = int(env("COLBERT_MAX_TOKENS", "180"))
 
 app = FastAPI(title="WikiAI ColBERT service")
-qdrant = QdrantClient(url=QDRANT_URL)
+qdrant = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
 
 
 class ChunkInput(BaseModel):

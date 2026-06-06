@@ -8,6 +8,7 @@ import { startIndexingProfileScheduler, stopIndexingProfileScheduler } from './s
 import { startTrustRecalculationScheduler, stopTrustRecalculationScheduler } from './services/trust-recalculation-scheduler.js';
 import { createFastifyLoggerOptions, diagnosticStartupFields } from './services/logging.js';
 import { registerMetrics } from './services/metrics.js';
+import { enterTraceContext, getTraceContext, traceContextFromHeaders } from './services/tracing.js';
 import { healthRoutes } from './routes/health.js';
 import { searchRoutes } from './routes/search.js';
 import { chatRoutes } from './routes/chat.js';
@@ -17,6 +18,29 @@ import { externalRoutes } from './routes/external.js';
 export function buildGatewayApp(): FastifyInstance {
   const app = Fastify({
     logger: createFastifyLoggerOptions(),
+    bodyLimit: config.httpBodyLimitBytes,
+  });
+
+  app.addHook('onRequest', async (request, reply) => {
+    const traceContext = traceContextFromHeaders(request.headers);
+    enterTraceContext(traceContext);
+    reply.header('x-request-id', traceContext.requestId);
+    if (traceContext.traceparent) reply.header('traceparent', traceContext.traceparent);
+  });
+
+  app.setErrorHandler((err, request, reply) => {
+    const error = err as { statusCode?: unknown; message?: unknown };
+    const statusCode = typeof error.statusCode === 'number' && error.statusCode >= 400 ? error.statusCode : 500;
+    const message = typeof error.message === 'string' ? error.message : 'Unknown request error';
+    request.log.error(
+      { event: 'gateway.request_error', err, requestId: getTraceContext()?.requestId },
+      'Gateway request failed'
+    );
+    reply.status(statusCode).send({
+      error: statusCode === 413 ? 'Payload too large' : 'Request failed',
+      message: statusCode >= 500 && config.nodeEnv === 'production' ? 'Internal server error' : message,
+      requestId: getTraceContext()?.requestId,
+    });
   });
 
   registerMetrics(app, 'gateway');
@@ -51,7 +75,7 @@ export function buildGatewayApp(): FastifyInstance {
       },
       credentials: true,
       methods: ['GET', 'POST', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'x-request-id', 'traceparent'],
     });
   }
 

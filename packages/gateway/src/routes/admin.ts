@@ -1,4 +1,4 @@
-import { FastifyInstance, FastifyReply } from 'fastify';
+import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { config } from '../config.js';
 import { getAdminStore } from '../db/admin-store.js';
 import { mwAuthMiddleware, AuthenticatedRequest } from '../middleware/auth.js';
@@ -48,7 +48,9 @@ import {
   setEmbeddingAdminConfig,
   testEmbeddingAdminConfig,
   getIndexingProfiles,
+  getIndexingAutomationConfig,
   upsertIndexingProfile,
+  setIndexingAutomationConfig,
   upsertRetrievalProfile,
   restoreDefaultRetrievalProfiles,
   applyIndexingProfileToReindexRequest,
@@ -80,6 +82,12 @@ import {
   getRetrievalProfileCapabilities,
   getRetrievalProfilesWithReadiness,
 } from '../services/retrieval-profiles.js';
+import {
+  getChatProfileStatus,
+  restoreDefaultChatProfiles,
+  setChatManagementConfig,
+  upsertChatProfile,
+} from '../services/chat-profiles.js';
 import type { ChatExportFormat } from '../services/admin-platform-config.js';
 import { buildConflictDetectionTestData, detectConflicts } from '../services/conflict-detection.js';
 import { getEmbedding } from '../services/embedding.js';
@@ -110,6 +118,7 @@ import { getTrustRecalculationSchedulerStatus } from '../services/trust-recalcul
 import {
   cancelTrigramBackfillJob,
   deleteSearchIndexPage,
+  getSearchIndexAttachmentDiagnostics,
   getSearchIndexStatus,
   getTrigramBackfillJobStatus,
   startTrigramBackfillJob,
@@ -118,6 +127,7 @@ import {
 import {
   analyzeOpenSearchQuery,
   deleteOpenSearchPage,
+  getOpenSearchAttachmentDiagnostics,
   getOpenSearchStatus,
   searchOpenSearchChunksWithDiagnostics,
   upsertOpenSearchPage,
@@ -140,6 +150,10 @@ import {
   getMediaWikiProfileConfigStatus,
   setMediaWikiProfileConfig,
 } from '../services/mediawiki-profile-config.js';
+import { runAdminChatDebugTrace } from '../services/chat-debug-trace.js';
+import { principalFromMwUser } from '../services/principal-auth.js';
+import { type WikiPageUrlOptions } from '../services/mediawiki-url.js';
+import { timingSafeEqualString } from '../services/security.js';
 
 const HELP_TEXT: Record<keyof RuntimeConfig, { label: string; help: string; type: string; min?: number; max?: number }> = {
   litellmModel: {
@@ -228,9 +242,21 @@ function rejectNonAdmin(request: AuthenticatedRequest, reply: FastifyReply): boo
   return true;
 }
 
+function readHeader(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function wikiUrlOptionsFromRequest(request: FastifyRequest): WikiPageUrlOptions {
+  return {
+    requestOrigin: readHeader(request.headers.origin),
+    requestHost: readHeader(request.headers.host),
+    requestProtocol: readHeader(request.headers['x-forwarded-proto']),
+  };
+}
+
 function hasInternalAdminAccess(headers: Record<string, unknown>): boolean {
   if (!config.syncerAdminToken) return true;
-  return headers['x-wikiai-admin-token'] === config.syncerAdminToken;
+  return timingSafeEqualString(headers['x-wikiai-admin-token'], config.syncerAdminToken);
 }
 
 function parseIntegerParam(value: unknown, fallback: number | undefined): number | undefined {
@@ -302,6 +328,7 @@ function parseIndexTargets(value: unknown): string[] | undefined {
 function buildSearchReadiness(input: {
   searchIndexPopulated: boolean;
   bm25Populated: boolean;
+  attachmentColumnsReady: boolean;
   colbertEnabled: boolean;
   colbertStatus?: 'ok' | 'error';
 }): {
@@ -312,13 +339,22 @@ function buildSearchReadiness(input: {
   if (!input.searchIndexPopulated || !input.bm25Populated) {
     reasons.push('BM25/search index is not populated');
   }
+  if (!input.attachmentColumnsReady) {
+    reasons.push('Attachment index schema is not ready');
+  }
   if (!input.colbertEnabled) {
     reasons.push('ColBERT is disabled; only limited scenarios are allowed');
   } else if (input.colbertStatus !== 'ok') {
     reasons.push('ColBERT is enabled but health check is not ok');
   }
 
-  if (input.searchIndexPopulated && input.bm25Populated && input.colbertEnabled && input.colbertStatus === 'ok') {
+  if (
+    input.searchIndexPopulated
+    && input.bm25Populated
+    && input.attachmentColumnsReady
+    && input.colbertEnabled
+    && input.colbertStatus === 'ok'
+  ) {
     return { status: 'prod_ready', reasons };
   }
   if (input.searchIndexPopulated && input.bm25Populated) {
@@ -398,9 +434,20 @@ function parseReindexBody(value: unknown): StartReindexRequest {
   const profileId = typeof value.profileId === 'string' && value.profileId.trim()
     ? value.profileId.trim()
     : undefined;
+  const attachmentsEnabled = typeof value.attachmentsEnabled === 'boolean'
+    ? value.attachmentsEnabled
+    : profileId ? undefined : false;
+  const indexTargets = parseIndexTargets(value.indexTargets);
+  const effectiveIndexTargets = indexTargets && typeof attachmentsEnabled === 'boolean'
+    ? Array.from(new Set(
+      attachmentsEnabled
+        ? [...indexTargets, 'attachments']
+        : indexTargets.filter((target) => target !== 'attachments')
+    ))
+    : indexTargets;
 
   const request: StartReindexRequest = {
-    indexTargets: parseIndexTargets(value.indexTargets),
+    indexTargets: effectiveIndexTargets,
     source: value.source === 'qdrant_payload' ? 'qdrant_payload' : value.source === 'mediawiki' ? 'mediawiki' : undefined,
     colbertModel: typeof value.colbertModel === 'string' && value.colbertModel.trim()
       ? value.colbertModel.trim()
@@ -408,9 +455,7 @@ function parseReindexBody(value: unknown): StartReindexRequest {
     colbertCollection: typeof value.colbertCollection === 'string' && value.colbertCollection.trim()
       ? value.colbertCollection.trim()
       : undefined,
-    attachmentsEnabled: typeof value.attachmentsEnabled === 'boolean'
-      ? value.attachmentsEnabled
-      : profileId ? undefined : false,
+    attachmentsEnabled,
     semanticFactsEnabled: typeof value.semanticFactsEnabled === 'boolean' ? value.semanticFactsEnabled : undefined,
     cmdbDynamicPagesEnabled: typeof value.cmdbDynamicPagesEnabled === 'boolean'
       ? value.cmdbDynamicPagesEnabled
@@ -691,6 +736,36 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
   );
 
   app.post(
+    '/api/admin/opensearch/attachment-diagnostics',
+    { preHandler: mwAuthMiddleware },
+    async (request, reply) => {
+      if (rejectNonAdmin(request as AuthenticatedRequest, reply)) return;
+      const filename = isRecord(request.body) && typeof request.body.filename === 'string'
+        ? request.body.filename.trim()
+        : '';
+      if (!filename) {
+        reply.status(400).send({ error: 'filename is required' });
+        return;
+      }
+      const limit = isRecord(request.body) && typeof request.body.limit === 'number'
+        ? request.body.limit
+        : undefined;
+      const [searchIndex, opensearch] = await Promise.all([
+        getSearchIndexAttachmentDiagnostics(filename, limit),
+        getOpenSearchAttachmentDiagnostics(filename, limit),
+      ]);
+      reply.send({
+        values: {
+          filename,
+          searchIndex,
+          opensearch,
+          mismatch: searchIndex.chunks > 0 && opensearch.chunks < searchIndex.chunks,
+        },
+      });
+    }
+  );
+
+  app.post(
     '/api/admin/opensearch/analyze',
     { preHandler: mwAuthMiddleware },
     async (request, reply) => {
@@ -777,6 +852,35 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     async (request, reply) => {
       if (rejectNonAdmin(request as AuthenticatedRequest, reply)) return;
       reply.send({ values: await testLlmAdminConfig(), metadata: { paidApiPossible: true } });
+    }
+  );
+
+  app.post(
+    '/api/admin/chat/debug-trace',
+    { preHandler: mwAuthMiddleware },
+    async (request, reply) => {
+      const authenticated = request as AuthenticatedRequest;
+      if (rejectNonAdmin(authenticated, reply)) return;
+
+      try {
+        reply.send({
+          values: await runAdminChatDebugTrace(request.body, {
+            principal: principalFromMwUser(authenticated.mwUser!, authenticated.sessionCookie),
+            wikiUrlOptions: wikiUrlOptionsFromRequest(request),
+          }),
+          metadata: {
+            paidApiPossible: true,
+            sideEffects: 'dry-run',
+          },
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown chat debug trace error';
+        const statusCode = /LiteLLM|timed out|fetch/i.test(message) ? 502 : 400;
+        reply.status(statusCode).send({
+          error: 'Chat debug trace failed',
+          message,
+        });
+      }
     }
   );
 
@@ -907,6 +1011,15 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     }
 
     reply.send({ values: await getIndexingProfiles() });
+  });
+
+  app.get('/api/internal/indexing-automation', async (request, reply) => {
+    if (!hasInternalAdminAccess(request.headers)) {
+      reply.status(401).send({ error: 'Invalid internal admin token' });
+      return;
+    }
+
+    reply.send({ values: await getIndexingAutomationConfig() });
   });
 
   app.post('/api/internal/embedding/vector', async (request, reply) => {
@@ -1248,6 +1361,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
           readiness: buildSearchReadiness({
             searchIndexPopulated: status.populated,
             bm25Populated: status.ftsChunks > 0,
+            attachmentColumnsReady: status.attachmentColumnsReady,
             colbertEnabled: ragConfig.colbertEnabled,
             colbertStatus: colbertHealth?.status,
           }),
@@ -1324,6 +1438,36 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
   );
 
   app.get(
+    '/api/admin/indexing-automation',
+    { preHandler: mwAuthMiddleware },
+    async (request, reply) => {
+      if (rejectNonAdmin(request as AuthenticatedRequest, reply)) return;
+      reply.send({ values: await getIndexingAutomationConfig() });
+    }
+  );
+
+  app.post(
+    '/api/admin/indexing-automation',
+    { preHandler: mwAuthMiddleware },
+    async (request, reply) => {
+      const authenticated = request as AuthenticatedRequest;
+      if (rejectNonAdmin(authenticated, reply)) return;
+
+      try {
+        reply.send({
+          status: 'saved',
+          values: await setIndexingAutomationConfig(request.body, auditActor(authenticated)),
+        });
+      } catch (err) {
+        reply.status(400).send({
+          error: 'Invalid indexing automation config',
+          message: err instanceof Error ? err.message : 'Unknown validation error',
+        });
+      }
+    }
+  );
+
+  app.get(
     '/api/admin/indexing-profile-scheduler/status',
     { preHandler: mwAuthMiddleware },
     async (request, reply) => {
@@ -1369,6 +1513,82 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       const authenticated = request as AuthenticatedRequest;
       if (rejectNonAdmin(authenticated, reply)) return;
       reply.send({ values: await testWebhookAdminConfig(auditActor(authenticated)) });
+    }
+  );
+
+  app.get(
+    '/api/admin/chat-profiles',
+    { preHandler: mwAuthMiddleware },
+    async (request, reply) => {
+      if (rejectNonAdmin(request as AuthenticatedRequest, reply)) return;
+      reply.send(await getChatProfileStatus());
+    }
+  );
+
+  app.post(
+    '/api/admin/chat-profiles',
+    { preHandler: mwAuthMiddleware },
+    async (request, reply) => {
+      const authenticated = request as AuthenticatedRequest;
+      if (rejectNonAdmin(authenticated, reply)) return;
+
+      try {
+        await upsertChatProfile(request.body, auditActor(authenticated));
+        reply.send({
+          status: 'saved',
+          ...(await getChatProfileStatus()),
+        });
+      } catch (err) {
+        reply.status(400).send({
+          error: 'Invalid chat profile',
+          message: err instanceof Error ? err.message : 'Unknown validation error',
+        });
+      }
+    }
+  );
+
+  app.post(
+    '/api/admin/chat-profiles/restore-defaults',
+    { preHandler: mwAuthMiddleware },
+    async (request, reply) => {
+      const authenticated = request as AuthenticatedRequest;
+      if (rejectNonAdmin(authenticated, reply)) return;
+      await restoreDefaultChatProfiles(auditActor(authenticated));
+      reply.send({
+        status: 'saved',
+        ...(await getChatProfileStatus()),
+      });
+    }
+  );
+
+  app.get(
+    '/api/admin/chat-management/config',
+    { preHandler: mwAuthMiddleware },
+    async (request, reply) => {
+      if (rejectNonAdmin(request as AuthenticatedRequest, reply)) return;
+      reply.send(await getChatProfileStatus());
+    }
+  );
+
+  app.post(
+    '/api/admin/chat-management/config',
+    { preHandler: mwAuthMiddleware },
+    async (request, reply) => {
+      const authenticated = request as AuthenticatedRequest;
+      if (rejectNonAdmin(authenticated, reply)) return;
+
+      try {
+        await setChatManagementConfig(request.body, auditActor(authenticated));
+        reply.send({
+          status: 'saved',
+          ...(await getChatProfileStatus()),
+        });
+      } catch (err) {
+        reply.status(400).send({
+          error: 'Invalid chat management config',
+          message: err instanceof Error ? err.message : 'Unknown validation error',
+        });
+      }
     }
   );
 
@@ -1844,6 +2064,18 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     }
   );
 
+  app.get(
+    '/api/internal/search-index/status',
+    { config: { rateLimit: false } },
+    async (request, reply) => {
+      if (!hasInternalAdminAccess(request.headers)) {
+        reply.status(401).send({ error: 'Invalid internal admin token' });
+        return;
+      }
+      reply.send({ values: await getSearchIndexStatus() });
+    }
+  );
+
   app.post(
     '/api/internal/search-index/page',
     { config: { rateLimit: false } },
@@ -1901,6 +2133,11 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
             ...searchIndex,
             status: anyTargetUpdated ? 'ok' : searchIndex.status,
             chunks: searchIndex.chunks + colbertIndex.chunks + openSearchIndex.chunks,
+            chunksByTarget: {
+              bm25: searchIndex.chunks,
+              colbert: colbertIndex.chunks,
+              opensearch: openSearchIndex.chunks,
+            },
             colbertIndex,
             openSearchIndex,
           },

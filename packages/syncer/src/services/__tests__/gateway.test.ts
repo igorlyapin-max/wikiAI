@@ -4,6 +4,7 @@ import {
   enrichPageForReindex,
   fetchEffectiveEmbeddingConfig,
   fetchGatewayEmbedding,
+  fetchIndexingAutomationConfig,
   fetchIndexedSmwProperties,
   notifyTrustRecalculation,
   syncSearchIndexPage,
@@ -88,6 +89,33 @@ describe('gateway notifications', () => {
     });
   });
 
+  it('loads indexing automation config from Gateway', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        values: {
+          changeIndexingProfileId: 'change-profile',
+          scheduledReindexProfileId: 'nightly-profile',
+          scheduleEnabled: true,
+          scheduleIntervalMinutes: 60,
+        },
+      }),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(fetchIndexingAutomationConfig()).resolves.toMatchObject({
+      changeIndexingProfileId: 'change-profile',
+      scheduledReindexProfileId: 'nightly-profile',
+      scheduleEnabled: true,
+      scheduleIntervalMinutes: 60,
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:3000/api/internal/indexing-automation',
+      expect.objectContaining({ method: 'GET' })
+    );
+  });
+
   it('falls back to Syncer config when Gateway indexed properties are unavailable', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: false,
@@ -105,7 +133,12 @@ describe('gateway notifications', () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
       status: 200,
-      text: async () => JSON.stringify({ values: { chunks: 1 } }),
+      text: async () => JSON.stringify({
+        values: {
+          chunks: 3,
+          chunksByTarget: { bm25: 1, opensearch: 1, colbert: 1 },
+        },
+      }),
     }));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -128,7 +161,8 @@ describe('gateway notifications', () => {
       status: 'ok',
       url: 'http://localhost:3000/api/internal/search-index/page',
       httpStatus: 200,
-      chunks: 1,
+      chunks: 3,
+      targetWrites: { bm25: 1, opensearch: 1, colbert: 1 },
     });
     expect(fetchMock).toHaveBeenCalledWith(
       'http://localhost:3000/api/internal/search-index/page',

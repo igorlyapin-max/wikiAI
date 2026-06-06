@@ -27,6 +27,7 @@ const startSyncerReindex = vi.hoisted(() => vi.fn());
 const getSyncerReindexStatus = vi.hoisted(() => vi.fn());
 const getSyncerMediaWikiServiceAuthStatus = vi.hoisted(() => vi.fn());
 const testSyncerMediaWikiServiceAuth = vi.hoisted(() => vi.fn());
+const runAdminChatDebugTrace = vi.hoisted(() => vi.fn());
 const originalConfig = { ...config };
 
 vi.mock('../../services/mediawiki.js', () => ({
@@ -46,12 +47,33 @@ vi.mock('../../services/mediawiki.js', () => ({
 }));
 
 vi.mock('../../services/redis.js', () => ({
+  getCachedUserInfo: vi.fn(async () => null),
+  cacheUserInfo: vi.fn(async () => undefined),
   getCachedUserGroups: vi.fn(async () => null),
   cacheUserGroups: vi.fn(async () => undefined),
   clearUserGroupCache: vi.fn(async () => {
-    const keys = Array.from(store.keys()).filter((key) => key.startsWith('mw:groups:'));
+    const keys = Array.from(store.keys()).filter((key) => key.startsWith('mw:groups:') || key.startsWith('mw:user:'));
     keys.forEach((key) => store.delete(key));
     return keys.length;
+  }),
+  readJson: vi.fn(async (key: string) => {
+    const value = store.get(key);
+    return value ? JSON.parse(value) : undefined;
+  }),
+  writeJson: vi.fn(async (key: string, value: unknown) => {
+    store.set(key, JSON.stringify(value));
+  }),
+  acquireRedisLock: vi.fn(async (key: string) => {
+    if (store.has(key)) return null;
+    const owner = 'test-owner';
+    store.set(key, owner);
+    return {
+      key,
+      owner,
+      release: vi.fn(async () => {
+        if (store.get(key) === owner) store.delete(key);
+      }),
+    };
   }),
   redis: {
     get: vi.fn(async (key: string) => store.get(key) ?? null),
@@ -63,7 +85,10 @@ vi.mock('../../services/redis.js', () => ({
       store.set(key, value);
       return 'OK';
     }),
-    scan: vi.fn(async () => ['0', Array.from(store.keys()).filter((key) => key.startsWith('mw:groups:'))]),
+    scan: vi.fn(async (_cursor: string, _mode: string, pattern: string) => {
+      const prefix = pattern === 'mw:user:*' ? 'mw:user:' : 'mw:groups:';
+      return ['0', Array.from(store.keys()).filter((key) => key.startsWith(prefix))];
+    }),
     del: vi.fn(async (...keys: string[]) => {
       keys.forEach((key) => store.delete(key));
       return keys.length;
@@ -73,6 +98,7 @@ vi.mock('../../services/redis.js', () => ({
       return 'OK';
     }),
     ping: vi.fn(async () => 'PONG'),
+    quit: vi.fn(async () => 'OK'),
   },
 }));
 
@@ -93,6 +119,10 @@ vi.mock('../../services/syncer-admin.js', () => ({
   testSyncerMediaWikiServiceAuth,
   isSyncerAdminError: (err: unknown) =>
     err instanceof Error && typeof (err as { statusCode?: unknown }).statusCode === 'number',
+}));
+
+vi.mock('../../services/chat-debug-trace.js', () => ({
+  runAdminChatDebugTrace,
 }));
 
 describe('admin routes', () => {
@@ -179,6 +209,19 @@ describe('admin routes', () => {
         userId: 100,
         groups: ['ai-exec'],
       },
+    });
+    runAdminChatDebugTrace.mockReset();
+    runAdminChatDebugTrace.mockResolvedValue({
+      traceId: 'chat-debug-test',
+      verbosity: 'full',
+      answer: 'Debug answer',
+      diagnostics: { retrievalQuery: 'Как подключить VPN?' },
+      finalLlm: {
+        request: { body: { messages: [{ role: 'user', content: 'Как подключить VPN?' }] } },
+        response: { choices: [{ message: { content: 'Debug answer' } }] },
+      },
+      retrieval: { chunks: { context: [] } },
+      promptText: '### 1. user\nКак подключить VPN?',
     });
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true,
@@ -425,6 +468,20 @@ describe('admin routes', () => {
 
   it('serves OpenSearch status and analyze preview without exposing secrets', async () => {
     const app = await makeApp();
+    await upsertSearchIndexPage({
+      pageId: 104,
+      title: 'CorpCommon:Приказы/Режим рабочего времени',
+      namespace: 6,
+      allowedGroups: ['*'],
+      chunks: [{
+        id: 10450000,
+        text: 'Архитектурный WikiAI: AI-платформа знаний поверх MediaWiki.',
+        sourceType: 'attachment',
+        attachmentFilename: 'Wikiai-architecture.pptx',
+        mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        processingMode: 'text',
+      }],
+    });
     const status = await app.inject({
       method: 'GET',
       url: '/api/admin/opensearch/status',
@@ -448,6 +505,24 @@ describe('admin routes', () => {
       status: 'disabled',
       tokens: ['как', 'там', 'цивилизации'],
     });
+    const attachmentDiagnostics = await app.inject({
+      method: 'POST',
+      url: '/api/admin/opensearch/attachment-diagnostics',
+      headers: { cookie: 'mw=1' },
+      payload: { filename: 'Wikiai-architecture.pptx' },
+    });
+    expect(attachmentDiagnostics.statusCode).toBe(200);
+    expect(attachmentDiagnostics.json().values).toMatchObject({
+      mismatch: true,
+      searchIndex: {
+        chunks: 1,
+        found: true,
+      },
+      opensearch: {
+        status: 'disabled',
+        found: false,
+      },
+    });
     expect(JSON.stringify(status.json())).not.toContain('test-key');
     await app.close();
   });
@@ -459,6 +534,7 @@ describe('admin routes', () => {
       { method: 'GET' as const, url: '/api/admin/opensearch/status' },
       { method: 'POST' as const, url: '/api/admin/opensearch/analyze', payload: { query: 'как там цивилизации' } },
       { method: 'POST' as const, url: '/api/admin/opensearch/search-preview', payload: { query: 'как там цивилизации', limit: 3 } },
+      { method: 'POST' as const, url: '/api/admin/opensearch/attachment-diagnostics', payload: { filename: 'Wikiai-architecture.pptx' } },
     ]) {
       const response = await app.inject(request);
       expect(response.statusCode).toBe(401);
@@ -682,6 +758,56 @@ describe('admin routes', () => {
     await app.close();
   });
 
+  it('runs one-shot admin chat debug trace without exposing it to non-admin users', async () => {
+    const app = await makeApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/chat/debug-trace',
+      headers: { cookie: 'mw=1' },
+      payload: {
+        message: 'Как подключить VPN?',
+        retrievalProfileId: 'prod_hybrid_colbert',
+        topK: 5,
+        verbosity: 'full',
+        runConflictDetection: true,
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().values).toMatchObject({
+      traceId: 'chat-debug-test',
+      answer: 'Debug answer',
+      promptText: expect.stringContaining('Как подключить VPN?'),
+    });
+    expect(res.json().metadata).toMatchObject({
+      paidApiPossible: true,
+      sideEffects: 'dry-run',
+    });
+    expect(runAdminChatDebugTrace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'Как подключить VPN?',
+        verbosity: 'full',
+      }),
+      expect.objectContaining({
+        principal: expect.objectContaining({
+          username: 'TestAdmin',
+          authMode: 'mediawiki_cookie',
+        }),
+      })
+    );
+
+    userGroups.groups = ['user'];
+    const denied = await app.inject({
+      method: 'POST',
+      url: '/api/admin/chat/debug-trace',
+      headers: { cookie: 'mw=2' },
+      payload: { message: 'Нет доступа' },
+    });
+    expect(denied.statusCode).toBe(403);
+
+    await app.close();
+  });
+
   it('serves saves and tests conflict detection config with an explicit paid opt-in', async () => {
     const app = await makeApp();
     const read = await app.inject({
@@ -695,6 +821,7 @@ describe('admin routes', () => {
       enabled: true,
       runMode: 'risk_only',
       model: 'test-model',
+      systemPrompt: expect.stringContaining('wiki-источники на противоречия'),
       showConflictBlock: true,
     });
     expect(read.json().metadata.paidApiPossible).toBe(true);
@@ -707,6 +834,7 @@ describe('admin routes', () => {
         enabled: true,
         runMode: 'manual',
         model: 'conflict-checker',
+        systemPrompt: 'Проверяй только прямые несовместимые утверждения. Верни JSON.',
         maxSources: 3,
         maxCharsPerSource: 800,
         trustGapThreshold: 0.2,
@@ -719,6 +847,7 @@ describe('admin routes', () => {
     expect(saved.json().values).toMatchObject({
       runMode: 'manual',
       model: 'conflict-checker',
+      systemPrompt: 'Проверяй только прямые несовместимые утверждения. Верни JSON.',
       maxSources: 3,
       maxCharsPerSource: 800,
       trustGapThreshold: 0.2,
@@ -1195,6 +1324,104 @@ describe('admin routes', () => {
     await app.close();
   });
 
+  it('manages chat profiles and links them to retrieval profiles', async () => {
+    const template = (await getDefaultRetrievalProfiles()).find((profile) => profile.id === 'semantic_broad');
+    expect(template).toBeDefined();
+
+    const app = await makeApp();
+    const defaults = await app.inject({
+      method: 'GET',
+      url: '/api/admin/chat-management/config',
+      headers: { cookie: 'mw=1' },
+    });
+    expect(defaults.statusCode).toBe(200);
+    expect(defaults.json()).toMatchObject({
+      values: { defaultChatProfileId: 'chat_current_session' },
+      selectedProfile: expect.objectContaining({ id: 'chat_current_session' }),
+      chatProfiles: expect.arrayContaining([
+        expect.objectContaining({ id: 'chat_followup_questions' }),
+      ]),
+    });
+
+    const profileSave = await app.inject({
+      method: 'POST',
+      url: '/api/admin/chat-profiles',
+      headers: { cookie: 'mw=1' },
+      payload: {
+        id: 'chat_followup_questions',
+        name: 'Follow-up questions',
+        description: 'Use previous user questions for retrieval.',
+        enabled: true,
+        defaultForChat: true,
+        experimental: false,
+        promptHistoryScope: 'current_session',
+        promptHistoryTurns: 5,
+        retrievalHistoryMode: 'current_session_questions',
+        retrievalHistoryTurns: 3,
+        maxPromptHistoryChars: 16000,
+        maxRetrievalHistoryChars: 1800,
+      },
+    });
+    expect(profileSave.statusCode).toBe(200);
+    expect(profileSave.json().values.defaultChatProfileId).toBe('chat_followup_questions');
+
+    const managementSave = await app.inject({
+      method: 'POST',
+      url: '/api/admin/chat-management/config',
+      headers: { cookie: 'mw=1' },
+      payload: { defaultChatProfileId: 'chat_current_session' },
+    });
+    expect(managementSave.statusCode).toBe(200);
+    expect(managementSave.json().selectedProfile).toMatchObject({ id: 'chat_current_session' });
+
+    const retrievalSave = await app.inject({
+      method: 'POST',
+      url: '/api/admin/retrieval-profiles',
+      headers: { cookie: 'mw=1' },
+      payload: {
+        id: 'custom_chat_profile_link',
+        name: 'Custom chat profile link',
+        description: 'Regression profile with chat profile',
+        enabled: true,
+        apiEnabled: true,
+        mcpEnabled: true,
+        anonymousAllowed: false,
+        maxTopK: 20,
+        chatProfileId: 'chat_followup_questions',
+        tags: ['test'],
+        config: {
+          ...template!.config,
+          chatRetrievalQueryMode: 'current_message',
+        },
+      },
+    });
+    expect(retrievalSave.statusCode).toBe(200);
+    const linked = retrievalSave.json().values.find((item: { id: string }) => item.id === 'custom_chat_profile_link');
+    expect(linked).toMatchObject({
+      chatProfileId: 'chat_followup_questions',
+      chatProfile: expect.objectContaining({
+        id: 'chat_followup_questions',
+        retrievalHistoryMode: 'current_session_questions',
+      }),
+    });
+
+    const invalid = await app.inject({
+      method: 'POST',
+      url: '/api/admin/retrieval-profiles',
+      headers: { cookie: 'mw=1' },
+      payload: {
+        id: 'custom_missing_chat_profile',
+        name: 'Missing chat profile',
+        chatProfileId: 'missing_chat_profile',
+        config: template!.config,
+      },
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.json().message).toContain('Chat profile not found or disabled');
+
+    await app.close();
+  });
+
   it('merges missing default retrieval profiles into stale stored profile lists', async () => {
     const defaults = await getDefaultRetrievalProfiles();
     const semanticBroad = defaults.find((profile) => profile.id === 'semantic_broad');
@@ -1397,6 +1624,9 @@ describe('admin routes', () => {
       ftsChunks: 1,
       trigramChunks: 1,
       trigramFtsChunks: 1,
+      attachmentChunks: 0,
+      attachmentPages: 0,
+      attachmentColumnsReady: true,
       pages: 1,
       populated: true,
       backfillRecommended: false,
@@ -1689,6 +1919,94 @@ describe('admin routes', () => {
     await app.close();
   });
 
+  it('syncs attachment targets when saving and running indexing profiles', async () => {
+    startSyncerReindex.mockResolvedValueOnce({
+      status: {
+        state: 'running',
+        startedAt: '2026-05-31T00:00:00.000Z',
+      },
+    });
+
+    const app = await makeApp();
+    const saved = await app.inject({
+      method: 'POST',
+      url: '/api/admin/indexing-profiles',
+      headers: { cookie: 'mw=1' },
+      payload: {
+        id: 'manual-attachments',
+        name: 'Manual attachment profile',
+        namespaces: [0],
+        indexTargets: ['dense', 'bm25'],
+        attachmentsEnabled: true,
+      },
+    });
+
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json().values.indexTargets).toContain('attachments');
+
+    const reindex = await app.inject({
+      method: 'POST',
+      url: '/api/admin/reindex',
+      headers: { cookie: 'mw=1' },
+      payload: { profileId: 'manual-attachments', attachmentsEnabled: true },
+    });
+
+    expect(reindex.statusCode).toBe(202);
+    expect(startSyncerReindex).toHaveBeenCalledWith(
+      expect.objectContaining({
+        profileId: 'manual-attachments',
+        attachmentsEnabled: true,
+        indexTargets: expect.arrayContaining(['dense', 'bm25', 'attachments']),
+      })
+    );
+    await app.close();
+  });
+
+  it('removes stale attachment target when attachment reindex is not requested', async () => {
+    startSyncerReindex.mockResolvedValueOnce({
+      status: {
+        state: 'running',
+        startedAt: '2026-05-31T00:00:00.000Z',
+      },
+    });
+    const now = '2026-06-06T00:00:00.000Z';
+    await getAdminStore().setJson('indexing-profiles', 'default', [{
+      id: 'stale-attachments',
+      name: 'Stale attachment target',
+      enabled: true,
+      namespaces: [0],
+      namespaceAcl: { '0': ['*'] },
+      smwProperties: [],
+      titleFilters: { include: [], exclude: [] },
+      categoryFilters: { include: [], exclude: [] },
+      documentPolicyId: 'default',
+      runMode: 'manual',
+      indexTargets: ['dense', 'bm25', 'attachments'],
+      attachmentsEnabled: false,
+      semanticFactsEnabled: true,
+      ontologyVectorsEnabled: false,
+      chunkSize: 512,
+      chunkOverlap: 50,
+      chunkSeparators: ['\n\n', '. ', ' '],
+      dryRunDefault: false,
+      createdAt: now,
+      updatedAt: now,
+    }]);
+
+    const app = await makeApp();
+    const reindex = await app.inject({
+      method: 'POST',
+      url: '/api/admin/reindex',
+      headers: { cookie: 'mw=1' },
+      payload: { profileId: 'stale-attachments', attachmentsEnabled: false },
+    });
+
+    expect(reindex.statusCode).toBe(202);
+    expect(startSyncerReindex.mock.calls[0]?.[0].attachmentsEnabled).toBe(false);
+    expect(startSyncerReindex.mock.calls[0]?.[0].indexTargets).not.toContain('attachments');
+    await app.close();
+  });
+
   it('does not apply a hidden default page limit to the default indexing profile', async () => {
     const app = await makeApp();
     const list = await app.inject({
@@ -1739,6 +2057,56 @@ describe('admin routes', () => {
     await app.close();
   });
 
+  it('saves indexing automation assignments and exposes them internally', async () => {
+    config.syncerAdminToken = 'internal-token';
+    const app = await makeApp();
+    const saveProfile = await app.inject({
+      method: 'POST',
+      url: '/api/admin/indexing-profiles',
+      headers: { cookie: 'mw=1' },
+      payload: {
+        id: 'change-profile',
+        name: 'Change profile',
+        namespaces: [0],
+      },
+    });
+    expect(saveProfile.statusCode).toBe(200);
+
+    const saveAutomation = await app.inject({
+      method: 'POST',
+      url: '/api/admin/indexing-automation',
+      headers: { cookie: 'mw=1' },
+      payload: {
+        changeIndexingProfileId: 'change-profile',
+        scheduledReindexProfileId: 'change-profile',
+        scheduleEnabled: true,
+        scheduleIntervalMinutes: 30,
+      },
+    });
+
+    expect(saveAutomation.statusCode).toBe(200);
+    expect(saveAutomation.json().values).toMatchObject({
+      changeIndexingProfileId: 'change-profile',
+      scheduledReindexProfileId: 'change-profile',
+      scheduleEnabled: true,
+      scheduleIntervalMinutes: 30,
+    });
+
+    const internal = await app.inject({
+      method: 'GET',
+      url: '/api/internal/indexing-automation',
+      headers: { 'x-wikiai-admin-token': 'internal-token' },
+    });
+    expect(internal.statusCode).toBe(200);
+    expect(internal.json().values).toMatchObject({
+      changeIndexingProfileId: 'change-profile',
+      scheduledReindexProfileId: 'change-profile',
+      scheduleEnabled: true,
+      scheduleIntervalMinutes: 30,
+    });
+    await app.close();
+  });
+
   it('reports scheduled indexing profile scheduler status', async () => {
     const app = await makeApp();
     const save = await app.inject({
@@ -1770,6 +2138,51 @@ describe('admin routes', () => {
       name: 'Nightly IT',
       runMode: 'scheduled',
       intervalMinutes: 60,
+      running: false,
+    });
+    await app.close();
+  });
+
+  it('uses indexing automation profile assignment for scheduled reindexing', async () => {
+    const app = await makeApp();
+    const save = await app.inject({
+      method: 'POST',
+      url: '/api/admin/indexing-profiles',
+      headers: { cookie: 'mw=1' },
+      payload: {
+        id: 'auto-nightly',
+        name: 'Automation nightly',
+        namespaces: [0],
+        runMode: 'manual',
+      },
+    });
+    expect(save.statusCode).toBe(200);
+
+    const automation = await app.inject({
+      method: 'POST',
+      url: '/api/admin/indexing-automation',
+      headers: { cookie: 'mw=1' },
+      payload: {
+        scheduledReindexProfileId: 'auto-nightly',
+        scheduleEnabled: true,
+        scheduleIntervalMinutes: 45,
+      },
+    });
+    expect(automation.statusCode).toBe(200);
+
+    const status = await app.inject({
+      method: 'GET',
+      url: '/api/admin/indexing-profile-scheduler/status',
+      headers: { cookie: 'mw=1' },
+    });
+
+    expect(status.statusCode).toBe(200);
+    expect(status.json().scheduler.profiles[0]).toMatchObject({
+      id: 'auto-nightly',
+      name: 'Automation nightly',
+      runMode: 'manual',
+      intervalMinutes: 45,
+      source: 'automation',
       running: false,
     });
     await app.close();
@@ -2468,6 +2881,22 @@ describe('admin routes', () => {
         filter: { must: [{ key: 'page_id', match: { value: 303 } }] },
       })
     );
+    await app.close();
+  });
+
+  it('allows Syncer to read internal search index status without MediaWiki session', async () => {
+    const app = await makeApp();
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/internal/search-index/status',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().values).toMatchObject({
+      attachmentColumnsReady: true,
+      attachmentChunks: 0,
+      attachmentPages: 0,
+    });
     await app.close();
   });
 
@@ -3201,6 +3630,7 @@ describe('admin routes', () => {
     const guarded = [
       await app.inject({ method: 'GET', url: '/api/internal/embedding/config', headers: invalidHeaders }),
       await app.inject({ method: 'GET', url: '/api/internal/indexing-profiles', headers: invalidHeaders }),
+      await app.inject({ method: 'GET', url: '/api/internal/indexing-automation', headers: invalidHeaders }),
       await app.inject({ method: 'POST', url: '/api/internal/embedding/vector', headers: invalidHeaders, payload: { text: 'x' } }),
       await app.inject({ method: 'POST', url: '/api/internal/reindex/llm-enrich', headers: invalidHeaders, payload: { title: 'T', text: 'x' } }),
       await app.inject({ method: 'POST', url: '/api/internal/trust/recalculate-page', headers: invalidHeaders, payload: { pageId: 1 } }),
@@ -3230,6 +3660,17 @@ describe('admin routes', () => {
     });
     expect(indexingProfiles.statusCode).toBe(200);
     expect(indexingProfiles.json().values[0]).toMatchObject({ id: 'default' });
+
+    const indexingAutomation = await app.inject({
+      method: 'GET',
+      url: '/api/internal/indexing-automation',
+      headers: validHeaders,
+    });
+    expect(indexingAutomation.statusCode).toBe(200);
+    expect(indexingAutomation.json().values).toMatchObject({
+      scheduleEnabled: false,
+      scheduleIntervalMinutes: 1440,
+    });
 
     const invalidPayloads = [
       await app.inject({ method: 'POST', url: '/api/internal/embedding/vector', headers: validHeaders, payload: {} }),

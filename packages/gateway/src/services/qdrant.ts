@@ -3,7 +3,10 @@ import { config } from '../config.js';
 import { SearchChunk, SemanticFacts } from '../types/index.js';
 import { logOperationalEvent } from './logging.js';
 
-export const qdrant = new QdrantClient({ url: config.qdrantUrl });
+export const qdrant = new QdrantClient({
+  url: config.qdrantUrl,
+  ...(config.qdrantApiKey ? { apiKey: config.qdrantApiKey } : {}),
+});
 export const QDRANT_VECTOR_SIZE = 768;
 export const MAX_SEARCH_TOP_K = 20;
 export const MAX_VECTOR_CANDIDATE_LIMIT = 200;

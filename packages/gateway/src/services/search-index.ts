@@ -84,12 +84,38 @@ export interface SearchIndexStatus {
   ftsChunks: number;
   trigramChunks: number;
   trigramFtsChunks: number;
+  attachmentChunks: number;
+  attachmentPages: number;
+  attachmentFilenames: Array<{
+    filename: string;
+    chunks: number;
+    pages: number;
+  }>;
+  attachmentColumnsReady: boolean;
   pages: number;
   latestUpdatedAt?: string;
   populated: boolean;
   backfillRecommended: boolean;
   trigramPopulated: boolean;
   trigramBackfillRecommended: boolean;
+}
+
+export interface SearchIndexAttachmentDiagnostics {
+  filename: string;
+  chunks: number;
+  pages: number;
+  found: boolean;
+  samples: Array<{
+    id: number;
+    pageId: number;
+    title: string;
+    sourceType?: string;
+    attachmentFilename?: string;
+    attachmentMime?: string;
+    attachmentProcessingMode?: string;
+    chunkIndex?: number;
+    totalChunks?: number;
+  }>;
 }
 
 export interface TrigramSearchResult {
@@ -145,12 +171,22 @@ interface SearchChunkRow {
 interface SearchIndexStatusRow {
   chunks: number;
   pages: number;
+  attachment_chunks?: number;
+  attachment_pages?: number;
   latest_updated_at: Date | string | null;
+}
+
+interface AttachmentFilenameRow {
+  attachment_filename: string | null;
+  chunks: number;
+  pages: number;
 }
 
 interface CountRow {
   count: number;
 }
+
+const REQUIRED_ATTACHMENT_COLUMNS = ['attachment_mime', 'attachment_processing_mode', 'content_type'];
 
 interface TrigramChunkRow {
   chunk_id: string;
@@ -239,6 +275,16 @@ function serializeTimestamp(value: Date | string): string {
 function serializeOptionalTimestamp(value: Date | string | null): string | undefined {
   if (!value) return undefined;
   return serializeTimestamp(value);
+}
+
+function attachmentFilenameRows(rows: AttachmentFilenameRow[]): SearchIndexStatus['attachmentFilenames'] {
+  return rows
+    .filter((row) => typeof row.attachment_filename === 'string' && row.attachment_filename.trim().length > 0)
+    .map((row) => ({
+      filename: String(row.attachment_filename),
+      chunks: Number(row.chunks ?? 0),
+      pages: Number(row.pages ?? 0),
+    }));
 }
 
 function tokenizeForFts(input: string): string[] {
@@ -553,6 +599,20 @@ function rowToChunk(row: SearchChunkRow, matchedTerms: string[]): LexicalSearchC
   };
 }
 
+function rowToAttachmentDiagnosticSample(row: SearchChunkRow): SearchIndexAttachmentDiagnostics['samples'][number] {
+  return {
+    id: Number(row.chunk_id),
+    pageId: row.page_id,
+    title: row.title,
+    sourceType: row.source_type || undefined,
+    attachmentFilename: row.attachment_filename ?? undefined,
+    attachmentMime: row.attachment_mime ?? undefined,
+    attachmentProcessingMode: row.attachment_processing_mode ?? undefined,
+    chunkIndex: row.chunk_index,
+    totalChunks: row.total_chunks,
+  };
+}
+
 function buildPostgresTsQuery(terms: string[]): string {
   return uniqueTerms(terms)
     .map((term) => term.replace(/[^\p{L}\p{N}_]/gu, ''))
@@ -830,16 +890,52 @@ export async function deleteSearchIndexPage(pageId: number): Promise<SearchIndex
   };
 }
 
+function sqliteTableHasColumns(tableName: string, columns: string[]): boolean {
+  const db = getAdminSqliteDatabase();
+  const existing = new Set(
+    (db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>)
+      .map((row) => row.name)
+  );
+  return columns.every((column) => existing.has(column));
+}
+
+async function postgresTableHasColumns(tableName: string, columns: string[]): Promise<boolean> {
+  const pg = await getAdminPostgresStore();
+  const result = await pg.query<{ column_name: string }>(
+    `SELECT column_name
+       FROM information_schema.columns
+      WHERE table_name = $1
+        AND column_name = ANY($2::text[])`,
+    [tableName, columns]
+  );
+  const existing = new Set(result.rows.map((row) => row.column_name));
+  return columns.every((column) => existing.has(column));
+}
+
 export async function getSearchIndexStatus(): Promise<SearchIndexStatus> {
   if (isPostgresDatabase()) {
     const pg = await getAdminPostgresStore();
+    const attachmentColumnsReady = await postgresTableHasColumns('ai_search_chunks', REQUIRED_ATTACHMENT_COLUMNS);
     const row = (await pg.query<SearchIndexStatusRow>(
       `SELECT
          COUNT(*) AS chunks,
          COUNT(DISTINCT page_id) AS pages,
+         COUNT(*) FILTER (WHERE source_type = 'attachment' OR attachment_filename IS NOT NULL) AS attachment_chunks,
+         COUNT(DISTINCT page_id) FILTER (WHERE source_type = 'attachment' OR attachment_filename IS NOT NULL) AS attachment_pages,
          MAX(updated_at) AS latest_updated_at
        FROM ai_search_chunks`
     )).rows[0];
+    const attachmentRows = (await pg.query<AttachmentFilenameRow>(
+      `SELECT
+         attachment_filename,
+         COUNT(*)::int AS chunks,
+         COUNT(DISTINCT page_id)::int AS pages
+       FROM ai_search_chunks
+       WHERE attachment_filename IS NOT NULL
+       GROUP BY attachment_filename
+       ORDER BY chunks DESC, attachment_filename ASC
+       LIMIT 20`
+    )).rows;
     const trigramRow = (await pg.query<CountRow>(
       'SELECT COUNT(*) AS count FROM ai_search_chunks_trigram'
     )).rows[0];
@@ -850,6 +946,10 @@ export async function getSearchIndexStatus(): Promise<SearchIndexStatus> {
       ftsChunks: chunks,
       trigramChunks,
       trigramFtsChunks: trigramChunks,
+      attachmentChunks: Number(row?.attachment_chunks ?? 0),
+      attachmentPages: Number(row?.attachment_pages ?? 0),
+      attachmentFilenames: attachmentFilenameRows(attachmentRows),
+      attachmentColumnsReady,
       pages: Number(row?.pages ?? 0),
       latestUpdatedAt: serializeOptionalTimestamp(row?.latest_updated_at ?? null),
       populated: chunks > 0,
@@ -859,15 +959,31 @@ export async function getSearchIndexStatus(): Promise<SearchIndexStatus> {
     };
   }
   const db = getAdminSqliteDatabase();
+  const attachmentColumnsReady = sqliteTableHasColumns('ai_search_chunks', REQUIRED_ATTACHMENT_COLUMNS);
   const row = db
     .prepare(
       `SELECT
          COUNT(*) AS chunks,
          COUNT(DISTINCT page_id) AS pages,
+         COUNT(CASE WHEN source_type = 'attachment' OR attachment_filename IS NOT NULL THEN 1 END) AS attachment_chunks,
+         COUNT(DISTINCT CASE WHEN source_type = 'attachment' OR attachment_filename IS NOT NULL THEN page_id END) AS attachment_pages,
          MAX(updated_at) AS latest_updated_at
        FROM ai_search_chunks`
     )
     .get() as SearchIndexStatusRow | undefined;
+  const attachmentRows = db
+    .prepare(
+      `SELECT
+         attachment_filename,
+         COUNT(*) AS chunks,
+         COUNT(DISTINCT page_id) AS pages
+       FROM ai_search_chunks
+       WHERE attachment_filename IS NOT NULL
+       GROUP BY attachment_filename
+       ORDER BY chunks DESC, attachment_filename ASC
+       LIMIT 20`
+    )
+    .all() as AttachmentFilenameRow[];
   const ftsRow = db
     .prepare('SELECT COUNT(*) AS count FROM ai_search_chunks_fts')
     .get() as CountRow | undefined;
@@ -887,12 +1003,109 @@ export async function getSearchIndexStatus(): Promise<SearchIndexStatus> {
     ftsChunks,
     trigramChunks,
     trigramFtsChunks,
+    attachmentChunks: Number(row?.attachment_chunks ?? 0),
+    attachmentPages: Number(row?.attachment_pages ?? 0),
+    attachmentFilenames: attachmentFilenameRows(attachmentRows),
+    attachmentColumnsReady,
     pages: Number(row?.pages ?? 0),
     latestUpdatedAt: serializeOptionalTimestamp(row?.latest_updated_at ?? null),
     populated: chunks > 0 && ftsChunks > 0,
     backfillRecommended: chunks === 0 || ftsChunks === 0,
     trigramPopulated: chunks > 0 && trigramChunks >= chunks && trigramFtsChunks >= chunks,
     trigramBackfillRecommended: chunks > 0 && (trigramChunks < chunks || trigramFtsChunks < chunks),
+  };
+}
+
+export async function getSearchIndexAttachmentDiagnostics(
+  filename: string,
+  limit = 5
+): Promise<SearchIndexAttachmentDiagnostics> {
+  const normalizedFilename = filename.trim();
+  const normalizedLimit = Math.min(Math.max(Math.trunc(limit), 1), 20);
+  if (isPostgresDatabase()) {
+    const pg = await getAdminPostgresStore();
+    const summary = (await pg.query<{ chunks: number; pages: number }>(
+      `SELECT
+         COUNT(*)::int AS chunks,
+         COUNT(DISTINCT page_id)::int AS pages
+       FROM ai_search_chunks
+       WHERE LOWER(attachment_filename) = LOWER($1)`,
+      [normalizedFilename]
+    )).rows[0];
+    const samples = (await pg.query<SearchChunkRow>(
+      `SELECT
+         chunk_id::text,
+         page_id,
+         title,
+         namespace,
+         text,
+         allowed_groups_json,
+         chunk_index,
+         total_chunks,
+         source_type,
+         attachment_filename,
+         attachment_mime,
+         attachment_processing_mode,
+         content_type,
+         last_modified,
+         0 AS lexical_rank
+       FROM ai_search_chunks
+       WHERE LOWER(attachment_filename) = LOWER($1)
+       ORDER BY page_id ASC, chunk_index ASC
+       LIMIT $2`,
+      [normalizedFilename, normalizedLimit]
+    )).rows;
+    const chunks = Number(summary?.chunks ?? 0);
+    return {
+      filename: normalizedFilename,
+      chunks,
+      pages: Number(summary?.pages ?? 0),
+      found: chunks > 0,
+      samples: samples.map(rowToAttachmentDiagnosticSample),
+    };
+  }
+
+  const db = getAdminSqliteDatabase();
+  const summary = db
+    .prepare(
+      `SELECT
+         COUNT(*) AS chunks,
+         COUNT(DISTINCT page_id) AS pages
+       FROM ai_search_chunks
+       WHERE LOWER(attachment_filename) = LOWER(?)`
+    )
+    .get(normalizedFilename) as { chunks?: number; pages?: number } | undefined;
+  const samples = db
+    .prepare(
+      `SELECT
+         CAST(chunk_id AS TEXT) AS chunk_id,
+         page_id,
+         title,
+         namespace,
+         text,
+         allowed_groups_json,
+         chunk_index,
+         total_chunks,
+         source_type,
+         attachment_filename,
+         attachment_mime,
+         attachment_processing_mode,
+         content_type,
+         last_modified,
+         0 AS lexical_rank
+       FROM ai_search_chunks
+       WHERE LOWER(attachment_filename) = LOWER(?)
+       ORDER BY page_id ASC, chunk_index ASC
+       LIMIT ?`
+    )
+    .all(normalizedFilename, normalizedLimit) as SearchChunkRow[];
+  const chunks = Number(summary?.chunks ?? 0);
+  return {
+    filename: normalizedFilename,
+    chunks,
+    pages: Number(summary?.pages ?? 0),
+    found: chunks > 0,
+    samples: samples.map(rowToAttachmentDiagnosticSample),
   };
 }
 

@@ -1,6 +1,8 @@
 import { MWUserInfo } from '../types/index.js';
 import { config } from '../config.js';
 import { logOperationalError } from './logging.js';
+import { measureDependency } from './metrics.js';
+import { currentTraceHeaders } from './tracing.js';
 
 export interface WikiCategory {
   name: string;
@@ -104,6 +106,7 @@ function readNumber(value: unknown): number | undefined {
 function buildHeaders(sessionCookie?: string, bearerToken?: string): Record<string, string> {
   const headers: Record<string, string> = {
     'User-Agent': 'WikiAI-Gateway/0.1',
+    ...currentTraceHeaders(),
   };
   if (sessionCookie) {
     headers.Cookie = sessionCookie;
@@ -112,6 +115,44 @@ function buildHeaders(sessionCookie?: string, bearerToken?: string): Record<stri
     headers.Authorization = `Bearer ${bearerToken}`;
   }
   return headers;
+}
+
+function headersToRecord(headers: RequestInit['headers']): Record<string, string> {
+  if (!headers) return {};
+  if (headers instanceof Headers) return Object.fromEntries(headers.entries());
+  if (Array.isArray(headers)) return Object.fromEntries(headers);
+  return Object.fromEntries(
+    Object.entries(headers).map(([key, value]) => [
+      key,
+      Array.isArray(value) ? value.join(',') : String(value),
+    ])
+  );
+}
+
+async function fetchMediaWiki(input: string, init: RequestInit = {}, operation = 'mediawiki_api'): Promise<Response> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), config.healthCheckTimeoutMs);
+    const headers = { ...headersToRecord(init.headers), ...currentTraceHeaders() };
+    try {
+      return await measureDependency(
+        { dependency: 'mediawiki', operation },
+        async () => fetch(input, { ...init, headers, signal: controller.signal })
+      );
+    } catch (err) {
+      lastError = err instanceof Error && err.name === 'AbortError'
+        ? new Error(`MediaWiki request timed out after ${config.healthCheckTimeoutMs}ms`)
+        : err;
+      if (attempt === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        continue;
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  throw lastError;
 }
 
 async function fetchMediaWikiJson<T>(
@@ -124,7 +165,7 @@ async function fetchMediaWikiJson<T>(
   url.searchParams.set('format', 'json');
 
   try {
-    const res = await fetch(url.toString(), { headers: buildHeaders(sessionCookie) });
+    const res = await fetchMediaWiki(url.toString(), { headers: buildHeaders(sessionCookie) });
     if (!res.ok) return null;
     return await res.json() as T;
   } catch (err) {
@@ -329,12 +370,12 @@ export async function fetchUserInfo(sessionCookie: string): Promise<MWUserInfo |
   url.searchParams.set('format', 'json');
 
   try {
-    const res = await fetch(url.toString(), {
+    const res = await fetchMediaWiki(url.toString(), {
       headers: {
         Cookie: sessionCookie,
         'User-Agent': 'WikiAI-Gateway/0.1',
       },
-    });
+    }, 'userinfo');
 
     if (!res.ok) return null;
 
@@ -378,9 +419,9 @@ async function userCanReadWithAuth(input: {
   url.searchParams.set('format', 'json');
 
   try {
-    const res = await fetch(url.toString(), {
+    const res = await fetchMediaWiki(url.toString(), {
       headers: buildHeaders(input.sessionCookie, input.bearerToken),
-    });
+    }, 'read_check');
 
     if (!res.ok) return false;
 

@@ -47,7 +47,10 @@ Labels:
 - `status`
 
 Expose `/metrics` only through an internal network, reverse proxy allowlist or
-collector sidecar. Metrics do not include request bodies, headers or secrets.
+collector sidecar. Runtime metrics include HTTP request counters, dependency
+latency/error counters, health-check status/latency gauges, scheduler/reindex
+lock status and event-loop lag. Labels are intentionally low-cardinality and do
+not include user queries, titles, tokens, cookies or request payloads.
 
 ## Pilot Monitoring Contract
 
@@ -83,6 +86,8 @@ checks Qdrant, MediaWiki and Gateway. Checks are bounded by
 
 ## Remaining Storage Decision
 
-SQLite remains the supported dev/test/pilot default. Treat Postgres as required
-before production SLA, multiple Gateway/Syncer instances, HA, compliance audit
-retention, or high write concurrency.
+SQLite remains the supported dev/test/pilot default. `NODE_ENV=production`
+fails startup on SQLite unless `ALLOW_SQLITE_IN_PRODUCTION=true` is set for
+local diagnostics. Treat Postgres as required before production SLA, multiple
+Gateway/Syncer instances, HA, compliance audit retention, or high write
+concurrency.

@@ -11,6 +11,8 @@ const HOSTNAME = hostname();
 const REDACT_PATHS = [
   'headers.authorization',
   'headers.Authorization',
+  'headers.x-wikiai-admin-token',
+  'headers.X-WikiAI-Admin-Token',
   'headers.cookie',
   'headers.Cookie',
   '*.token',

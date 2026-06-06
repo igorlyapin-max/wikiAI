@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import Fastify from 'fastify';
 import {
+  recordDependencyMetric,
+  recordHealthCheckMetric,
   recordRequestEnd,
   recordRequestStart,
   recordTrigramBackfillJobMetric,
@@ -9,6 +11,7 @@ import {
   registerMetrics,
   renderMetrics,
   resetMetricsForTests,
+  setSchedulerLockStatus,
 } from '../metrics.js';
 
 describe('gateway metrics', () => {
@@ -50,6 +53,25 @@ describe('gateway metrics', () => {
     expect(metrics).toContain('wikiai_search_trigram_raw_candidates_total{service="gateway"} 3');
     expect(metrics).toContain('wikiai_trigram_backfill_jobs_total{service="gateway",status="completed"} 1');
     expect(metrics).toContain('wikiai_trigram_backfill_progress_chunks{service="gateway"} 42');
+  });
+
+  it('renders dependency, health, scheduler and event loop metrics with bounded labels', () => {
+    recordDependencyMetric({
+      dependency: 'litellm',
+      operation: 'chat/user@example.com?token=secret',
+      status: 'ok',
+      durationSeconds: 0.25,
+    });
+    recordHealthCheckMetric({ check: 'qdrant', ok: true, latencyMs: 12 });
+    setSchedulerLockStatus('trust_recalculation', true);
+
+    const metrics = renderMetrics('gateway');
+
+    expect(metrics).toContain('wikiai_dependency_requests_total{service="gateway",dependency="litellm",operation="chat_user_example.com_token_secret",status="ok"} 1');
+    expect(metrics).toContain('wikiai_health_check_status{service="gateway",check="qdrant"} 1');
+    expect(metrics).toContain('wikiai_scheduler_lock_held{service="gateway",scheduler="trust_recalculation"} 1');
+    expect(metrics).toContain('wikiai_event_loop_lag_seconds{service="gateway"}');
+    expect(metrics).not.toContain('user@example.com');
   });
 
   it('serves metrics through the registered Fastify endpoint', async () => {

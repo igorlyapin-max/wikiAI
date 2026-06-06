@@ -15,6 +15,24 @@ describe('redis cache helpers', () => {
     await expect(getCachedUserGroups('session-1')).resolves.toEqual(['sysop', 'aiadmin']);
   });
 
+  it('caches full MediaWiki user info with TTL', async () => {
+    const { cacheUserInfo, getCachedUserInfo } = await import('../redis.js');
+
+    await cacheUserInfo('session-1', {
+      username: 'Admin',
+      userId: 2,
+      groups: ['sysop', 'aiadmin'],
+      rights: ['read'],
+    }, 300);
+
+    await expect(getCachedUserInfo('session-1')).resolves.toEqual({
+      username: 'Admin',
+      userId: 2,
+      groups: ['sysop', 'aiadmin'],
+      rights: ['read'],
+    });
+  });
+
   it('returns null for a missing user group cache entry', async () => {
     const { getCachedUserGroups } = await import('../redis.js');
 
@@ -24,19 +42,23 @@ describe('redis cache helpers', () => {
   it('clears all cached user group keys across scan pages', async () => {
     const {
       appendChatMessage,
+      cacheUserInfo,
       cacheUserGroups,
       clearUserGroupCache,
+      getCachedUserInfo,
       getCachedUserGroups,
       getChatHistory,
     } = await import('../redis.js');
     await cacheUserGroups('a', ['a'], 300);
     await cacheUserGroups('b', ['b'], 300);
+    await cacheUserInfo('c', { username: 'User C', userId: 3, groups: ['c'] }, 300);
     await appendChatMessage('s', 'c', { role: 'user', content: 'keep' }, 60);
 
-    await expect(clearUserGroupCache()).resolves.toBe(2);
+    await expect(clearUserGroupCache()).resolves.toBe(3);
 
     await expect(getCachedUserGroups('a')).resolves.toBeNull();
     await expect(getCachedUserGroups('b')).resolves.toBeNull();
+    await expect(getCachedUserInfo('c')).resolves.toBeNull();
     await expect(getChatHistory('s', 'c')).resolves.toEqual([{ role: 'user', content: 'keep' }]);
   });
 

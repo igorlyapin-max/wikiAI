@@ -12,6 +12,12 @@ import { getOpenSearchStatus, type OpenSearchStatus } from './opensearch.js';
 import { getSearchIndexStatus } from './search-index.js';
 import { RuntimeHttpError } from './runtime-errors.js';
 import { logOperationalEvent } from './logging.js';
+import {
+  getChatManagementConfig,
+  getChatProfiles,
+  legacyChatProfileIdForRetrievalProfile,
+  type ChatProfileSummary,
+} from './chat-profiles.js';
 
 export type RetrievalProfileSurface = 'api' | 'mcp' | 'mediawiki';
 
@@ -25,6 +31,8 @@ export interface RetrievalProfileCapability {
   anonymousAllowed: boolean;
   maxTopK: number;
   tags: string[];
+  chatProfileId?: string;
+  chatProfile?: ChatProfileSummary;
   lexicalBackend: RagAdminConfig['lexicalBackend'];
   searchMode: RagAdminConfig['searchMode'];
   rerankMode: RagAdminConfig['rerankMode'];
@@ -121,6 +129,32 @@ function buildReadiness(input: {
       ? `OpenSearch index is not ready: ${input.openSearchStatus.error}`
       : 'OpenSearch index is not ready');
   }
+  if (config.includeAttachments) {
+    requiredIndexTargets.add('attachments');
+    if (input.searchIndexStatus.attachmentChunks <= 0) {
+      missingIndexTargets.add('attachments');
+      reasons.push('Attachment index is empty');
+    }
+    if (
+      requiresOpenSearch
+      && input.searchIndexStatus.attachmentChunks > 0
+      && (input.openSearchStatus?.attachmentDocumentCount ?? 0) <= 0
+    ) {
+      missingIndexTargets.add('opensearch_attachments');
+      reasons.push('OpenSearch attachment index is empty while BM25 attachment chunks exist');
+    }
+    if (
+      requiresOpenSearch
+      && input.searchIndexStatus.attachmentChunks > 0
+      && (input.openSearchStatus?.attachmentDocumentCount ?? 0) > 0
+      && (input.openSearchStatus?.attachmentDocumentCount ?? 0) < input.searchIndexStatus.attachmentChunks
+    ) {
+      missingIndexTargets.add('opensearch_attachments');
+      reasons.push(
+        `OpenSearch attachment index is incomplete: ${input.openSearchStatus?.attachmentDocumentCount ?? 0}/${input.searchIndexStatus.attachmentChunks} chunks`
+      );
+    }
+  }
   if (config.trigramIndexEnabled && !input.searchIndexStatus.trigramPopulated) {
     missingIndexTargets.add('trigram');
     reasons.push('trigram_index_not_ready: run trigram backfill before using this profile');
@@ -141,7 +175,9 @@ function buildReadiness(input: {
   const hardFailure = reasons.some((reason) => (
     reason === 'Profile is disabled'
     || reason === 'BM25/search index is not populated'
+    || reason === 'Attachment index is empty'
     || reason.startsWith('OpenSearch index is not ready')
+    || reason.startsWith('OpenSearch attachment index is')
     || reason.startsWith('trigram_index_not_ready')
     || reason.startsWith('ColBERT health is not ok')
   ));
@@ -156,26 +192,44 @@ function buildReadiness(input: {
 }
 
 export async function getRetrievalProfilesWithReadiness(): Promise<RetrievalProfileWithReadiness[]> {
-  const [profiles, baseConfig, searchIndexStatus] = await Promise.all([
+  const [profiles, baseConfig, searchIndexStatus, chatProfiles, chatManagementConfig] = await Promise.all([
     getRetrievalProfiles(),
     getRagAdminConfig(),
     getSearchIndexStatus(),
+    getChatProfiles(),
+    getChatManagementConfig(),
   ]);
+  const chatProfileById = new Map(chatProfiles.map((profile) => [profile.id, profile]));
   const effectiveConfigs = profiles.map((profile) => applyRetrievalProfileToRagConfig(baseConfig, profile));
   const [colbertHealth, openSearchStatus] = await Promise.all([
     getColbertHealthIfNeeded(effectiveConfigs),
     getOpenSearchStatusIfNeeded(effectiveConfigs),
   ]);
-  return profiles.map((profile, index) => ({
-    ...profile,
-    readiness: buildReadiness({
+  return profiles.map((profile, index) => {
+    const effectiveChatProfileId = legacyChatProfileIdForRetrievalProfile(profile)
+      ?? chatManagementConfig.defaultChatProfileId;
+    const chatProfile = chatProfileById.get(effectiveChatProfileId);
+    return {
+      ...profile,
+      chatProfileId: profile.chatProfileId,
+      chatProfile: chatProfile ? {
+        id: chatProfile.id,
+        name: chatProfile.name,
+        promptHistoryScope: chatProfile.promptHistoryScope,
+        promptHistoryTurns: chatProfile.promptHistoryTurns,
+        retrievalHistoryMode: chatProfile.retrievalHistoryMode,
+        retrievalHistoryTurns: chatProfile.retrievalHistoryTurns,
+        experimental: chatProfile.experimental,
+      } : undefined,
+      readiness: buildReadiness({
       profile,
       effectiveConfig: effectiveConfigs[index] ?? baseConfig,
       searchIndexStatus,
       colbertHealth,
       openSearchStatus,
-    }),
-  }));
+      }),
+    };
+  });
 }
 
 export async function getRetrievalProfileCapabilities(): Promise<RetrievalProfileCapability[]> {
@@ -190,6 +244,8 @@ export async function getRetrievalProfileCapabilities(): Promise<RetrievalProfil
     anonymousAllowed: profile.anonymousAllowed,
     maxTopK: profile.maxTopK,
     tags: profile.tags,
+    chatProfileId: profile.chatProfileId,
+    chatProfile: profile.chatProfile as ChatProfileSummary | undefined,
     lexicalBackend: profile.config.lexicalBackend,
     searchMode: profile.config.searchMode,
     rerankMode: profile.config.rerankMode,

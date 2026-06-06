@@ -27,6 +27,8 @@ vi.mock('../../services/mediawiki.js', () => ({
 }));
 
 vi.mock('../../services/redis.js', () => ({
+  getCachedUserInfo: vi.fn(async () => null),
+  cacheUserInfo: vi.fn(async () => undefined),
   getCachedUserGroups: vi.fn(async () => null),
   cacheUserGroups: vi.fn(async () => undefined),
   redis: {

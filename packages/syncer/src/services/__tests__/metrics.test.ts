@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import Fastify from 'fastify';
 import {
+  recordDependencyMetric,
+  recordHealthCheckMetric,
   recordRequestEnd,
   recordRequestStart,
   registerMetrics,
   renderMetrics,
   resetMetricsForTests,
+  setSchedulerLockStatus,
 } from '../metrics.js';
 
 describe('syncer metrics', () => {
@@ -49,5 +52,24 @@ describe('syncer metrics', () => {
     expect(metrics.body).toContain('wikiai_http_requests_total{service="syncer",method="GET",route="/probe",status="200"} 1');
 
     await app.close();
+  });
+
+  it('renders dependency, health, scheduler and event loop metrics with bounded labels', () => {
+    recordDependencyMetric({
+      dependency: 'mediawiki',
+      operation: 'query/title?token=secret',
+      status: 'error',
+      durationSeconds: 0.5,
+    });
+    recordHealthCheckMetric({ check: 'gateway', ok: false, latencyMs: 42 });
+    setSchedulerLockStatus('syncer_reindex', false);
+
+    const metrics = renderMetrics('syncer');
+
+    expect(metrics).toContain('wikiai_dependency_requests_total{service="syncer",dependency="mediawiki",operation="query_title_token_secret",status="error"} 1');
+    expect(metrics).toContain('wikiai_health_check_status{service="syncer",check="gateway"} 0');
+    expect(metrics).toContain('wikiai_scheduler_lock_held{service="syncer",scheduler="syncer_reindex"} 0');
+    expect(metrics).toContain('wikiai_event_loop_lag_seconds{service="syncer"}');
+    expect(metrics).not.toContain('token=secret');
   });
 });

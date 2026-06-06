@@ -6,11 +6,14 @@ import {
   mwAuthMiddleware,
   mwOptionalAuthMiddleware,
 } from '../auth.js';
+import type { MWUserInfo } from '../../types/index.js';
 
 const cachedGroups = vi.hoisted(() => ({ value: null as string[] | null }));
+const cachedUser = vi.hoisted(() => ({ value: null as MWUserInfo | null }));
 const fetchUserInfo = vi.hoisted(() => vi.fn());
 const getCachedUserGroups = vi.hoisted(() => vi.fn(async () => cachedGroups.value));
-const cacheUserGroups = vi.hoisted(() => vi.fn());
+const getCachedUserInfo = vi.hoisted(() => vi.fn(async () => cachedUser.value));
+const cacheUserInfo = vi.hoisted(() => vi.fn());
 
 vi.mock('../../services/mediawiki.js', () => ({
   fetchUserInfo,
@@ -18,15 +21,18 @@ vi.mock('../../services/mediawiki.js', () => ({
 
 vi.mock('../../services/redis.js', () => ({
   getCachedUserGroups,
-  cacheUserGroups,
+  getCachedUserInfo,
+  cacheUserInfo,
 }));
 
 describe('MediaWiki auth middleware', () => {
   beforeEach(() => {
     cachedGroups.value = null;
+    cachedUser.value = null;
     fetchUserInfo.mockReset();
     getCachedUserGroups.mockClear();
-    cacheUserGroups.mockClear();
+    getCachedUserInfo.mockClear();
+    cacheUserInfo.mockClear();
     fetchUserInfo.mockResolvedValue({
       username: 'WikiUser',
       userId: 42,
@@ -63,8 +69,13 @@ describe('MediaWiki auth middleware', () => {
     await app.close();
   });
 
-  it('uses cached groups for required auth without calling MediaWiki', async () => {
-    cachedGroups.value = ['cached-group'];
+  it('uses cached user info for required auth without calling MediaWiki', async () => {
+    cachedUser.value = {
+      username: 'CachedWikiUser',
+      userId: 43,
+      groups: ['cached-group'],
+      rights: ['read'],
+    };
     const app = await makeApp();
     const response = await app.inject({
       method: 'GET',
@@ -76,12 +87,37 @@ describe('MediaWiki auth middleware', () => {
     expect(response.json()).toMatchObject({
       sessionCookie: 'mw=1',
       user: {
-        username: 'cached',
-        userId: 0,
+        username: 'CachedWikiUser',
+        userId: 43,
         groups: ['cached-group'],
+        rights: ['read'],
       },
     });
     expect(fetchUserInfo).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it('refreshes legacy group-only cache instead of returning cached as a user', async () => {
+    cachedGroups.value = ['legacy-group'];
+    const app = await makeApp();
+    const response = await app.inject({
+      method: 'GET',
+      url: '/required',
+      headers: { cookie: 'mw=legacy' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().user).toMatchObject({
+      username: 'WikiUser',
+      userId: 42,
+      groups: ['user', 'ai-it'],
+    });
+    expect(fetchUserInfo).toHaveBeenCalledTimes(1);
+    expect(cacheUserInfo).toHaveBeenCalledWith(expect.any(String), {
+      username: 'WikiUser',
+      userId: 42,
+      groups: ['user', 'ai-it'],
+    }, 60);
     await app.close();
   });
 
@@ -109,11 +145,15 @@ describe('MediaWiki auth middleware', () => {
 
     expect(valid.statusCode).toBe(200);
     expect(valid.json().user).toMatchObject({ username: 'WikiUser', groups: ['user', 'ai-it'] });
-    expect(cacheUserGroups).toHaveBeenCalledWith(expect.any(String), ['user', 'ai-it'], 60);
+    expect(cacheUserInfo).toHaveBeenCalledWith(expect.any(String), {
+      username: 'WikiUser',
+      userId: 42,
+      groups: ['user', 'ai-it'],
+    }, 60);
     await app.close();
   });
 
-  it('assigns anonymous or cached principals in optional auth', async () => {
+  it('assigns anonymous or refreshed principals in optional auth', async () => {
     const app = await makeApp();
     const anonymous = await app.inject({ method: 'GET', url: '/optional' });
     expect(anonymous.statusCode).toBe(200);
@@ -129,7 +169,7 @@ describe('MediaWiki auth middleware', () => {
       headers: { cookie: 'mw=cached' },
     });
     expect(cached.statusCode).toBe(200);
-    expect(cached.json().user).toMatchObject({ username: 'cached', groups: ['cached-group'] });
+    expect(cached.json().user).toMatchObject({ username: 'WikiUser', userId: 42, groups: ['user', 'ai-it'] });
     await app.close();
   });
 
@@ -144,7 +184,7 @@ describe('MediaWiki auth middleware', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json().user).toEqual(ANONYMOUS_MW_USER);
-    expect(cacheUserGroups).not.toHaveBeenCalled();
+    expect(cacheUserInfo).not.toHaveBeenCalled();
     await app.close();
   });
 });

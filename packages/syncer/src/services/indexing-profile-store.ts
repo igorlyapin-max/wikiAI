@@ -1,7 +1,7 @@
-import { fetchIndexingProfiles } from './gateway.js';
+import { fetchIndexingAutomationConfig, fetchIndexingProfiles } from './gateway.js';
 import type { ReindexOptions, ReindexTextFilters } from './reindex.js';
 
-interface StoredIndexingProfile {
+export interface StoredIndexingProfile {
   id: string;
   enabled?: boolean;
   namespaces?: number[];
@@ -33,6 +33,23 @@ export async function getIndexingProfileFromAdminStorage(profileId: string): Pro
   } catch {
     return undefined;
   }
+}
+
+export async function getChangeIndexingProfileFromAdminStorage(): Promise<StoredIndexingProfile | undefined> {
+  let profileId: string | undefined;
+  try {
+    const automation = await fetchIndexingAutomationConfig();
+    profileId = automation.changeIndexingProfileId;
+  } catch {
+    return undefined;
+  }
+  if (!profileId) return undefined;
+
+  const profile = await getIndexingProfileFromAdminStorage(profileId);
+  if (!profile) {
+    throw new Error(`Indexing profile not found: ${profileId}`);
+  }
+  return profile;
 }
 
 export function applyIndexingProfileDefaults(

@@ -35,7 +35,10 @@ async function checkRedis() {
 }
 
 async function checkQdrant() {
-  const qdrant = new QdrantClient({ url: qdrantUrl });
+  const qdrant = new QdrantClient({
+    url: qdrantUrl,
+    ...(process.env.QDRANT_API_KEY ? { apiKey: process.env.QDRANT_API_KEY } : {}),
+  });
   const collection = runId;
   try {
     await qdrant.createCollection(collection, {

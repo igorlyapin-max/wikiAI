@@ -242,6 +242,95 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "403":
           $ref: "#/components/responses/Forbidden"
+  /api/admin/chat-management/config:
+    get:
+      summary: Return default chat profile selection and available chat profiles.
+      security:
+        - mediaWikiSession: []
+      responses:
+        "200":
+          description: Chat management config and profile catalog.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatProfileStatus"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      summary: Save the default chat profile used when a retrieval profile does not override it.
+      security:
+        - mediaWikiSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [defaultChatProfileId]
+              properties:
+                defaultChatProfileId:
+                  type: string
+                  example: chat_current_session
+      responses:
+        "200":
+          description: Saved chat management config and profile catalog.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatProfileStatus"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/admin/chat-profiles:
+    get:
+      summary: Return chat prompt/retrieval profiles.
+      security:
+        - mediaWikiSession: []
+      responses:
+        "200":
+          description: Chat profile catalog.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatProfileStatus"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      summary: Create or update a chat prompt/retrieval profile.
+      security:
+        - mediaWikiSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatProfile"
+      responses:
+        "200":
+          description: Saved chat profile and refreshed catalog.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatProfileStatus"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/admin/chat-profiles/restore-defaults:
+    post:
+      summary: Restore built-in chat profiles.
+      security:
+        - mediaWikiSession: []
+      responses:
+        "200":
+          description: Restored chat profile catalog.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatProfileStatus"
+        "403":
+          $ref: "#/components/responses/Forbidden"
   /api/admin/opensearch/status:
     get:
       summary: Return OpenSearch service and index readiness.
@@ -250,6 +339,32 @@ paths:
       responses:
         "200":
           description: OpenSearch status.
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/admin/opensearch/attachment-diagnostics:
+    post:
+      summary: Compare BM25/PostgreSQL and OpenSearch indexing state for a single attachment filename.
+      security:
+        - mediaWikiSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [filename]
+              properties:
+                filename:
+                  type: string
+                limit:
+                  type: integer
+                  minimum: 1
+                  maximum: 20
+      responses:
+        "200":
+          description: Attachment lookup diagnostics.
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "403":
           $ref: "#/components/responses/Forbidden"
   /api/admin/opensearch/analyze:
@@ -608,12 +723,87 @@ components:
         rerankMode:
           type: string
           enum: [none, colbert_v2]
+        chatProfileId:
+          type: string
+          description: Optional chat profile selected for this retrieval profile. If omitted, Gateway uses the default chat profile or legacy chatRetrievalQueryMode mapping.
+        chatProfile:
+          $ref: "#/components/schemas/ChatProfileSummary"
         chatRetrievalQueryMode:
           type: string
           enum: [current_message, history_augmented]
-          description: Controls whether chat retrieval uses only the current user message or augments the retrieval query with recent chat history.
+          description: Legacy compatibility flag. New deployments should use chatProfileId so prompt history and retrieval history can be configured independently.
         readiness:
           $ref: "#/components/schemas/RetrievalProfileReadiness"
+    ChatManagementConfig:
+      type: object
+      required: [defaultChatProfileId]
+      properties:
+        defaultChatProfileId:
+          type: string
+    ChatProfileStatus:
+      type: object
+      required: [values, chatProfiles]
+      properties:
+        status:
+          type: string
+        values:
+          $ref: "#/components/schemas/ChatManagementConfig"
+        selectedProfile:
+          $ref: "#/components/schemas/ChatProfile"
+        chatProfiles:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChatProfile"
+    ChatProfileSummary:
+      type: object
+      required: [id, name, promptHistoryScope, promptHistoryTurns, retrievalHistoryMode, retrievalHistoryTurns, experimental]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        promptHistoryScope:
+          type: string
+          enum: [current_session, current_user_active_sessions]
+        promptHistoryTurns:
+          type: integer
+          minimum: 0
+          maximum: 20
+        retrievalHistoryMode:
+          type: string
+          enum: [current_message, current_session_questions, current_session_questions_and_answers]
+        retrievalHistoryTurns:
+          type: integer
+          minimum: 0
+          maximum: 12
+        experimental:
+          type: boolean
+    ChatProfile:
+      allOf:
+        - $ref: "#/components/schemas/ChatProfileSummary"
+        - type: object
+          required: [description, enabled, defaultForChat, maxPromptHistoryChars, maxRetrievalHistoryChars]
+          properties:
+            description:
+              type: string
+            enabled:
+              type: boolean
+            defaultForChat:
+              type: boolean
+            maxPromptHistoryChars:
+              type: integer
+              minimum: 0
+              maximum: 80000
+            maxRetrievalHistoryChars:
+              type: integer
+              minimum: 0
+              maximum: 12000
+            createdAt:
+              type: string
+              format: date-time
+            updatedAt:
+              type: string
+              format: date-time
     ReindexRequest:
       type: object
       properties:
@@ -669,7 +859,7 @@ components:
           $ref: "#/components/schemas/SearchIndexStatus"
     SearchIndexStatus:
       type: object
-      required: [chunks, ftsChunks, trigramChunks, trigramFtsChunks, pages, populated, backfillRecommended, trigramPopulated, trigramBackfillRecommended, readiness]
+      required: [chunks, ftsChunks, trigramChunks, trigramFtsChunks, attachmentChunks, attachmentPages, attachmentFilenames, attachmentColumnsReady, pages, populated, backfillRecommended, trigramPopulated, trigramBackfillRecommended, readiness]
       properties:
         chunks:
           type: integer
@@ -683,6 +873,28 @@ components:
         trigramFtsChunks:
           type: integer
           minimum: 0
+        attachmentChunks:
+          type: integer
+          minimum: 0
+        attachmentPages:
+          type: integer
+          minimum: 0
+        attachmentFilenames:
+          type: array
+          items:
+            type: object
+            required: [filename, chunks, pages]
+            properties:
+              filename:
+                type: string
+              chunks:
+                type: integer
+                minimum: 0
+              pages:
+                type: integer
+                minimum: 0
+        attachmentColumnsReady:
+          type: boolean
         pages:
           type: integer
           minimum: 0

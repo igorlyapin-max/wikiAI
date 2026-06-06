@@ -5,6 +5,7 @@ import { parseDatabaseUrl, getAdminStore, AuditLogEntry } from '../db/admin-stor
 import { getRuntimeConfig, setRuntimeConfig } from './config.js';
 import { qdrant, QDRANT_VECTOR_SIZE } from './qdrant.js';
 import { getSearchIndexStatus } from './search-index.js';
+import { getChatProfiles } from './chat-profiles.js';
 import {
   getSyncerMediaWikiServiceAuthStatus,
   StartReindexRequest,
@@ -19,6 +20,7 @@ const RAG_CONFIG_AREA = 'rag-config';
 const RETRIEVAL_PROFILE_AREA = 'retrieval-profiles';
 const WEBHOOK_CONFIG_AREA = 'webhook-config';
 const INDEXING_PROFILE_AREA = 'indexing-profiles';
+const INDEXING_AUTOMATION_CONFIG_AREA = 'indexing-automation-config';
 const CHAT_RETENTION_CONFIG_AREA = 'chat-retention-config';
 const TRUST_RECALCULATION_CONFIG_AREA = 'trust-recalculation-config';
 const CONFLICT_DETECTION_CONFIG_AREA = 'conflict-detection-config';
@@ -26,6 +28,7 @@ const TRUST_STORE_AREA = 'trust-models';
 const DEFAULT_KEY = 'default';
 const SECONDS_PER_DAY = 24 * 60 * 60;
 const DEFAULT_STALENESS_PENALTY_PER_YEAR = 0.1;
+const DEFAULT_INDEXING_SCHEDULE_INTERVAL_MINUTES = 1440;
 
 type DeepPartial<T> = {
   [K in keyof T]?: T[K] extends unknown[]
@@ -236,6 +239,7 @@ export interface RetrievalProfile {
   anonymousAllowed: boolean;
   maxTopK: number;
   tags: string[];
+  chatProfileId?: string;
   config: RetrievalProfileOverrides;
   createdAt: string;
   updatedAt: string;
@@ -243,6 +247,15 @@ export interface RetrievalProfile {
 
 export interface RetrievalProfileWithReadiness extends RetrievalProfile {
   readiness: RetrievalProfileReadiness;
+  chatProfile?: {
+    id: string;
+    name: string;
+    promptHistoryScope: 'current_session' | 'current_user_active_sessions';
+    promptHistoryTurns: number;
+    retrievalHistoryMode: 'current_message' | 'current_session_questions' | 'current_session_questions_and_answers';
+    retrievalHistoryTurns: number;
+    experimental: boolean;
+  };
 }
 
 export interface WebhookAdminConfig {
@@ -293,12 +306,23 @@ export interface ConflictDetectionConfig {
   enabled: boolean;
   runMode: ConflictDetectionRunMode;
   model: string;
+  systemPrompt: string;
   maxSources: number;
   maxCharsPerSource: number;
   trustGapThreshold: number;
   lowConfidenceThreshold: number;
   showConflictBlock: boolean;
 }
+
+export const DEFAULT_CONFLICT_DETECTION_SYSTEM_PROMPT = [
+  'Ты проверяешь корпоративные wiki-источники на противоречия для RAG-ответа.',
+  'Нужно сравнить только предоставленные источники. Не добавляй внешние знания.',
+  'Считай противоречием только несовместимые утверждения об одном и том же объекте, правиле, сроке, числе или факте.',
+  'Разные темы, разные предметные области, разные кухни, разные процедуры или нерелевантные источники сами по себе не являются противоречием.',
+  'Верни только JSON без Markdown.',
+  'Схема JSON: {"hasConflict":boolean,"confidence":number,"summary":string,"conflictingSources":[{"sourceIndex":number,"title":string,"claim":string,"status":string}],"recommendedSourceIndex":number,"recommendedSourceTitle":string,"lowTrustReason":string}.',
+  'confidence означает уверенность в выводе о наличии или отсутствии противоречия от 0 до 1.',
+].join('\n');
 
 export type TrustEntityType =
   | 'namespace'
@@ -484,6 +508,14 @@ export interface IndexingProfile {
   updatedAt: string;
 }
 
+export interface IndexingAutomationConfig {
+  changeIndexingProfileId?: string;
+  scheduledReindexProfileId?: string;
+  scheduleEnabled: boolean;
+  scheduleIntervalMinutes: number;
+  updatedAt?: string;
+}
+
 export interface EffectiveEmbeddingConfig {
   provider: EmbeddingProvider;
   baseUrl: string;
@@ -633,6 +665,15 @@ const indexingProfileInputSchema = z.object({
   path: ['chunkOverlap'],
 });
 
+const optionalProfileIdSchema = z.string().trim().min(1).max(120).regex(/^[A-Za-z0-9_.-]+$/).nullable();
+
+const indexingAutomationConfigInputSchema = z.object({
+  changeIndexingProfileId: optionalProfileIdSchema.optional(),
+  scheduledReindexProfileId: optionalProfileIdSchema.optional(),
+  scheduleEnabled: z.boolean().optional(),
+  scheduleIntervalMinutes: z.number().int().min(5).max(10080).optional(),
+}).strict();
+
 const ragConfigBaseSchema = z.object({
   chunkSize: z.number().int().min(128).max(4096),
   chunkOverlap: z.number().int().min(0).max(2048),
@@ -745,6 +786,7 @@ const retrievalProfileInputSchema = z.object({
   anonymousAllowed: z.boolean().optional(),
   maxTopK: z.number().int().min(1).max(50).optional(),
   tags: z.array(z.string().trim().min(1).max(80)).max(20).optional(),
+  chatProfileId: z.string().trim().min(1).max(120).regex(/^[A-Za-z0-9_.-]+$/).optional(),
   config: retrievalProfileConfigSchema,
 }).strict();
 
@@ -849,6 +891,7 @@ const conflictDetectionConfigSchema = z.object({
   enabled: z.boolean(),
   runMode: z.enum(['risk_only', 'always', 'manual']),
   model: z.string().trim().min(1).max(200),
+  systemPrompt: z.string().trim().min(1).max(8000),
   maxSources: z.number().int().min(2).max(10),
   maxCharsPerSource: z.number().int().min(300).max(12000),
   trustGapThreshold: z.number().min(0).max(1),
@@ -1380,6 +1423,17 @@ function defaultIndexTargets(input: {
   ];
 }
 
+function syncAttachmentIndexTarget(indexTargets: string[] | undefined, attachmentsEnabled: boolean): string[] | undefined {
+  if (!indexTargets) return undefined;
+  const targets = new Set(indexTargets);
+  if (attachmentsEnabled) {
+    targets.add('attachments');
+  } else {
+    targets.delete('attachments');
+  }
+  return Array.from(targets);
+}
+
 async function getDefaultIndexingProfile(): Promise<IndexingProfile> {
   const rag = await getRagAdminConfig();
   const now = new Date().toISOString();
@@ -1436,6 +1490,69 @@ export async function getIndexingProfiles(): Promise<IndexingProfile[]> {
   return [await getDefaultIndexingProfile()];
 }
 
+function normalizeProfileId(value: string | null | undefined): string | undefined {
+  const normalized = value?.trim();
+  return normalized ? normalized : undefined;
+}
+
+export async function getIndexingAutomationConfig(): Promise<IndexingAutomationConfig> {
+  const stored = (await getAdminStore().getJson<Partial<IndexingAutomationConfig>>(
+    INDEXING_AUTOMATION_CONFIG_AREA,
+    DEFAULT_KEY,
+  )) ?? {};
+
+  return {
+    changeIndexingProfileId: normalizeProfileId(stored.changeIndexingProfileId),
+    scheduledReindexProfileId: normalizeProfileId(stored.scheduledReindexProfileId),
+    scheduleEnabled: Boolean(stored.scheduleEnabled),
+    scheduleIntervalMinutes: Number.isInteger(stored.scheduleIntervalMinutes)
+      ? Math.max(5, Math.min(stored.scheduleIntervalMinutes ?? DEFAULT_INDEXING_SCHEDULE_INTERVAL_MINUTES, 10080))
+      : DEFAULT_INDEXING_SCHEDULE_INTERVAL_MINUTES,
+    updatedAt: stored.updatedAt,
+  };
+}
+
+function profileExists(profiles: IndexingProfile[], profileId: string | undefined): boolean {
+  return !profileId || profiles.some((profile) => profile.id === profileId);
+}
+
+export async function setIndexingAutomationConfig(input: unknown, actor?: string): Promise<IndexingAutomationConfig> {
+  const parsed = indexingAutomationConfigInputSchema.parse(input);
+  const current = await getIndexingAutomationConfig();
+  const profiles = await getIndexingProfiles();
+  const hasChangeProfile = Object.prototype.hasOwnProperty.call(parsed, 'changeIndexingProfileId');
+  const hasScheduledProfile = Object.prototype.hasOwnProperty.call(parsed, 'scheduledReindexProfileId');
+  const next: IndexingAutomationConfig = {
+    changeIndexingProfileId: hasChangeProfile
+      ? normalizeProfileId(parsed.changeIndexingProfileId)
+      : current.changeIndexingProfileId,
+    scheduledReindexProfileId: hasScheduledProfile
+      ? normalizeProfileId(parsed.scheduledReindexProfileId)
+      : current.scheduledReindexProfileId,
+    scheduleEnabled: parsed.scheduleEnabled ?? current.scheduleEnabled,
+    scheduleIntervalMinutes: parsed.scheduleIntervalMinutes ?? current.scheduleIntervalMinutes,
+    updatedAt: new Date().toISOString(),
+  };
+
+  if (!profileExists(profiles, next.changeIndexingProfileId)) {
+    throw new Error(`Indexing profile not found: ${next.changeIndexingProfileId}`);
+  }
+  if (!profileExists(profiles, next.scheduledReindexProfileId)) {
+    throw new Error(`Indexing profile not found: ${next.scheduledReindexProfileId}`);
+  }
+  if (next.scheduleEnabled && !next.scheduledReindexProfileId) {
+    throw new Error('scheduledReindexProfileId is required when scheduleEnabled is true');
+  }
+
+  await getAdminStore().setJson(INDEXING_AUTOMATION_CONFIG_AREA, DEFAULT_KEY, next, {
+    actor,
+    action: 'indexing-automation.update',
+    entityType: INDEXING_AUTOMATION_CONFIG_AREA,
+  });
+
+  return next;
+}
+
 export async function upsertIndexingProfile(input: unknown, actor?: string): Promise<IndexingProfile> {
   const parsed = indexingProfileInputSchema.parse(input);
   const profiles = await getIndexingProfiles();
@@ -1458,11 +1575,14 @@ export async function upsertIndexingProfile(input: unknown, actor?: string): Pro
     documentPolicyId: parsed.documentPolicyId ?? existing?.documentPolicyId ?? 'default',
     runMode: parsed.runMode ?? existing?.runMode ?? 'manual',
     scheduleIntervalMinutes: parsed.scheduleIntervalMinutes ?? existing?.scheduleIntervalMinutes,
-    indexTargets: parsed.indexTargets ?? existing?.indexTargets ?? defaultIndexTargets({
+    indexTargets: syncAttachmentIndexTarget(
+      parsed.indexTargets ?? existing?.indexTargets ?? defaultIndexTargets({
+        attachmentsEnabled,
+        semanticFactsEnabled,
+        ontologyVectorsEnabled,
+      }),
       attachmentsEnabled,
-      semanticFactsEnabled,
-      ontologyVectorsEnabled,
-    }),
+    ) ?? [],
     attachmentsEnabled,
     semanticFactsEnabled,
     ontologyVectorsEnabled,
@@ -1503,16 +1623,18 @@ export async function applyIndexingProfileToReindexRequest(
     throw new Error(`Indexing profile is disabled: ${profile.name}`);
   }
 
+  const attachmentsEnabled = input.attachmentsEnabled ?? profile.attachmentsEnabled;
   const semanticFactsEnabled = input.semanticFactsEnabled ?? profile.semanticFactsEnabled;
   const smwProperties = semanticFactsEnabled ? await getIndexedSmwProperties() : [];
+  const indexTargets = syncAttachmentIndexTarget(input.indexTargets ?? profile.indexTargets, attachmentsEnabled);
 
   return {
     profileId: profile.id,
-    indexTargets: input.indexTargets ?? profile.indexTargets,
+    indexTargets,
     source: input.source,
     colbertModel: input.colbertModel,
     colbertCollection: input.colbertCollection,
-    attachmentsEnabled: input.attachmentsEnabled ?? profile.attachmentsEnabled,
+    attachmentsEnabled,
     semanticFactsEnabled,
     smwProperties,
     namespaces: input.namespaces ?? profile.namespaces,
@@ -1737,6 +1859,7 @@ export async function getDefaultRetrievalProfiles(): Promise<RetrievalProfile[]>
     anonymousAllowed: false,
     maxTopK: 20,
     tags,
+    chatProfileId: 'chat_current_session',
     config: retrievalProfileConfigFromRag(rag, overrides),
     createdAt: now,
     updatedAt: now,
@@ -1852,6 +1975,7 @@ function normalizeRetrievalProfile(profile: RetrievalProfile): RetrievalProfile 
   return {
     ...profile,
     tags: profile.tags ?? [],
+    chatProfileId: profile.chatProfileId,
     config: retrievalProfileConfigSchema.parse(withRetrievalLimitAliases({
       ...configRecord,
       chatRetrievalQueryMode: configRecord.chatRetrievalQueryMode ?? 'current_message',
@@ -1881,6 +2005,12 @@ export async function upsertRetrievalProfile(input: unknown, actor?: string): Pr
   const now = new Date().toISOString();
   const id = parsed.id ?? profileIdFromName(parsed.name);
   const existing = profiles.find((profile) => profile.id === id);
+  if (parsed.chatProfileId) {
+    const chatProfiles = await getChatProfiles();
+    if (!chatProfiles.some((profile) => profile.id === parsed.chatProfileId && profile.enabled)) {
+      throw new Error(`Chat profile not found or disabled: ${parsed.chatProfileId}`);
+    }
+  }
   const profile: RetrievalProfile = {
     id,
     name: parsed.name,
@@ -1891,6 +2021,7 @@ export async function upsertRetrievalProfile(input: unknown, actor?: string): Pr
     anonymousAllowed: parsed.anonymousAllowed ?? existing?.anonymousAllowed ?? false,
     maxTopK: parsed.maxTopK ?? existing?.maxTopK ?? 20,
     tags: parsed.tags ?? existing?.tags ?? [],
+    chatProfileId: parsed.chatProfileId ?? existing?.chatProfileId,
     config: parsed.config,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
@@ -2027,6 +2158,7 @@ export async function getConflictDetectionConfig(): Promise<ConflictDetectionCon
     enabled: true,
     runMode: 'risk_only',
     model: llm.model,
+    systemPrompt: DEFAULT_CONFLICT_DETECTION_SYSTEM_PROMPT,
     maxSources: 5,
     maxCharsPerSource: 2000,
     trustGapThreshold: 0.15,
@@ -2042,6 +2174,7 @@ export async function getConflictDetectionConfig(): Promise<ConflictDetectionCon
     ...defaults,
     ...stored,
     model: stored.model ?? defaults.model,
+    systemPrompt: stored.systemPrompt ?? defaults.systemPrompt,
   });
 }
 
