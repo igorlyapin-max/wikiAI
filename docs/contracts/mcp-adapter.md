@@ -68,6 +68,7 @@ Input:
 - `query` - required non-empty string.
 - `topK` - optional number from 1 to 50; overrides the selected retrieval profile `retrievalTopK` for this call.
 - `format` - optional `compact` or `full`.
+- `retrievalProfileId` - optional admin-defined retrieval profile available for MCP.
 
 Gateway call:
 
@@ -82,6 +83,7 @@ Input:
 - `message` - required non-empty string.
 - `conversationId` - optional string.
 - `topK` - optional number from 1 to 50; overrides the selected retrieval profile `retrievalTopK` for this call, while prompt context still follows `contextTopK/contextMaxChars`.
+- `retrievalProfileId` - optional admin-defined retrieval profile available for MCP.
 
 Gateway call:
 

@@ -396,11 +396,25 @@ RUN_WIKIAI_ENV_DEV=1 node scripts/test-wikiai-env-dev.mjs
 
 По умолчанию live gate проверяет только безопасные сценарии: Gateway `/live`/`/ready`/`/health`/`/metrics`, Syncer `/live`/`/ready`/`/health`/`/metrics`, anonymous MediaWiki API, ResourceLoader bundles `ext.aiadmin`/`ext.aiassistant`, регистрацию OpenSearch и knowledge source profile admin routes без cookie и временную Qdrant collection с cleanup. Для admin routes без cookie ожидается `401`, а не `404`: ошибка `Route POST:/api/admin/opensearch/analyze not found` или `Route GET:/api/admin/knowledge-source-profile/config not found` означает stale Gateway build/container. Если задан `MW_TEST_COOKIE` или `WIKIAI_ADMIN_COOKIE`, дополнительно проверяется authenticated `Special:AIAdmin`, наличие вкладок `OpenSearch`/`BM25`/`ColBERT`/`Источники знаний` и admin endpoints Gateway.
 
+External API/MCP live E2E включается отдельным флагом и проверяет реальный Gateway, реальные индексы и MCP stdio adapter `initialize`/`tools/list`/`tools/call`. Если на стенде нет IdP, используйте cookie fallback как основной live auth path: Gateway временно включает External API/MCP через admin cookie, выставляет `aclMode=mediawiki_check`, выполняет `/api/v1/search`, `/api/v1/chat`, `wikiai_search` и `wikiai_chat`, затем восстанавливает исходную конфигурацию.
+
+```bash
+RUN_WIKIAI_ENV_DEV=1 \
+RUN_EXTERNAL_API_MCP_E2E=1 \
+RUN_EXTERNAL_API_MCP_AUTH_MODE=cookie \
+WIKIAI_COOKIE='<mediawiki-cookie>' \
+WIKIAI_ADMIN_COOKIE='<admin-cookie-for-config-setup>' \
+node scripts/test-wikiai-env-dev.mjs
+```
+
+`RUN_EXTERNAL_API_MCP_AUTH_MODE=auto` - default: если `WIKIAI_ACCESS_TOKEN` и OIDC настроены, проверяется Bearer, иначе cookie fallback становится основным. `bearer` и `both` используйте только на стендах с настроенным IdP. Если нужно оставить External API/MCP включенным после проверки, задайте `KEEP_EXTERNAL_API_CONFIG=1`.
+
 В `ai-admin` line coverage считается для helper-кода, а wiring большого `adminApp.js` проверяется contract tests и live ResourceLoader marker checks. Это сделано намеренно: без полноценного browser harness простой include `adminApp.js` дает шумное почти нулевое line coverage и не отражает видимость вкладок в реальном MediaWiki.
 
 Optional проверки включаются только явно:
 
 ```bash
+RUN_WIKIAI_ENV_DEV=1 RUN_EXTERNAL_API_MCP_E2E=1 RUN_EXTERNAL_API_MCP_AUTH_MODE=cookie WIKIAI_COOKIE=... WIKIAI_ADMIN_COOKIE=... node scripts/test-wikiai-env-dev.mjs
 RUN_WIKIAI_ENV_DEV=1 RUN_OPENSEARCH_E2E=1 node scripts/test-wikiai-env-dev.mjs
 RUN_WIKIAI_ENV_DEV=1 RUN_COLBERT_E2E=1 node scripts/test-wikiai-env-dev.mjs
 ```

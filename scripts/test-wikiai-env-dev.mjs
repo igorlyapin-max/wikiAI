@@ -1,12 +1,18 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
 
 const repoRoot = new URL('..', import.meta.url);
+const mcpAdapterPath = fileURLToPath(new URL('packages/mcp-adapter/src/server.mjs', repoRoot));
 const runLive = process.env.RUN_WIKIAI_ENV_DEV === '1';
 const runOpenSearch = process.env.RUN_OPENSEARCH_E2E === '1';
 const runColbert = process.env.RUN_COLBERT_E2E === '1';
 const runLlm = process.env.RUN_LLM_SMOKE === '1';
+const runExternalApiMcp = process.env.RUN_EXTERNAL_API_MCP_E2E === '1';
+const externalApiMcpAuthMode = process.env.RUN_EXTERNAL_API_MCP_AUTH_MODE || 'auto';
+const keepExternalApiConfig = process.env.KEEP_EXTERNAL_API_CONFIG === '1';
 
 const gatewayBaseUrl = envUrl('GATEWAY_BASE_URL', 'http://127.0.0.1:3000');
 const syncerBaseUrl = envUrl('SYNCER_BASE_URL', 'http://127.0.0.1:3001');
@@ -17,6 +23,13 @@ const colbertBaseUrl = envUrl('COLBERT_BASE_URL', 'http://127.0.0.1:8083');
 const adminCookie = process.env.MW_TEST_COOKIE || process.env.WIKIAI_ADMIN_COOKIE || '';
 const liveTimeoutMs = Number.parseInt(process.env.WIKIAI_ENV_DEV_TIMEOUT_MS || '8000', 10);
 const gatewayContainer = process.env.WIKIAI_GATEWAY_CONTAINER || 'wikiai-gateway-1';
+const externalAccessToken = process.env.WIKIAI_ACCESS_TOKEN || '';
+const externalCookie = process.env.WIKIAI_COOKIE || adminCookie;
+const externalConfigAdminCookie = process.env.WIKIAI_ADMIN_COOKIE || process.env.MW_TEST_COOKIE || process.env.WIKIAI_COOKIE || '';
+
+if (!['auto', 'cookie', 'bearer', 'both'].includes(externalApiMcpAuthMode)) {
+  throw new Error('RUN_EXTERNAL_API_MCP_AUTH_MODE must be one of: auto, cookie, bearer, both');
+}
 
 const gates = [
   ['Gateway coverage', 'npm', ['--prefix', 'packages/gateway', 'run', 'test:coverage']],
@@ -101,13 +114,17 @@ async function readJson(url, init = {}) {
   return { response, body };
 }
 
-async function assertJsonEndpoint(label, url, validate, acceptedStatuses = [200]) {
-  const { response, body } = await readJson(url);
+async function assertJsonRequest(label, url, init, validate, acceptedStatuses = [200]) {
+  const { response, body } = await readJson(url, init);
   if (!acceptedStatuses.includes(response.status)) {
-    throw new Error(`${label} returned HTTP ${response.status}`);
+    throw new Error(`${label} returned HTTP ${response.status}: ${JSON.stringify(body).slice(0, 160)}`);
   }
   validate(body, response);
   record(label, 'pass', `HTTP ${response.status}`);
+}
+
+async function assertJsonEndpoint(label, url, validate, acceptedStatuses = [200]) {
+  await assertJsonRequest(label, url, {}, validate, acceptedStatuses);
 }
 
 async function assertTextEndpoint(label, url, validate, acceptedStatuses = [200]) {
@@ -137,8 +154,8 @@ function resourceLoaderUrl(moduleName) {
   return url.toString();
 }
 
-function adminHeaders() {
-  return adminCookie ? { Cookie: adminCookie } : {};
+function adminHeaders(cookie = adminCookie) {
+  return cookie ? { Cookie: cookie } : {};
 }
 
 async function runQdrantRoundtrip() {
@@ -200,6 +217,23 @@ async function runAdminGatewayCheck(label, path, init = {}) {
   return body;
 }
 
+async function runExternalConfigAdminRequest(label, path, init = {}) {
+  if (!externalConfigAdminCookie) {
+    throw new Error(`${label} requires WIKIAI_ADMIN_COOKIE, MW_TEST_COOKIE, or an admin WIKIAI_COOKIE`);
+  }
+  const { response, body } = await readJson(`${gatewayBaseUrl}${path}`, {
+    ...init,
+    headers: {
+      ...adminHeaders(externalConfigAdminCookie),
+      'Content-Type': 'application/json',
+      ...(init.headers || {}),
+    },
+  });
+  if (!response.ok) throw new Error(`${label} returned HTTP ${response.status}: ${JSON.stringify(body).slice(0, 160)}`);
+  record(label, 'pass', `HTTP ${response.status}`);
+  return body;
+}
+
 async function assertGatewayAdminRouteRegistered(label, path, init = {}) {
   const response = await fetchWithTimeout(`${gatewayBaseUrl}${path}`, {
     ...init,
@@ -242,6 +276,338 @@ function assertGatewayRuntimeRetrievalLimits() {
     throw new Error(`${label} failed: live Gateway image is stale or missing retrieval limit schema markers. Rebuild/recreate gateway. ${output}`);
   }
   record(label, 'pass', gatewayContainer);
+}
+
+function bearerHeaders() {
+  return {
+    Authorization: `Bearer ${externalAccessToken}`,
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+  };
+}
+
+function cookieHeaders() {
+  return {
+    Cookie: externalCookie,
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+  };
+}
+
+function encodeMcpMessage(message) {
+  const body = Buffer.from(JSON.stringify(message), 'utf8');
+  return Buffer.concat([
+    Buffer.from(`Content-Length: ${body.length}\r\n\r\n`, 'utf8'),
+    body,
+  ]);
+}
+
+function parseNextMcpMessage(buffer) {
+  const separator = buffer.indexOf('\r\n\r\n');
+  if (separator < 0) return undefined;
+  const header = buffer.subarray(0, separator).toString('utf8');
+  const match = header.match(/Content-Length:\s*(\d+)/i);
+  if (!match) throw new Error(`Invalid MCP response header: ${header}`);
+  const length = Number(match[1]);
+  const bodyStart = separator + 4;
+  const bodyEnd = bodyStart + length;
+  if (buffer.length < bodyEnd) return undefined;
+  return {
+    message: JSON.parse(buffer.subarray(bodyStart, bodyEnd).toString('utf8')),
+    remaining: buffer.subarray(bodyEnd),
+  };
+}
+
+function startMcpProcess(env) {
+  const child = spawn(process.execPath, [mcpAdapterPath], {
+    cwd: repoRoot,
+    env: { ...process.env, ...env },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let stdoutBuffer = Buffer.alloc(0);
+  let stderrText = '';
+  const pending = new Map();
+
+  child.stderr.on('data', (chunk) => {
+    stderrText += Buffer.from(chunk).toString('utf8');
+  });
+  child.stdout.on('data', (chunk) => {
+    stdoutBuffer = Buffer.concat([stdoutBuffer, Buffer.from(chunk)]);
+    let parsed = parseNextMcpMessage(stdoutBuffer);
+    while (parsed) {
+      stdoutBuffer = parsed.remaining;
+      const pendingRequest = pending.get(parsed.message.id);
+      if (pendingRequest) {
+        clearTimeout(pendingRequest.timeout);
+        pending.delete(parsed.message.id);
+        pendingRequest.resolve(parsed.message);
+      }
+      parsed = parseNextMcpMessage(stdoutBuffer);
+    }
+  });
+
+  return {
+    request(message) {
+      return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          pending.delete(message.id);
+          reject(new Error(`Timed out waiting for MCP response ${message.id}; stderr=${stderrText.slice(0, 240)}`));
+        }, liveTimeoutMs);
+        pending.set(message.id, { resolve, reject, timeout });
+        child.stdin.write(encodeMcpMessage(message), (err) => {
+          if (err) {
+            clearTimeout(timeout);
+            pending.delete(message.id);
+            reject(err);
+          }
+        });
+      });
+    },
+    async close() {
+      for (const pendingRequest of pending.values()) {
+        clearTimeout(pendingRequest.timeout);
+      }
+      pending.clear();
+      if (child.exitCode !== null) return;
+      child.kill();
+      await Promise.race([
+        once(child, 'exit'),
+        new Promise((resolve) => setTimeout(resolve, 1000)),
+      ]);
+    },
+  };
+}
+
+function assertMcpSuccess(message, label) {
+  if (message.error) {
+    throw new Error(`${label} returned MCP error: ${JSON.stringify(message.error)}`);
+  }
+  if (!message.result) {
+    throw new Error(`${label} returned no MCP result`);
+  }
+  return message.result;
+}
+
+function externalApiLiveConfig(values) {
+  const base = values && typeof values === 'object' ? values : {};
+  return {
+    ...base,
+    enabled: true,
+    mcpEnabled: true,
+    anonymousSearchAllowed: false,
+    aclMode: 'mediawiki_check',
+  };
+}
+
+async function setupExternalApiMcpForLive() {
+  const read = await runExternalConfigAdminRequest(
+    'Gateway admin External API config read for live E2E',
+    '/api/admin/external-api/config'
+  );
+  const originalValues = read.values;
+  await runExternalConfigAdminRequest(
+    'Gateway admin External API config setup for live E2E',
+    '/api/admin/external-api/config',
+    {
+      method: 'POST',
+      body: JSON.stringify(externalApiLiveConfig(originalValues)),
+    }
+  );
+
+  return async () => {
+    if (keepExternalApiConfig) {
+      record('External API config restore', 'skip', 'KEEP_EXTERNAL_API_CONFIG=1');
+      return;
+    }
+    await runExternalConfigAdminRequest(
+      'Gateway admin External API config restore after live E2E',
+      '/api/admin/external-api/config',
+      {
+        method: 'POST',
+        body: JSON.stringify(originalValues),
+      }
+    );
+  };
+}
+
+async function runMcpStdioLive(label, env) {
+  const mcp = startMcpProcess(env);
+  try {
+    const initialize = assertMcpSuccess(
+      await mcp.request({ jsonrpc: '2.0', id: 1, method: 'initialize' }),
+      `${label} initialize`
+    );
+    if (initialize.serverInfo?.name !== 'wikiai-mcp-adapter') {
+      throw new Error(`${label} initialize returned unexpected serverInfo`);
+    }
+
+    const tools = assertMcpSuccess(
+      await mcp.request({ jsonrpc: '2.0', id: 2, method: 'tools/list' }),
+      `${label} tools/list`
+    );
+    const toolNames = (tools.tools || []).map((tool) => tool.name);
+    for (const expected of ['wikiai_capabilities', 'wikiai_search', 'wikiai_chat']) {
+      if (!toolNames.includes(expected)) throw new Error(`${label} tools/list is missing ${expected}`);
+    }
+
+    const capabilities = assertMcpSuccess(
+      await mcp.request({
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'tools/call',
+        params: { name: 'wikiai_capabilities', arguments: {} },
+      }),
+      `${label} wikiai_capabilities`
+    );
+    if (!capabilities.content?.[0]?.text?.includes('"mcpEnabled"')) {
+      throw new Error(`${label} capabilities did not return mcpEnabled`);
+    }
+
+    const search = assertMcpSuccess(
+      await mcp.request({
+        jsonrpc: '2.0',
+        id: 4,
+        method: 'tools/call',
+        params: { name: 'wikiai_search', arguments: { query: 'кухни', topK: 1, format: 'compact' } },
+      }),
+      `${label} wikiai_search`
+    );
+    if (!search.content?.[0]?.text?.includes('"results"')) {
+      throw new Error(`${label} search did not return results`);
+    }
+
+    const chat = assertMcpSuccess(
+      await mcp.request({
+        jsonrpc: '2.0',
+        id: 5,
+        method: 'tools/call',
+        params: { name: 'wikiai_chat', arguments: { message: 'кухни', topK: 1 } },
+      }),
+      `${label} wikiai_chat`
+    );
+    if (!chat.content?.[0]?.text) {
+      throw new Error(`${label} chat did not return text content`);
+    }
+    record(label, 'pass', 'stdio JSON-RPC');
+  } finally {
+    await mcp.close();
+  }
+}
+
+function bearerBranchRequired() {
+  return externalApiMcpAuthMode === 'bearer' || externalApiMcpAuthMode === 'both';
+}
+
+function cookieBranchRequired() {
+  return externalApiMcpAuthMode === 'cookie' || externalApiMcpAuthMode === 'both';
+}
+
+function shouldRunBearerBranch(capabilities) {
+  if (bearerBranchRequired()) {
+    if (!externalAccessToken) throw new Error('missing_wikiai_access_token: set WIKIAI_ACCESS_TOKEN for Bearer live E2E');
+    if (capabilities.oidcConfigured !== true) throw new Error('no_idp_or_oidc_config: Bearer live E2E requested but oidcConfigured=false');
+    return true;
+  }
+  return externalApiMcpAuthMode === 'auto' && Boolean(externalAccessToken) && capabilities.oidcConfigured === true;
+}
+
+function shouldRunCookieBranch(capabilities, runBearer) {
+  if (cookieBranchRequired()) return true;
+  if (externalApiMcpAuthMode !== 'auto') return false;
+  if (!runBearer) return true;
+  return Boolean(externalCookie) && capabilities.oidcConfigured !== true;
+}
+
+function requireCookieForExternalE2e() {
+  if (!externalCookie) {
+    throw new Error('missing_wikiai_cookie: set WIKIAI_COOKIE, WIKIAI_ADMIN_COOKIE, or MW_TEST_COOKIE for cookie External API/MCP live E2E');
+  }
+}
+
+async function runExternalApiMcpChecks() {
+  if (!runExternalApiMcp) {
+    record('External API / MCP live E2E', 'skip', 'set RUN_EXTERNAL_API_MCP_E2E=1');
+    return;
+  }
+
+  let restoreExternalApiConfig = async () => undefined;
+  if (externalConfigAdminCookie) {
+    restoreExternalApiConfig = await setupExternalApiMcpForLive();
+  } else {
+    record('External API config setup for live E2E', 'skip', 'set WIKIAI_ADMIN_COOKIE, MW_TEST_COOKIE, or admin WIKIAI_COOKIE');
+  }
+
+  try {
+    let capabilities;
+    await assertJsonEndpoint('External API capabilities', `${gatewayBaseUrl}/api/v1/capabilities`, (body) => {
+      if (body.searchEnabled !== true) throw new Error('External API search is not enabled');
+      if (body.chatEnabled !== true) throw new Error('External API chat is not enabled');
+      if (body.mcpEnabled !== true) throw new Error('External API MCP flag is not enabled');
+      if (!Array.isArray(body.retrievalProfiles)) throw new Error('External API capabilities do not include retrievalProfiles');
+      if (!Array.isArray(body.authModes) || !body.authModes.includes('cookie')) {
+        throw new Error('External API capabilities do not allow cookie auth fallback');
+      }
+      capabilities = body;
+    });
+
+    const runBearer = shouldRunBearerBranch(capabilities);
+    const runCookie = shouldRunCookieBranch(capabilities, runBearer);
+
+    if (runBearer) {
+      await assertJsonRequest('External API Bearer search', `${gatewayBaseUrl}/api/v1/search`, {
+        method: 'POST',
+        headers: bearerHeaders(),
+        body: JSON.stringify({ query: 'кухни', topK: 1, format: 'compact' }),
+      }, (body) => {
+        if (!Array.isArray(body.results)) throw new Error('External API Bearer search did not return results');
+        if (body.authMode !== 'oidc') throw new Error(`External API Bearer search returned authMode=${body.authMode}`);
+      });
+      await assertJsonRequest('External API Bearer chat', `${gatewayBaseUrl}/api/v1/chat`, {
+        method: 'POST',
+        headers: bearerHeaders(),
+        body: JSON.stringify({ message: 'кухни', topK: 1, stream: false }),
+      }, (body) => {
+        if (typeof body.answer !== 'string') throw new Error('External API Bearer chat did not return answer');
+      });
+      await runMcpStdioLive('MCP adapter Bearer live', {
+        WIKIAI_GATEWAY_URL: gatewayBaseUrl,
+        WIKIAI_ACCESS_TOKEN: externalAccessToken,
+        WIKIAI_COOKIE: '',
+      });
+    } else {
+      record('External API / MCP Bearer live E2E', 'skip', 'no_idp_or_token; cookie fallback is the live auth path');
+    }
+
+    if (runCookie) {
+      requireCookieForExternalE2e();
+      await assertJsonRequest('External API cookie fallback search', `${gatewayBaseUrl}/api/v1/search`, {
+        method: 'POST',
+        headers: cookieHeaders(),
+        body: JSON.stringify({ query: 'кухни', topK: 1, format: 'compact' }),
+      }, (body) => {
+        if (!Array.isArray(body.results)) throw new Error('External API cookie fallback search did not return results');
+        if (body.authMode !== 'mediawiki_cookie') {
+          throw new Error(`External API cookie fallback search returned authMode=${body.authMode}`);
+        }
+      });
+      await assertJsonRequest('External API cookie fallback chat', `${gatewayBaseUrl}/api/v1/chat`, {
+        method: 'POST',
+        headers: cookieHeaders(),
+        body: JSON.stringify({ message: 'кухни', topK: 1, stream: false }),
+      }, (body) => {
+        if (typeof body.answer !== 'string') throw new Error('External API cookie fallback chat did not return answer');
+      });
+      await runMcpStdioLive('MCP adapter cookie fallback live', {
+        WIKIAI_GATEWAY_URL: gatewayBaseUrl,
+        WIKIAI_ACCESS_TOKEN: '',
+        WIKIAI_COOKIE: externalCookie,
+      });
+    } else {
+      record('External API / MCP cookie fallback', 'skip', `RUN_EXTERNAL_API_MCP_AUTH_MODE=${externalApiMcpAuthMode}`);
+    }
+  } finally {
+    await restoreExternalApiConfig();
+  }
 }
 
 async function runLiveChecks() {
@@ -304,6 +670,7 @@ async function runLiveChecks() {
       throw new Error('ext.aiassistant bundle is missing assistant API markers');
     }
   });
+  await runExternalApiMcpChecks();
 
   await assertGatewayAdminRouteRegistered('Gateway admin OpenSearch status route registration', '/api/admin/opensearch/status');
   await assertGatewayAdminRouteRegistered('Gateway admin OpenSearch analyze route registration', '/api/admin/opensearch/analyze', {

@@ -189,6 +189,9 @@
 
 - [ ] `node scripts/test-wikiai-env-dev.mjs` проходит быстрый package-local gate без живого стенда.
 - [ ] `RUN_WIKIAI_ENV_DEV=1 node scripts/test-wikiai-env-dev.mjs` проверяет Gateway, Syncer, MediaWiki ResourceLoader и Qdrant temporary collection без записи в wiki pages.
+- [ ] `RUN_WIKIAI_ENV_DEV=1 RUN_EXTERNAL_API_MCP_E2E=1 RUN_EXTERNAL_API_MCP_AUTH_MODE=cookie WIKIAI_COOKIE=... WIKIAI_ADMIN_COOKIE=... node scripts/test-wikiai-env-dev.mjs` проверяет `/api/v1/capabilities`, `/api/v1/search`, `/api/v1/chat` и MCP stdio adapter на стенде без IdP.
+- [ ] В режиме `auto` Bearer branch выполняется только при наличии `WIKIAI_ACCESS_TOKEN` и `oidcConfigured=true`; иначе cookie fallback является основным live auth path.
+- [ ] External API/MCP config восстанавливается после live E2E, если не задан `KEEP_EXTERNAL_API_CONFIG=1`.
 - [ ] Redis доступен.
 - [ ] Qdrant доступен.
 - [ ] Ollama embeddings доступны или тест корректно помечен skipped.

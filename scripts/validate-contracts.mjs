@@ -63,5 +63,9 @@ for (const gatewayPath of ['/api/v1/capabilities', '/api/v1/search', '/api/v1/ch
   assertIncludes(mcpContract, gatewayPath, 'MCP contract');
   assertIncludes(mcpAdapterSource, gatewayPath, 'MCP adapter source');
 }
+for (const requiredTerm of ['WIKIAI_ACCESS_TOKEN', 'WIKIAI_COOKIE', 'retrievalProfileId', 'topK', 'stream=false']) {
+  assertIncludes(mcpContract, requiredTerm, 'MCP contract');
+}
+assertIncludes(mcpAdapterSource, 'stream: false', 'MCP adapter source');
 
 console.log('contract validation ok');

@@ -177,6 +177,75 @@ describe('external routes', () => {
     await app.close();
   });
 
+  it('reports enabled External API and MCP capabilities without exposing private profile prompts', async () => {
+    await setExternalApiConfig({
+      enabled: true,
+      mcpEnabled: true,
+      anonymousSearchAllowed: false,
+      maxTopK: 7,
+      aclMode: 'groups_only',
+      groupMappingMode: 'mapped_only',
+      groupMappings: {
+        'CN=WikiAI-Readers': ['ai-reader'],
+      },
+      oidc: {
+        issuer: 'https://issuer.example',
+        audience: 'wikiai-api',
+        jwksUrl: 'https://issuer.example/jwks.json',
+      },
+    });
+    const template = (await getDefaultRetrievalProfiles()).find((profile) => profile.id === 'semantic_broad');
+    if (!template) throw new Error('semantic_broad retrieval profile template is missing');
+    await upsertRetrievalProfile({
+      id: 'api_private_prompt_profile',
+      name: 'API private prompt profile',
+      description: 'Test private prompt redaction',
+      enabled: true,
+      apiEnabled: true,
+      mcpEnabled: true,
+      anonymousAllowed: false,
+      maxTopK: 7,
+      tags: ['test'],
+      config: {
+        ...template.config,
+        systemPrompt: 'Private answer prompt must not leak through capabilities.',
+        conflictSystemPrompt: 'Private conflict prompt must not leak through capabilities.',
+      },
+    });
+
+    const app = await makeApp();
+    const res = await app.inject({ method: 'GET', url: '/api/v1/capabilities' });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      searchEnabled: true,
+      chatEnabled: true,
+      mcpEnabled: true,
+      authModes: ['cookie', 'oidc'],
+      maxTopK: 7,
+      streamingSupported: true,
+      anonymousSearchAllowed: false,
+      aclMode: 'groups_only',
+      oidcConfigured: true,
+      groupMappingMode: 'mapped_only',
+      groupMappingConfigured: true,
+      groupMappingCount: 1,
+      mappedGroupCount: 1,
+    });
+    expect(res.json().retrievalProfiles).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'api_private_prompt_profile',
+        apiEnabled: true,
+        mcpEnabled: true,
+        maxTopK: 7,
+      }),
+    ]));
+    expect(JSON.stringify(res.json())).not.toContain('Private answer prompt');
+    expect(JSON.stringify(res.json())).not.toContain('Private conflict prompt');
+
+    await app.close();
+  });
+
   it('runs anonymous external search through the shared runtime pipeline and clamps topK', async () => {
     await setExternalApiConfig({
       enabled: true,
@@ -263,6 +332,103 @@ describe('external routes', () => {
     expect(capabilities.statusCode).toBe(200);
     expect(JSON.stringify(capabilities.json())).not.toContain('External API profile answer prompt');
     expect(JSON.stringify(capabilities.json())).not.toContain('External API profile conflict prompt');
+
+    await app.close();
+  });
+
+  it('rejects retrieval profiles that are not available for the MCP surface', async () => {
+    await setExternalApiConfig({
+      enabled: true,
+      anonymousSearchAllowed: true,
+      maxTopK: 50,
+    });
+    const template = (await getDefaultRetrievalProfiles()).find((profile) => profile.id === 'semantic_broad');
+    if (!template) throw new Error('semantic_broad retrieval profile template is missing');
+    await upsertRetrievalProfile({
+      id: 'api_only_profile',
+      name: 'API only profile',
+      description: 'Available for REST API but not MCP',
+      enabled: true,
+      apiEnabled: true,
+      mcpEnabled: false,
+      anonymousAllowed: true,
+      maxTopK: 5,
+      tags: ['test'],
+      config: {
+        ...template.config,
+        searchMode: 'vector_only',
+        colbertEnabled: false,
+        includeAttachments: false,
+      },
+    });
+
+    const app = await makeApp();
+    const apiRes = await app.inject({
+      method: 'POST',
+      url: '/api/v1/search',
+      payload: { query: 'public faq', retrievalProfileId: 'api_only_profile' },
+    });
+    const mcpRes = await app.inject({
+      method: 'POST',
+      url: '/api/v1/search',
+      headers: { 'x-wikiai-client': 'mcp' },
+      payload: { query: 'public faq', retrievalProfileId: 'api_only_profile' },
+    });
+
+    expect(apiRes.statusCode).toBe(200);
+    expect(mcpRes.statusCode).toBe(400);
+    expect(mcpRes.json()).toMatchObject({
+      error: 'invalid_retrieval_profile',
+      message: 'Retrieval profile is not available for mcp: api_only_profile',
+    });
+    expect(searchRagChunks).toHaveBeenCalledTimes(1);
+
+    await app.close();
+  });
+
+  it('returns retrieval_profile_not_ready before retrieval when the selected profile lacks required indexes', async () => {
+    await setExternalApiConfig({
+      enabled: true,
+      anonymousSearchAllowed: true,
+      maxTopK: 50,
+    });
+    const template = (await getDefaultRetrievalProfiles()).find((profile) => profile.id === 'semantic_broad');
+    if (!template) throw new Error('semantic_broad retrieval profile template is missing');
+    await upsertRetrievalProfile({
+      id: 'api_not_ready_trigram_profile',
+      name: 'API not ready trigram profile',
+      description: 'Requires trigram index readiness',
+      enabled: true,
+      apiEnabled: true,
+      mcpEnabled: true,
+      anonymousAllowed: true,
+      maxTopK: 5,
+      tags: ['test'],
+      config: {
+        ...template.config,
+        searchMode: 'vector_only',
+        colbertEnabled: false,
+        includeAttachments: false,
+        trigramIndexEnabled: true,
+      },
+    });
+
+    const app = await makeApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/search',
+      payload: { query: 'public faq', retrievalProfileId: 'api_not_ready_trigram_profile' },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({
+      error: 'retrieval_profile_not_ready',
+      readiness: {
+        status: 'not_ready',
+        missingIndexTargets: ['trigram'],
+      },
+    });
+    expect(searchRagChunks).not.toHaveBeenCalled();
 
     await app.close();
   });

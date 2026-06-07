@@ -162,6 +162,36 @@ Gateway сначала проверяет подпись Bearer token по JWKS 
 используется; `WIKIAI_COOKIE` остается локальным/admin fallback для embedded
 проверок.
 
+Проверка REST/MCP контура выполняется opt-in через dev gate. На стенде с IdP
+можно проверять Bearer branch:
+
+```bash
+RUN_WIKIAI_ENV_DEV=1 \
+RUN_EXTERNAL_API_MCP_E2E=1 \
+RUN_EXTERNAL_API_MCP_AUTH_MODE=bearer \
+WIKIAI_ACCESS_TOKEN=<oidc-access-token> \
+node scripts/test-wikiai-env-dev.mjs
+```
+
+Если IdP на стенде отсутствует, используйте cookie fallback как основной live
+auth path:
+
+```bash
+RUN_WIKIAI_ENV_DEV=1 \
+RUN_EXTERNAL_API_MCP_E2E=1 \
+RUN_EXTERNAL_API_MCP_AUTH_MODE=cookie \
+WIKIAI_COOKIE='<mediawiki-cookie>' \
+WIKIAI_ADMIN_COOKIE='<admin-cookie-for-config-setup>' \
+node scripts/test-wikiai-env-dev.mjs
+```
+
+В режиме `auto` Bearer проверяется только когда есть `WIKIAI_ACCESS_TOKEN` и
+`oidcConfigured=true`; иначе dev gate проверяет cookie fallback. Сценарий
+временно включает External API/MCP через admin cookie, проверяет
+`/api/v1/capabilities`, `/api/v1/search`, `/api/v1/chat` и MCP adapter по stdio
+JSON-RPC, затем восстанавливает исходную конфигурацию. `KEEP_EXTERNAL_API_CONFIG=1`
+оставляет временную конфигурацию включенной после проверки.
+
 Если IdP отдает AD DN группы (`CN=...,OU=...,DC=...`), настройте
 `OIDC_GROUPS_CLAIM` как array claim. Для строкового claim Gateway использует
 разделители whitespace и `;`; запятая не используется как разделитель, чтобы не
