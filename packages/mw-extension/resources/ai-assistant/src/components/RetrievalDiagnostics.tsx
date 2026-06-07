@@ -12,6 +12,12 @@ export interface RetrievalDiagnostics {
   historyInjectedIntoRetrieval?: boolean;
   searchMode?: string;
   retrievalProfileId?: string | null;
+  llmModel?: string;
+  llmTemperature?: number;
+  llmMaxTokens?: number;
+  llmTimeoutMs?: number;
+  showSources?: boolean;
+  assistantUiMode?: string;
   rawChunks?: number;
   readableChunks?: number;
   trustedChunks?: number;
@@ -76,6 +82,12 @@ export function normalizeRetrievalDiagnostics(value: unknown): RetrievalDiagnost
     historyInjectedIntoRetrieval: readBoolean(value.historyInjectedIntoRetrieval),
     searchMode: readString(value.searchMode),
     retrievalProfileId: readString(value.retrievalProfileId) ?? (value.retrievalProfileId === null ? null : undefined),
+    llmModel: readString(value.llmModel),
+    llmTemperature: readNumber(value.llmTemperature),
+    llmMaxTokens: readNumber(value.llmMaxTokens),
+    llmTimeoutMs: readNumber(value.llmTimeoutMs),
+    showSources: readBoolean(value.showSources),
+    assistantUiMode: readString(value.assistantUiMode),
     rawChunks: readNumber(value.rawChunks),
     readableChunks: readNumber(value.readableChunks),
     trustedChunks: readNumber(value.trustedChunks),
@@ -101,6 +113,12 @@ function DiagnosticsGrid({ diagnostics }: { diagnostics: RetrievalDiagnostics })
     ['Запрос', diagnostics.retrievalQuery ?? diagnostics.query],
     ['Исходное сообщение', diagnostics.originalMessage],
     ['Профиль', diagnostics.retrievalProfileId],
+    ['LLM model', diagnostics.llmModel],
+    ['llmTemperature', diagnostics.llmTemperature],
+    ['llmMaxTokens', diagnostics.llmMaxTokens],
+    ['llmTimeoutMs', diagnostics.llmTimeoutMs],
+    ['showSources', diagnostics.showSources],
+    ['assistantUiMode', diagnostics.assistantUiMode],
     ['retrievalQueryMode', diagnostics.retrievalQueryMode],
     ['historyInjectedIntoRetrieval', diagnostics.historyInjectedIntoRetrieval],
     ['requestedTopK', diagnostics.requestedTopK],

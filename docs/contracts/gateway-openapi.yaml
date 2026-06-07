@@ -74,7 +74,7 @@ paths:
           $ref: "#/components/responses/Unauthorized"
   /api/search:
     post:
-      summary: Search allowed MediaWiki content using the admin-selected MediaWiki retrieval profile.
+      summary: Search allowed content using the admin-selected knowledge source profile.
       requestBody:
         required: true
         content:
@@ -91,14 +91,14 @@ paths:
         "400":
           $ref: "#/components/responses/BadRequest"
         "409":
-          description: Admin-selected MediaWiki retrieval profile is not ready.
+          description: Admin-selected knowledge source retrieval profile is not ready.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
   /api/chat:
     post:
-      summary: Chat over allowed MediaWiki content using the admin-selected MediaWiki retrieval profile.
+      summary: Chat over allowed content using the admin-selected knowledge source profile.
       requestBody:
         required: true
         content:
@@ -108,10 +108,14 @@ paths:
       responses:
         "200":
           description: Chat response or SSE stream depending on request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
         "409":
-          description: Admin-selected MediaWiki retrieval profile is not ready.
+          description: Admin-selected knowledge source retrieval profile is not ready.
           content:
             application/json:
               schema:
@@ -162,6 +166,10 @@ paths:
       responses:
         "200":
           description: External chat response.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatResponse"
         "409":
           description: Requested retrieval profile is not ready.
           content:
@@ -210,9 +218,36 @@ paths:
                 $ref: "#/components/schemas/SearchIndexStatusResponse"
         "403":
           $ref: "#/components/responses/Forbidden"
+  /api/admin/knowledge-source-profile/config:
+    get:
+      summary: Return the source set and retrieval profile selected for built-in search and chat.
+      security:
+        - mediaWikiSession: []
+      responses:
+        "200":
+          description: Selected knowledge source profile, source catalog, retrieval profile readiness and effective config.
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      summary: Save the source set and retrieval profile selected for built-in search and chat.
+      security:
+        - mediaWikiSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/KnowledgeSourceProfileConfig"
+      responses:
+        "200":
+          description: Saved knowledge source profile config and readiness.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
   /api/admin/mediawiki-profile/config:
     get:
-      summary: Return the retrieval profile selected for built-in MediaWiki search and chat.
+      summary: Compatibility alias for the built-in MediaWiki retrieval profile selector.
       security:
         - mediaWikiSession: []
       responses:
@@ -221,7 +256,7 @@ paths:
         "403":
           $ref: "#/components/responses/Forbidden"
     post:
-      summary: Save the retrieval profile selected for built-in MediaWiki search and chat.
+      summary: Compatibility alias that saves the MediaWiki retrieval profile and syncs the knowledge source profile.
       security:
         - mediaWikiSession: []
       requestBody:
@@ -497,6 +532,31 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
   schemas:
+    KnowledgeSourceProfileConfig:
+      type: object
+      required: [retrievalProfileId]
+      properties:
+        id:
+          type: string
+          default: default
+        sourceIds:
+          type: array
+          minItems: 1
+          default: [mediawiki]
+          items:
+            type: string
+            enum: [mediawiki]
+        retrievalProfileId:
+          type: string
+          example: opensearch_hybrid_colbert
+        failurePolicy:
+          type: string
+          enum: [partial_with_warning, fail_request]
+          default: partial_with_warning
+        mergePolicy:
+          type: string
+          enum: [normalize_rerank]
+          default: normalize_rerank
     LiveStatus:
       type: object
       required: [status, service]
@@ -542,13 +602,26 @@ components:
           description: Optional request override for the selected retrieval profile retrievalTopK. If omitted, Gateway uses the profile default.
         retrievalProfileId:
           type: string
-          description: Optional admin-defined retrieval profile id for /api/v1/* external APIs. Ignored by built-in MediaWiki /api/search, which uses /api/admin/mediawiki-profile/config. Raw BM25/ColBERT/trigram flags are not accepted by the public API.
+          description: Optional admin-defined retrieval profile id for /api/v1/* external APIs. Ignored by built-in /api/search, which uses /api/admin/knowledge-source-profile/config. Raw BM25/ColBERT/trigram flags are not accepted by the public API.
+        knowledgeSourceProfileId:
+          type: string
+          description: Reserved for future named source profiles. Built-in /api/search currently uses the admin-selected default profile.
         context:
           $ref: "#/components/schemas/ExternalContext"
     SearchChunk:
       type: object
       required: [title, text, score]
       properties:
+        sourceId:
+          type: string
+        documentId:
+          type: string
+        displayTitle:
+          type: string
+        sourceUrl:
+          type: string
+        spaceKey:
+          type: string
         title:
           type: string
         pageUrl:
@@ -591,9 +664,37 @@ components:
           description: Optional request override for the selected retrieval profile retrievalTopK. Prompt context still uses contextTopK/contextMaxChars.
         retrievalProfileId:
           type: string
-          description: Optional admin-defined retrieval profile id for /api/v1/* external APIs. Ignored by built-in MediaWiki /api/chat, which uses /api/admin/mediawiki-profile/config. Raw BM25/ColBERT/trigram flags are not accepted by the public API.
+          description: Optional admin-defined retrieval profile id for /api/v1/* external APIs. Ignored by built-in /api/chat, which uses /api/admin/knowledge-source-profile/config. Raw BM25/ColBERT/trigram flags are not accepted by the public API.
+        knowledgeSourceProfileId:
+          type: string
+          description: Reserved for future named source profiles. Built-in /api/chat currently uses the admin-selected default profile.
         context:
           $ref: "#/components/schemas/ExternalContext"
+    ChatResponse:
+      type: object
+      properties:
+        conversationId:
+          type: string
+        message:
+          type: string
+        sources:
+          type: array
+          description: Present only when the selected retrieval profile effective showSources is true.
+          items:
+            type: object
+            additionalProperties: true
+        conflict:
+          type: object
+          additionalProperties: true
+        diagnostics:
+          type: object
+          additionalProperties: true
+        llmAvailable:
+          type: boolean
+        assistantUiMode:
+          type: string
+          enum: [compact, standard, expert]
+          description: Effective assistant UI mode from the selected retrieval profile.
     ExternalContext:
       type: object
       description: Optional caller context for embedded integrations. Gateway validates shape but derives auth server-side.
@@ -732,6 +833,16 @@ components:
           type: string
           enum: [current_message, history_augmented]
           description: Legacy compatibility flag. New deployments should use chatProfileId so prompt history and retrieval history can be configured independently.
+        llmModel:
+          type: string
+          description: Optional per-profile LiteLLM model override. LiteLLM base URL and key remain global.
+        showSources:
+          type: boolean
+          description: Optional per-profile source visibility override.
+        assistantUiMode:
+          type: string
+          enum: [compact, standard, expert]
+          description: Assistant UI mode selected by this retrieval profile.
         readiness:
           $ref: "#/components/schemas/RetrievalProfileReadiness"
     ChatManagementConfig:

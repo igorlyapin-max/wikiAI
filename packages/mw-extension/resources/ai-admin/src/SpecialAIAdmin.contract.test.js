@@ -18,6 +18,7 @@ describe('SpecialAIAdmin UI contract', () => {
       'llm',
       'embeddings',
       'rag',
+      'debug-chain',
       'bm25',
       'opensearch',
       'colbert',

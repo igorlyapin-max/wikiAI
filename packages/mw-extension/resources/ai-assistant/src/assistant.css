@@ -350,6 +350,15 @@
   min-height: 560px;
 }
 
+.ai-assistant__chat--compact {
+  grid-template-columns: minmax(180px, 220px) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.ai-assistant__chat--expert {
+  grid-template-columns: minmax(230px, 300px) minmax(0, 1fr);
+}
+
 .ai-assistant__sidebar,
 .ai-assistant__conversation {
   min-width: 0;
@@ -472,6 +481,18 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   line-height: 1.45;
+}
+
+.ai-assistant__chat--compact .ai-assistant__bubble {
+  max-width: min(90%, 760px);
+  padding: 7px 10px;
+  line-height: 1.35;
+}
+
+.ai-assistant__chat--expert .ai-assistant__bubble,
+.ai-assistant__chat--expert .ai-assistant__conflict,
+.ai-assistant__chat--expert .ai-assistant__retrieval {
+  max-width: min(92%, 920px);
 }
 
 .ai-assistant__message--user .ai-assistant__bubble {

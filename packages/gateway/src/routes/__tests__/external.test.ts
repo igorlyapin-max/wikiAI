@@ -234,6 +234,7 @@ describe('external routes', () => {
         ...template.config,
         searchMode: 'vector_only',
         colbertEnabled: false,
+        includeAttachments: false,
       },
     });
 

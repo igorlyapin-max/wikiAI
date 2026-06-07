@@ -217,10 +217,20 @@ describe('admin routes', () => {
       answer: 'Debug answer',
       diagnostics: { retrievalQuery: 'Как подключить VPN?' },
       finalLlm: {
+        trace: {
+          request: {
+            method: 'POST',
+            url: 'http://llm.local/v1/chat/completions',
+            timeoutMs: 30000,
+            headers: { Authorization: 'Bearer [redacted]' },
+            body: { messages: [{ role: 'user', content: 'Как подключить VPN?' }] },
+          },
+        },
         request: { body: { messages: [{ role: 'user', content: 'Как подключить VPN?' }] } },
         response: { choices: [{ message: { content: 'Debug answer' } }] },
       },
-      retrieval: { chunks: { context: [] } },
+      retrieval: { chunks: { context: [] }, attachmentIndexCoverage: [] },
+      promptStack: [{ index: 1, role: 'user', label: 'current user question', chars: 18, content: 'Как подключить VPN?' }],
       promptText: '### 1. user\nКак подключить VPN?',
     });
     vi.stubGlobal('fetch', vi.fn(async () => ({
@@ -855,10 +865,7 @@ describe('admin routes', () => {
       showConflictBlock: false,
     });
 
-    const fetchMock = vi.fn(async () => ({
-      ok: true,
-      status: 200,
-      json: async () => ({
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
         choices: [
           {
             message: {
@@ -872,8 +879,7 @@ describe('admin routes', () => {
             },
           },
         ],
-      }),
-    }));
+      }), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
 
     const test = await app.inject({
@@ -1054,10 +1060,7 @@ describe('admin routes', () => {
   });
 
   it('serves internal LLM enrichment for Syncer reindex', async () => {
-    const fetchMock = vi.fn(async () => ({
-      ok: true,
-      status: 200,
-      json: async () => ({
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
         choices: [
           {
             message: {
@@ -1068,8 +1071,7 @@ describe('admin routes', () => {
             },
           },
         ],
-      }),
-    }));
+      }), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
 
     const app = await makeApp();
@@ -1515,6 +1517,73 @@ describe('admin routes', () => {
       selectedProfile: { id: 'semantic_broad' },
       metadata: { secretsRedacted: true },
     });
+
+    const external = await app.inject({
+      method: 'GET',
+      url: '/api/admin/external-api/config',
+      headers: { cookie: 'mw=1' },
+    });
+    expect(external.json().values.defaultRetrievalProfileId).toBe('');
+
+    await app.close();
+  });
+
+  it('configures the built-in knowledge source profile and keeps the legacy MediaWiki selector in sync', async () => {
+    const app = await makeApp();
+    const read = await app.inject({
+      method: 'GET',
+      url: '/api/admin/knowledge-source-profile/config',
+      headers: { cookie: 'mw=1' },
+    });
+
+    expect(read.statusCode).toBe(200);
+    expect(read.json().values).toMatchObject({
+      id: 'default',
+      sourceIds: ['mediawiki'],
+      retrievalProfileId: 'opensearch_hybrid_colbert',
+      failurePolicy: 'partial_with_warning',
+      mergePolicy: 'normalize_rerank',
+    });
+    expect(read.json().sources).toEqual([
+      expect.objectContaining({
+        id: 'mediawiki',
+        type: 'mediawiki',
+        aclMode: 'source_acl_callback',
+        semanticProviderId: 'smw',
+      }),
+    ]);
+
+    const saved = await app.inject({
+      method: 'POST',
+      url: '/api/admin/knowledge-source-profile/config',
+      headers: { cookie: 'mw=1' },
+      payload: {
+        id: 'default',
+        sourceIds: ['mediawiki'],
+        retrievalProfileId: 'semantic_broad',
+        failurePolicy: 'partial_with_warning',
+        mergePolicy: 'normalize_rerank',
+      },
+    });
+
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json()).toMatchObject({
+      status: 'saved',
+      values: {
+        id: 'default',
+        sourceIds: ['mediawiki'],
+        retrievalProfileId: 'semantic_broad',
+      },
+      selectedProfile: { id: 'semantic_broad' },
+      metadata: { secretsRedacted: true },
+    });
+
+    const legacy = await app.inject({
+      method: 'GET',
+      url: '/api/admin/mediawiki-profile/config',
+      headers: { cookie: 'mw=1' },
+    });
+    expect(legacy.json().values).toEqual({ defaultRetrievalProfileId: 'semantic_broad' });
 
     const external = await app.inject({
       method: 'GET',

@@ -1,8 +1,7 @@
-import { getEmbedding } from './embedding.js';
 import { streamChatCompletion, callLiteLLM } from './litellm.js';
 import { getChatHistory, appendChatMessage } from './redis.js';
 import { getRuntimeConfig, type RuntimeConfig } from './config.js';
-import { filterReadableChunks, filterReadableChunksForPrincipal, type PrincipalAclMode } from './acl.js';
+import { type PrincipalAclMode } from './acl.js';
 import { formatChunksForPrompt } from './prompt-context.js';
 import {
   calculateChatRetentionRedisTtlSeconds,
@@ -12,10 +11,10 @@ import {
   getChatRetentionAdminConfig,
   getConflictDetectionConfig,
   getRagAdminConfig,
+  type AssistantUiMode,
   type ChatRetentionConfig,
   type RagAdminConfig,
 } from './admin-platform-config.js';
-import { applyTrustPolicyToChunks } from './trust-runtime.js';
 import {
   buildConflictInstruction,
   detectConflictsForChat,
@@ -29,18 +28,11 @@ import {
   listUserChatSessions,
   recordChatMessage,
 } from './chat-store.js';
-import { buildWikiPageUrl, type WikiPageUrlOptions } from './mediawiki-url.js';
-import { RagSearchResult, searchRagChunks } from './hybrid-search.js';
-import {
-  getColbertCandidateLimit,
-  isColbertFullSearchEnabled,
-  rerankChunksWithColbert,
-  searchColbertIndex,
-} from './colbert-reranker.js';
+import { type WikiPageUrlOptions } from './mediawiki-url.js';
 import { principalSessionHash } from './principal-auth.js';
 import { RuntimeHttpError } from './runtime-errors.js';
 import { logOperationalError, logOperationalEvent } from './logging.js';
-import { AuthenticatedPrincipal, SearchChunk } from '../types/index.js';
+import { AuthenticatedPrincipal, DocumentChunk, SearchChunk } from '../types/index.js';
 import {
   resolveRuntimeRetrievalProfile,
   type RetrievalProfileSurface,
@@ -51,6 +43,12 @@ import {
   type ChatProfile,
   type RetrievalHistoryMode,
 } from './chat-profiles.js';
+import {
+  type KnowledgeSourceFanoutTrace,
+  type KnowledgeSourceFailurePolicy,
+  type KnowledgeSourceWarning,
+} from './knowledge-sources.js';
+import { executeKnowledgeSourceFanout } from './knowledge-source-runtime.js';
 
 type RetrievalHistoryMessage = { role: string; content: string };
 type LlmMessage = { role: string; content: string };
@@ -81,6 +79,9 @@ export interface RuntimeChatInput {
   aclMode?: PrincipalAclMode;
   retrievalProfileId?: string;
   retrievalProfileSurface?: RetrievalProfileSurface;
+  knowledgeSourceProfileId?: string;
+  sourceIds?: string[];
+  sourceFailurePolicy?: KnowledgeSourceFailurePolicy;
   dryRun?: boolean;
   disableHistory?: boolean;
   runConflictDetection?: boolean;
@@ -88,11 +89,25 @@ export interface RuntimeChatInput {
 }
 
 export interface RuntimeChatSource {
+  sourceId: string;
+  documentId: string;
+  displayTitle: string;
+  sourceUrl: string;
+  spaceKey: string;
   pageId: number;
   title: string;
   namespace: number;
   pageUrl: string;
   trust: SearchChunk['trust'];
+}
+
+export interface RuntimeChatResponseSettings {
+  litellmModel: string;
+  temperature: number;
+  maxTokens: number;
+  timeoutMs: number;
+  showSources: boolean;
+  assistantUiMode: AssistantUiMode;
 }
 
 export interface PreparedRuntimeChat {
@@ -101,6 +116,7 @@ export interface PreparedRuntimeChat {
   sessionHash: string;
   principal: AuthenticatedPrincipal;
   runtime: RuntimeConfig;
+  responseSettings: RuntimeChatResponseSettings;
   retention: ChatRetentionConfig;
   chatTtlSeconds: number;
   messages: LlmMessage[];
@@ -117,6 +133,7 @@ export interface RuntimeChatCompletionResponse {
   conflict?: PreparedRuntimeChat['conflict'];
   diagnostics?: Record<string, unknown>;
   llmAvailable?: boolean;
+  assistantUiMode?: AssistantUiMode;
 }
 
 export type RuntimeChatSseWriter = (payload: Record<string, unknown> | '[DONE]') => void;
@@ -138,12 +155,14 @@ export interface RuntimeChatDebugTrace {
     aclCandidateLimit: number;
     diagnostics: Record<string, unknown>;
   };
+  sourceFanout: KnowledgeSourceFanoutTrace[];
+  knowledgeSourceWarnings: KnowledgeSourceWarning[];
   chunks: {
-    raw: SearchChunk[];
-    readable: SearchChunk[];
-    trusted: SearchChunk[];
-    reranked: SearchChunk[];
-    context: SearchChunk[];
+    raw: DocumentChunk[];
+    readable: DocumentChunk[];
+    trusted: DocumentChunk[];
+    reranked: DocumentChunk[];
+    context: DocumentChunk[];
   };
   contextText: string;
   conflictTrace?: ConflictDetectionTrace | {
@@ -335,80 +354,34 @@ function clampTopK(topK: number | undefined, maxTopK: number | undefined): numbe
   return maxTopK === undefined ? normalized : Math.min(normalized, maxTopK);
 }
 
-function chunkToSource(chunk: SearchChunk, wikiUrlOptions: WikiPageUrlOptions): RuntimeChatSource {
+function chunkToSource(chunk: DocumentChunk): RuntimeChatSource {
   return {
+    sourceId: chunk.sourceId,
+    documentId: chunk.documentId,
+    displayTitle: chunk.displayTitle,
+    sourceUrl: chunk.sourceUrl,
+    spaceKey: chunk.spaceKey,
     pageId: chunk.pageId,
     title: chunk.title,
     namespace: chunk.namespace,
-    pageUrl: chunk.pageUrl ?? buildWikiPageUrl(chunk.title, wikiUrlOptions),
+    pageUrl: chunk.pageUrl ?? chunk.sourceUrl,
     trust: chunk.trust,
   };
 }
 
-async function runCurrentSearch(
-  query: string,
-  topK: number | undefined,
-  fallbackTopK: number,
-  config?: RagAdminConfig
-): Promise<RagSearchResult> {
-  const embedding = await getEmbedding(query);
-  return searchRagChunks({
-    query,
-    vector: embedding,
-    topK,
-    fallbackTopK,
-    ...(config ? { config } : {}),
-  });
-}
-
-async function runSearchWithColbertFallback(input: {
-  query: string;
-  topK?: number;
-  fallbackTopK: number;
-  config?: RagAdminConfig;
-}): Promise<RagSearchResult | Awaited<ReturnType<typeof searchColbertIndex>>> {
-  const ragConfig = input.config ?? await getRagAdminConfig();
-  if (!isColbertFullSearchEnabled(ragConfig)) {
-    return runCurrentSearch(input.query, input.topK, input.fallbackTopK, input.config);
-  }
-
-  try {
-    return await searchColbertIndex({
-      query: input.query,
-      topK: input.topK,
-      fallbackTopK: input.fallbackTopK,
-      config: ragConfig,
-    });
-  } catch (err) {
-    if (ragConfig.colbertFailMode === 'fail_search') {
-      throw new RuntimeHttpError(502, {
-        error: 'ColBERT search failed',
-        message: err instanceof Error ? err.message : 'Unknown ColBERT search error',
-      });
-    }
-    const fallback = await runCurrentSearch(input.query, input.topK, input.fallbackTopK, input.config);
-    return {
-      ...fallback,
-      diagnostics: {
-        ...fallback.diagnostics,
-        colbertIndexApplied: false,
-        colbertFallbackUsed: true,
-        colbertError: err instanceof Error ? err.message : 'Unknown ColBERT search error',
-      },
-    };
-  }
-}
-
-async function filterRuntimeReadableChunks(input: {
-  chunks: SearchChunk[];
-  principal: AuthenticatedPrincipal;
-  limit: number;
-  aclMode: PrincipalAclMode;
-}): Promise<SearchChunk[]> {
-  if (input.aclMode === 'mediawiki_check' && input.principal.authMode !== 'oidc') {
-    return filterReadableChunks(input.chunks, input.principal.sessionCookie ?? '', input.limit);
-  }
-  return filterReadableChunksForPrincipal(input.chunks, input.principal, input.limit, input.aclMode);
+function buildRuntimeChatResponseSettings(
+  runtime: RuntimeConfig,
+  profileSelection: ResolvedRetrievalProfile | undefined
+): RuntimeChatResponseSettings {
+  const profileConfig = profileSelection?.profile.config;
+  return {
+    litellmModel: profileConfig?.llmModel ?? runtime.litellmModel,
+    temperature: profileConfig?.llmTemperature ?? runtime.temperature,
+    maxTokens: profileConfig?.llmMaxTokens ?? runtime.maxTokens,
+    timeoutMs: profileConfig?.llmTimeoutMs ?? runtime.timeoutMs,
+    showSources: profileConfig?.showSources ?? runtime.showSources,
+    assistantUiMode: profileConfig?.assistantUiMode ?? 'standard',
+  };
 }
 
 function profileDiagnostics(selection: ResolvedRetrievalProfile | undefined): Record<string, unknown> {
@@ -438,6 +411,7 @@ export async function prepareRuntimeChat(input: RuntimeChatInput): Promise<Prepa
   );
   const ragConfig = profileSelection?.effectiveConfig ?? await getRagAdminConfig();
   const chatProfile = await resolveChatProfileForRetrievalProfile(profileSelection?.profile);
+  const responseSettings = buildRuntimeChatResponseSettings(runtime, profileSelection);
 
   const sqlHistory = input.disableHistory
     ? []
@@ -484,32 +458,23 @@ export async function prepareRuntimeChat(input: RuntimeChatInput): Promise<Prepa
   const topK = clampTopK(input.topK, topKLimit);
   const fallbackTopK = getEffectiveRetrievalTopK(ragConfig, runtime.topK);
   const effectiveTopK = topK ?? fallbackTopK;
-  const search = await runSearchWithColbertFallback({
+  const aclMode = input.aclMode ?? 'mediawiki_check';
+  const failurePolicy = input.sourceFailurePolicy ?? 'partial_with_warning';
+  const sourceSearch = await executeKnowledgeSourceFanout({
+    sourceIds: input.sourceIds,
     query: retrievalQuery,
     topK,
     fallbackTopK,
-    config: profileSelection?.effectiveConfig,
-  });
-  const aclMode = input.aclMode ?? 'mediawiki_check';
-  const readableChunks = await filterRuntimeReadableChunks({
-    chunks: search.chunks,
+    effectiveTopK,
+    ragConfig,
+    profileConfig: profileSelection?.effectiveConfig,
     principal: input.principal,
-    limit: search.aclCandidateLimit,
     aclMode,
+    failurePolicy,
+    wikiUrlOptions: input.wikiUrlOptions ?? {},
   });
-  const trustedChunks = await applyTrustPolicyToChunks(
-    readableChunks,
-    getColbertCandidateLimit(ragConfig, search.limit)
-  );
-  const reranked = await rerankChunksWithColbert({
-    query: retrievalQuery,
-    chunks: trustedChunks,
-    topK: search.limit,
-    config: ragConfig,
-  });
-  const verifiedChunks = reranked.chunks;
-
-  const sources = verifiedChunks.map((chunk) => chunkToSource(chunk, input.wikiUrlOptions ?? {}));
+  const verifiedChunks = sourceSearch.mergedChunks;
+  const sources = verifiedChunks.map((chunk) => chunkToSource(chunk));
   const contextTopK = getEffectiveContextTopK(ragConfig, effectiveTopK);
   const contextMaxChars = getEffectiveContextMaxChars(ragConfig);
   const contextChunks = verifiedChunks.slice(0, contextTopK);
@@ -537,12 +502,6 @@ export async function prepareRuntimeChat(input: RuntimeChatInput): Promise<Prepa
   } else {
     conflict = await detectConflictsForChat(retrievalQuery, verifiedChunks);
   }
-  const diagnostics = isColbertFullSearchEnabled(ragConfig)
-    ? search.diagnostics
-    : {
-      ...search.diagnostics,
-      ...reranked.diagnostics,
-    };
 
   if (!input.dryRun) {
     await appendChatMessage(sessionHash, convId, { role: 'user', content: message }, chatTtlSeconds);
@@ -563,14 +522,20 @@ export async function prepareRuntimeChat(input: RuntimeChatInput): Promise<Prepa
     sessionHash,
     principal: input.principal,
     runtime,
+    responseSettings,
     retention: chatRetention,
     chatTtlSeconds,
     messages,
     sources,
     conflict,
     retrievalDiagnostics: {
-      ...diagnostics,
+      ...sourceSearch.diagnostics,
       ...profileDiagnostics(profileSelection),
+      knowledgeSourceProfileId: input.knowledgeSourceProfileId ?? null,
+      knowledgeSourceIds: sourceSearch.sourceIds,
+      knowledgeSourceFailurePolicy: failurePolicy,
+      knowledgeSourceWarnings: sourceSearch.sourceWarnings,
+      sourceFanout: sourceSearch.sourceFanout,
       aclMode,
       authMode: input.principal.authMode,
       chatProfileId: chatProfile.id,
@@ -589,12 +554,18 @@ export async function prepareRuntimeChat(input: RuntimeChatInput): Promise<Prepa
       effectiveTopK,
       contextTopK,
       contextMaxChars,
-      searchMode: search.mode,
-      rawChunks: search.chunks.length,
-      readableChunks: readableChunks.length,
-      trustedChunks: trustedChunks.length,
+      searchMode: sourceSearch.searchMode,
+      rawChunks: sourceSearch.rawChunks.length,
+      readableChunks: sourceSearch.readableChunks.length,
+      trustedChunks: sourceSearch.trustedChunks.length,
       finalSources: sources.length,
       contextSources: contextChunks.length,
+      llmModel: responseSettings.litellmModel,
+      llmTemperature: responseSettings.temperature,
+      llmMaxTokens: responseSettings.maxTokens,
+      llmTimeoutMs: responseSettings.timeoutMs,
+      showSources: responseSettings.showSources,
+      assistantUiMode: responseSettings.assistantUiMode,
     },
     debugTrace: input.includeDebugTrace ? {
       ragConfig,
@@ -607,15 +578,17 @@ export async function prepareRuntimeChat(input: RuntimeChatInput): Promise<Prepa
         retrievalHistoryTurns: chatProfile.retrievalHistoryTurns,
       },
       search: {
-        mode: search.mode,
-        limit: search.limit,
-        aclCandidateLimit: search.aclCandidateLimit,
-        diagnostics: { ...diagnostics },
+        mode: sourceSearch.searchMode,
+        limit: sourceSearch.firstSearch?.limit ?? effectiveTopK,
+        aclCandidateLimit: sourceSearch.firstSearch?.aclCandidateLimit ?? 0,
+        diagnostics: { ...sourceSearch.diagnostics },
       },
+      sourceFanout: sourceSearch.sourceFanout,
+      knowledgeSourceWarnings: sourceSearch.sourceWarnings,
       chunks: {
-        raw: search.chunks,
-        readable: readableChunks,
-        trusted: trustedChunks,
+        raw: sourceSearch.rawChunks,
+        readable: sourceSearch.readableChunks,
+        trusted: sourceSearch.trustedChunks,
         reranked: verifiedChunks,
         context: contextChunks,
       },
@@ -629,8 +602,12 @@ export async function completeRuntimeChat(prepared: PreparedRuntimeChat): Promis
   try {
     const response = await callLiteLLM(
       prepared.messages,
-      prepared.runtime.litellmModel,
-      prepared.runtime.timeoutMs
+      prepared.responseSettings.litellmModel,
+      prepared.responseSettings.timeoutMs,
+      {
+        temperature: prepared.responseSettings.temperature,
+        maxTokens: prepared.responseSettings.maxTokens,
+      }
     );
     const content = response.choices[0]?.message?.content ?? '';
     if (content) {
@@ -655,19 +632,24 @@ export async function completeRuntimeChat(prepared: PreparedRuntimeChat): Promis
     return {
       conversationId: prepared.conversationId,
       message: content,
-      sources: prepared.runtime.showSources ? prepared.sources : undefined,
+      sources: prepared.responseSettings.showSources ? prepared.sources : undefined,
       conflict: prepared.conflict ?? undefined,
       diagnostics: prepared.retrievalDiagnostics,
+      assistantUiMode: prepared.responseSettings.assistantUiMode,
     };
   } catch (err) {
     logOperationalError('chat.non_streaming_error', err);
+    const showSources = prepared.responseSettings.showSources;
     return {
       llmAvailable: false,
       conversationId: prepared.conversationId,
-      message: 'AI model temporarily unavailable. Here are the found documents:',
-      sources: prepared.sources,
+      message: showSources
+        ? 'AI model temporarily unavailable. Here are the found documents:'
+        : 'AI model temporarily unavailable.',
+      sources: showSources ? prepared.sources : undefined,
       conflict: prepared.conflict ?? undefined,
       diagnostics: prepared.retrievalDiagnostics,
+      assistantUiMode: prepared.responseSettings.assistantUiMode,
     };
   }
 }
@@ -680,6 +662,7 @@ export async function streamRuntimeChat(
 
   try {
     writeEvent({ type: 'conversation', conversationId: prepared.conversationId });
+    writeEvent({ type: 'ui', assistantUiMode: prepared.responseSettings.assistantUiMode });
 
     if (prepared.conflict) {
       writeEvent({ type: 'conflict', conflict: prepared.conflict });
@@ -689,8 +672,12 @@ export async function streamRuntimeChat(
 
     for await (const chunk of streamChatCompletion(
       prepared.messages,
-      prepared.runtime.litellmModel,
-      prepared.runtime.timeoutMs
+      prepared.responseSettings.litellmModel,
+      prepared.responseSettings.timeoutMs,
+      {
+        temperature: prepared.responseSettings.temperature,
+        maxTokens: prepared.responseSettings.maxTokens,
+      }
     )) {
       const content = chunk.choices[0]?.delta?.content ?? '';
       if (content) {
@@ -699,21 +686,26 @@ export async function streamRuntimeChat(
       }
     }
 
-    if (prepared.runtime.showSources) {
+    if (prepared.responseSettings.showSources) {
       writeEvent({ type: 'sources', sources: prepared.sources });
     }
     writeEvent('[DONE]');
   } catch (err) {
     logOperationalError('chat.stream_error', err);
-    const errorMsg = 'AI model temporarily unavailable. Here are the found documents:';
+    const showSources = prepared.responseSettings.showSources;
+    const errorMsg = showSources
+      ? 'AI model temporarily unavailable. Here are the found documents:'
+      : 'AI model temporarily unavailable.';
     writeEvent({ type: 'token', content: errorMsg });
-    writeEvent({ type: 'token', content: '\n\n' });
+    if (showSources) {
+      writeEvent({ type: 'token', content: '\n\n' });
 
-    for (const source of prepared.sources) {
-      writeEvent({ type: 'token', content: `• ${source.title}\n` });
+      for (const source of prepared.sources) {
+        writeEvent({ type: 'token', content: `• ${source.title}\n` });
+      }
     }
 
-    if (prepared.runtime.showSources) {
+    if (showSources) {
       writeEvent({ type: 'sources', sources: prepared.sources });
     }
     writeEvent('[DONE]');

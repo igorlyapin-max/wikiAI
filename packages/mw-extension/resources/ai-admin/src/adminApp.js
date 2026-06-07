@@ -531,17 +531,18 @@ export function initializeAIAdmin(options = {}) {
         sourceRow.className = "ai-admin-row";
         const sourceLabel = document.createElement("label");
         sourceLabel.htmlFor = "cfg-showSources";
-        sourceLabel.textContent = t("aiadmin-field-show-sources");
+        sourceLabel.textContent = t("aiadmin-field-show-sources-default", "Show sources fallback");
         const sourceInput = document.createElement("input");
         sourceInput.id = "cfg-showSources";
         sourceInput.name = "showSources";
         sourceInput.type = "checkbox";
         sourceInput.checked = Boolean(values.showSources);
+        sourceInput.disabled = true;
         sourceRow.append(sourceLabel, sourceInput);
         form.appendChild(sourceRow);
-        const assistantUiTitle = document.createElement("h3");
-        assistantUiTitle.textContent = t("aiadmin-section-assistant-ui");
-        form.appendChild(assistantUiTitle);
+        const chatRuntimeTitle = document.createElement("h3");
+        chatRuntimeTitle.textContent = t("aiadmin-section-chat-runtime-defaults", "Chat runtime fallbacks");
+        form.appendChild(chatRuntimeTitle);
         appendCheckboxRow(
           form,
           "cfg-searchHistoryEnabled",
@@ -1261,6 +1262,12 @@ export function initializeAIAdmin(options = {}) {
         ["current_session_questions_and_answers", t("aiadmin-value-chat-retrieval-current-session-full", "Current query + previous questions and answers")]
       ];
 
+      const assistantUiModeOptions = () => [
+        ["standard", t("aiadmin-value-assistant-ui-standard", "Standard")],
+        ["compact", t("aiadmin-value-assistant-ui-compact", "Compact")],
+        ["expert", t("aiadmin-value-assistant-ui-expert", "Expert")]
+      ];
+
       const legacyChatRetrievalModeForChatProfileId = (id) => [
         "chat_followup_questions",
         "chat_followup_full"
@@ -1379,6 +1386,12 @@ export function initializeAIAdmin(options = {}) {
         semanticFactsInContext: value.semanticFactsInContext !== false,
         includeAttachments: Boolean(value.includeAttachments),
         includeSemanticHeader: value.includeSemanticHeader !== false,
+        llmModel: value.llmModel,
+        llmTemperature: value.llmTemperature === undefined ? undefined : Number(value.llmTemperature),
+        llmMaxTokens: value.llmMaxTokens === undefined ? undefined : Number(value.llmMaxTokens),
+        llmTimeoutMs: value.llmTimeoutMs === undefined ? undefined : Number(value.llmTimeoutMs),
+        showSources: value.showSources,
+        assistantUiMode: value.assistantUiMode || "standard",
       });
 
       const renderRetrievalProfiles = async () => {
@@ -1403,6 +1416,9 @@ export function initializeAIAdmin(options = {}) {
           "aiadmin-field-context-top-k",
           "aiadmin-field-context-max-chars",
           "aiadmin-field-chat-profile",
+          "aiadmin-table-llm",
+          "aiadmin-field-show-sources",
+          "aiadmin-section-assistant-ui",
           "aiadmin-table-enabled",
           "aiadmin-table-external-api",
           "aiadmin-table-mcp",
@@ -1421,6 +1437,11 @@ export function initializeAIAdmin(options = {}) {
           const chatProfileId = retrievalProfileChatProfileId(profile);
           const chatProfile = chatProfiles.find((item) => item.id === chatProfileId) || profile.chatProfile;
           appendTableCell(row, chatProfile ? chatProfileDisplayName(chatProfile) : chatProfileId);
+          appendTableCell(row, profile.config?.llmModel || t("aiadmin-value-default", "default"));
+          appendTableCell(row, profile.config?.showSources === undefined
+            ? t("aiadmin-value-default", "default")
+            : yesNo(profile.config.showSources));
+          appendTableCell(row, optionLabel(assistantUiModeOptions(), profile.config?.assistantUiMode || "standard"));
           appendTableCell(row, yesNo(profile.enabled));
           appendTableCell(row, yesNo(profile.apiEnabled));
           appendTableCell(row, yesNo(profile.mcpEnabled));
@@ -1453,6 +1474,15 @@ export function initializeAIAdmin(options = {}) {
         appendInputRow(form, "retrieval-profile-context-top-k", t("aiadmin-field-context-top-k", "Context top-k"), profileLimits.contextTopK, { type: "number", min: 1, max: 50 });
         appendInputRow(form, "retrieval-profile-context-max-chars", t("aiadmin-field-context-max-chars", "Context max chars"), profileLimits.contextMaxChars, { type: "number", min: 1000, max: 200000 });
         appendSelectRow(form, "retrieval-profile-chat-profile", t("aiadmin-field-chat-profile", "Chat profile"), retrievalProfileChatProfileId(profile), chatProfileOptions());
+        const responseTitle = document.createElement("h3");
+        responseTitle.textContent = t("aiadmin-section-retrieval-profile-response", "Response behavior");
+        form.appendChild(responseTitle);
+        appendInputRow(form, "retrieval-profile-llm-model", t("aiadmin-field-llm-model-override", "LLM model override"), profile.config?.llmModel || "");
+        appendInputRow(form, "retrieval-profile-llm-temperature", t("aiadmin-field-temperature"), profile.config?.llmTemperature ?? "", { type: "number", min: 0, max: 2, step: "0.01" });
+        appendInputRow(form, "retrieval-profile-llm-max-tokens", t("aiadmin-field-max-tokens"), profile.config?.llmMaxTokens ?? "", { type: "number", min: 64, max: 4096 });
+        appendInputRow(form, "retrieval-profile-llm-timeout-ms", t("aiadmin-field-timeout-ms"), profile.config?.llmTimeoutMs ?? "", { type: "number", min: 5000, max: 120000 });
+        appendCheckboxRow(form, "retrieval-profile-show-sources", t("aiadmin-field-show-sources"), profile.config?.showSources ?? llmConfig?.showSources ?? true);
+        appendSelectRow(form, "retrieval-profile-assistant-ui-mode", t("aiadmin-section-assistant-ui"), profile.config?.assistantUiMode || "standard", assistantUiModeOptions());
         appendInputRow(form, "retrieval-profile-tags", t("aiadmin-field-tags-csv"), (profile.tags || []).join(", "));
         appendSelectRow(form, "retrieval-profile-search-mode", t("aiadmin-field-search-mode"), profile.config?.searchMode || "hybrid", retrievalModeOptions());
         appendSelectRow(form, "retrieval-profile-rerank-mode", t("aiadmin-field-rerank-mode"), profile.config?.rerankMode || "none", rerankModeOptions());
@@ -1499,6 +1529,14 @@ export function initializeAIAdmin(options = {}) {
         const contextTopK = Number(document.getElementById("retrieval-profile-context-top-k").value);
         const contextMaxChars = Number(document.getElementById("retrieval-profile-context-max-chars").value);
         const chatProfileId = document.getElementById("retrieval-profile-chat-profile").value;
+        const optionalText = (id) => {
+          const value = document.getElementById(id).value.trim();
+          return value ? value : undefined;
+        };
+        const optionalNumber = (id) => {
+          const value = document.getElementById(id).value.trim();
+          return value ? Number(value) : undefined;
+        };
         return {
           id: document.getElementById("retrieval-profile-id").value.trim(),
           name: document.getElementById("retrieval-profile-name").value.trim(),
@@ -1530,6 +1568,12 @@ export function initializeAIAdmin(options = {}) {
             trigramIndexEnabled: document.getElementById("retrieval-profile-trigram").checked,
             colbertEnabled: document.getElementById("retrieval-profile-colbert-enabled").checked,
             colbertFailMode: document.getElementById("retrieval-profile-colbert-fail-mode").value,
+            llmModel: optionalText("retrieval-profile-llm-model"),
+            llmTemperature: optionalNumber("retrieval-profile-llm-temperature"),
+            llmMaxTokens: optionalNumber("retrieval-profile-llm-max-tokens"),
+            llmTimeoutMs: optionalNumber("retrieval-profile-llm-timeout-ms"),
+            showSources: document.getElementById("retrieval-profile-show-sources").checked,
+            assistantUiMode: document.getElementById("retrieval-profile-assistant-ui-mode").value,
           }
         };
       };
@@ -1709,6 +1753,35 @@ export function initializeAIAdmin(options = {}) {
         );
       };
 
+      const renderDebugChainNavigation = () => {
+        const root = document.getElementById("aiadmin-debug-chain-links");
+        if (!root) return;
+        root.innerHTML = "";
+        [
+          ["retrieval-profiles", "aiadmin-tab-retrieval-profiles"],
+          ["opensearch", "aiadmin-tab-opensearch"],
+          ["colbert", "aiadmin-tab-colbert"],
+          ["documents", "aiadmin-tab-documents"],
+          ["trust", "aiadmin-tab-trust"],
+        ].forEach(([tabName, labelKey]) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "ai-admin-btn";
+          button.textContent = t(labelKey);
+          button.addEventListener("click", () => activateTab(tabName));
+          root.appendChild(button);
+        });
+      };
+
+      const renderDebugChainConfig = async () => {
+        if (!Array.isArray(retrievalProfiles) || retrievalProfiles.length === 0) {
+          const data = await request("/api/admin/retrieval-profiles").catch(() => ({ values: retrievalProfiles }));
+          retrievalProfiles = data.values || retrievalProfiles || [];
+        }
+        renderDebugChainNavigation();
+        renderChatDebugForm();
+      };
+
       const collectChatDebugTrace = () => {
         const message = document.getElementById("chat-debug-question").value.trim();
         if (!message) throw new Error(t("aiadmin-field-chat-debug-question", "Debug question"));
@@ -1757,12 +1830,42 @@ export function initializeAIAdmin(options = {}) {
         summary.textContent = `traceId=${values.traceId || ""}; verbosity=${values.verbosity || ""}; answerChars=${(values.answer || "").length}`;
         root.appendChild(summary);
 
+        const diagnostics = values.diagnostics || {};
+        const summaryTable = document.createElement("table");
+        summaryTable.className = "ai-admin-table";
+        summaryTable.innerHTML = tableHtml(["aiadmin-table-setting", "aiadmin-table-value"]);
+        const summaryBody = summaryTable.querySelector("tbody");
+        [
+          ["traceId", values.traceId || ""],
+          ["verbosity", values.verbosity || ""],
+          ["profile", diagnostics.retrievalProfileId || ""],
+          ["readiness", diagnostics.retrievalProfileReadiness || ""],
+          ["searchMode", diagnostics.effectiveSearchMode || diagnostics.searchMode || ""],
+          ["chunks raw/readable/trusted/context", [
+            diagnostics.rawChunks,
+            diagnostics.readableChunks,
+            diagnostics.trustedChunks,
+            diagnostics.contextSources
+          ].map((value) => value ?? "-").join(" / ")],
+          ["LLM model", diagnostics.llmModel || ""],
+          ["answerChars", (values.answer || "").length],
+        ].forEach(([label, value]) => {
+          const row = document.createElement("tr");
+          appendTableCell(row, label);
+          appendTableCell(row, value);
+          summaryBody.appendChild(row);
+        });
+        root.appendChild(summaryTable);
+
         appendDebugPre(root, "Answer", values.answer || "", { open: true });
+        appendDebugPre(root, "Prompt stack", values.promptStack || [], { open: true });
         appendDebugPre(root, "Final prompt", values.promptText || "", { open: true });
+        appendDebugPre(root, "Final LLM HTTP trace", values.finalLlm?.trace || {}, { open: true });
         appendDebugPre(root, "Final LLM request", values.finalLlm?.request || {}, { open: true });
         appendDebugPre(root, "Final LLM response", values.finalLlm || {}, { open: true });
         appendDebugPre(root, "Retrieval diagnostics", values.diagnostics || {});
         appendDebugPre(root, "Retrieval search", values.retrieval?.search || {});
+        appendDebugPre(root, "Attachment index coverage", values.retrieval?.attachmentIndexCoverage || []);
         appendDebugPre(root, "Chunks", values.retrieval?.chunks || {});
         appendDebugPre(root, "Context", values.retrieval?.contextText || "");
         appendDebugPre(root, "Conflict detector", values.conflict || {});
@@ -1800,7 +1903,6 @@ export function initializeAIAdmin(options = {}) {
         appendInputRow(form, "rag-minChunkLength", t("aiadmin-field-min-chunk-length"), ragConfig.minChunkLength, { type: "number", min: 1, max: 1024 });
         appendInputRow(form, "rag-maxChunksPerPage", t("aiadmin-field-max-chunks-per-page"), ragConfig.maxChunksPerPage, { type: "number", min: 1, max: 10000 });
         appendInputRow(form, "rag-chunkSeparators", t("aiadmin-field-chunk-separators-json"), JSON.stringify(ragConfig.chunkSeparators || []), { textarea: true });
-        renderChatDebugForm();
         const hybridTitle = document.createElement("h3");
         hybridTitle.textContent = t("aiadmin-section-hybrid-search");
         bm25Form.appendChild(hybridTitle);
@@ -5234,6 +5336,7 @@ export function initializeAIAdmin(options = {}) {
           });
           retrievalProfiles = data.values || [];
           await renderExternalApiConfig();
+          await renderDebugChainConfig();
           statusText("aiadmin-retrieval-profile-status", t("aiadmin-message-saved"));
         } catch (err) {
           statusText("aiadmin-retrieval-profile-status", err.message, false);
@@ -5247,6 +5350,7 @@ export function initializeAIAdmin(options = {}) {
           selectedRetrievalProfileId = retrievalProfiles[0]?.id || null;
           await renderExternalApiConfig();
           await renderMediaWikiProfileConfig();
+          await renderDebugChainConfig();
           statusText("aiadmin-retrieval-profile-status", t("aiadmin-message-saved"));
         } catch (err) {
           statusText("aiadmin-retrieval-profile-status", err.message, false);
@@ -5259,6 +5363,7 @@ export function initializeAIAdmin(options = {}) {
           retrievalProfiles = data.values || [];
           await renderRetrievalProfiles();
           await renderMediaWikiProfileConfig();
+          await renderDebugChainConfig();
           statusText("aiadmin-retrieval-profile-status", t("aiadmin-message-refreshed"));
         } catch (err) {
           statusText("aiadmin-retrieval-profile-status", err.message, false);
@@ -5282,6 +5387,7 @@ export function initializeAIAdmin(options = {}) {
           retrievalProfiles = [duplicate, ...retrievalProfiles];
           selectedRetrievalProfileId = duplicate.id;
           await renderRetrievalProfiles();
+          await renderDebugChainConfig();
           statusText("aiadmin-retrieval-profile-status", t("aiadmin-message-refreshed"));
         } catch (err) {
           statusText("aiadmin-retrieval-profile-status", err.message, false);
@@ -5350,7 +5456,7 @@ export function initializeAIAdmin(options = {}) {
       });
       document.getElementById("aiadmin-save-mediawiki-profile-config").addEventListener("click", async () => {
         try {
-          const data = await request("/api/admin/mediawiki-profile/config", {
+          const data = await request("/api/admin/knowledge-source-profile/config", {
             method: "POST",
             body: JSON.stringify(collectMediaWikiProfileConfig()),
           });
@@ -5961,6 +6067,7 @@ export function initializeAIAdmin(options = {}) {
       renderSettings().catch((err) => statusText("aiadmin-settings-status", err.message, false));
       renderEmbeddingConfig().catch((err) => statusText("aiadmin-embedding-status", err.message, false));
       renderRagConfig().catch((err) => statusText("aiadmin-rag-status", err.message, false));
+      renderDebugChainConfig().catch((err) => statusText("aiadmin-chat-debug-status", err.message, false));
       renderWebhookConfig().catch((err) => statusText("aiadmin-webhook-status", err.message, false));
       renderChatManagementConfig().catch((err) => statusText("aiadmin-chat-management-status", err.message, false));
       renderChatRetentionConfig().catch((err) => statusText("aiadmin-chat-retention-status", err.message, false));

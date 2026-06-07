@@ -63,6 +63,42 @@ describe('LiteLLM client', () => {
     await expect(callLiteLLM([{ role: 'user', content: 'x' }])).rejects.toThrow('LiteLLM error: 502 bad upstream');
   });
 
+  it('returns a masked HTTP trace for debug chat completions', async () => {
+    getEffectiveLlmConfig.mockResolvedValue(llmConfig());
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      id: 'chatcmpl-2',
+      object: 'chat.completion',
+      created: 2,
+      model: 'test-model',
+      choices: [{ index: 0, message: { role: 'assistant', content: 'Trace OK' }, finish_reason: 'stop' }],
+    }), { status: 200, headers: { 'x-request-id': 'req-1' } })));
+
+    const { callLiteLLMWithTrace } = await import('../litellm.js');
+    const result = await callLiteLLMWithTrace([{ role: 'user', content: 'trace me' }]);
+
+    expect(result.response?.choices[0]?.message.content).toBe('Trace OK');
+    expect(result.trace.request).toMatchObject({
+      method: 'POST',
+      url: 'http://litellm.local/v1/chat/completions',
+      timeoutMs: 1000,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer [redacted]',
+      },
+      body: {
+        model: 'test-model',
+        stream: false,
+        temperature: 0.1,
+        max_tokens: 256,
+        messages: [{ role: 'user', content: 'trace me' }],
+      },
+    });
+    expect(result.trace.response).toMatchObject({
+      status: 200,
+      headers: { 'x-request-id': 'req-1' },
+    });
+  });
+
   it('parses streaming SSE chunks and ignores malformed lines', async () => {
     getEffectiveLlmConfig.mockResolvedValue(llmConfig());
     const encoder = new TextEncoder();

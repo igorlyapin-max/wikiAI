@@ -105,7 +105,8 @@ function appendMediaWikiProfileActions(root, i18n, options = {}) {
 }
 
 export async function loadMediaWikiProfilePayload(request) {
-  const data = await request('/api/admin/mediawiki-profile/config');
+  const data = await request('/api/admin/knowledge-source-profile/config')
+    .catch(() => request('/api/admin/mediawiki-profile/config'));
   const profiles = Array.isArray(data.retrievalProfiles) ? data.retrievalProfiles : [];
   if (profiles.length > 0) return data;
 
@@ -119,14 +120,19 @@ export async function loadMediaWikiProfilePayload(request) {
 export function collectMediaWikiProfileConfig(root = document) {
   const select = root.querySelector('#mediawiki-default-retrieval-profile');
   return {
-    defaultRetrievalProfileId: select?.value || '',
+    id: 'default',
+    sourceIds: ['mediawiki'],
+    retrievalProfileId: select?.value || '',
+    failurePolicy: 'partial_with_warning',
+    mergePolicy: 'normalize_rerank',
   };
 }
 
 export function renderMediaWikiProfileSelector(root, payload = {}, options = {}) {
   const i18n = options.i18n || {};
   const profiles = Array.isArray(payload.retrievalProfiles) ? payload.retrievalProfiles : [];
-  const selectedId = payload.values?.defaultRetrievalProfileId
+  const selectedId = payload.values?.retrievalProfileId
+    || payload.values?.defaultRetrievalProfileId
     || payload.selectedProfile?.id
     || options.defaultProfileId
     || 'opensearch_hybrid_colbert';
@@ -209,6 +215,7 @@ export function renderMediaWikiProfileSelector(root, payload = {}, options = {})
   const tbody = table.querySelector('tbody');
   [
     [helperText(i18n, 'aiadmin-field-name'), `${selectedProfile.name} (${selectedProfile.id})`],
+    [helperText(i18n, 'aiadmin-field-knowledge-sources', 'Knowledge sources'), (payload.values?.sourceIds || ['mediawiki']).join(', ')],
     [helperText(i18n, 'aiadmin-field-search-mode'), config.searchMode || 'hybrid'],
     [helperText(i18n, 'aiadmin-field-lexical-backend', 'Lexical backend'), mediaWikiLexicalBackendLabel(i18n, config.lexicalBackend || 'sqlite_fts')],
     [helperText(i18n, 'aiadmin-field-rerank-mode'), config.rerankMode || 'none'],

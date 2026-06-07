@@ -84,6 +84,8 @@ describe('AI admin helpers', () => {
     expect(adminAppSource).toContain('aiadmin-field-search-history-limit');
     expect(adminAppSource).toContain('data.searchHistoryEnabled');
     expect(adminAppSource).toContain('data.searchHistoryLimit');
+    expect(adminAppSource).toContain('aiadmin-field-show-sources-default');
+    expect(adminAppSource).toContain('sourceInput.disabled = true');
   });
 
   it('does not render legacy cached chat owners as real users', () => {
@@ -242,14 +244,25 @@ describe('AI admin helpers', () => {
     expect(adminAppSource).toContain('retrieval-profile-context-top-k');
     expect(adminAppSource).toContain('retrieval-profile-context-max-chars');
     expect(adminAppSource).toContain('retrieval-profile-chat-profile');
+    expect(adminAppSource).toContain('retrieval-profile-llm-model');
+    expect(adminAppSource).toContain('retrieval-profile-llm-temperature');
+    expect(adminAppSource).toContain('retrieval-profile-llm-max-tokens');
+    expect(adminAppSource).toContain('retrieval-profile-llm-timeout-ms');
+    expect(adminAppSource).toContain('retrieval-profile-show-sources');
+    expect(adminAppSource).toContain('retrieval-profile-assistant-ui-mode');
     expect(adminAppSource).toContain('aiadmin-retrieval-profile-limits-marker');
+    expect(adminAppSource).toContain('aiadmin-section-retrieval-profile-response');
+    expect(adminAppSource).toContain('aiadmin-section-chat-runtime-defaults');
     expect(adminAppSource).toContain('"aiadmin-field-retrieval-top-k"');
     expect(adminAppSource).toContain('"aiadmin-field-context-top-k"');
     expect(adminAppSource).toContain('"aiadmin-field-context-max-chars"');
     expect(adminAppSource).toContain('"aiadmin-field-chat-profile"');
+    expect(adminAppSource).toContain('"aiadmin-table-llm"');
     expect(adminAppSource).toContain('chatProfileId = document.getElementById("retrieval-profile-chat-profile").value');
     expect(adminAppSource).toContain('chatProfileId,');
     expect(adminAppSource).toContain('chatRetrievalQueryMode: legacyChatRetrievalModeForChatProfileId(chatProfileId)');
+    expect(adminAppSource).toContain('llmModel: optionalText("retrieval-profile-llm-model")');
+    expect(adminAppSource).toContain('assistantUiMode: document.getElementById("retrieval-profile-assistant-ui-mode").value');
     expect(adminAppSource).toContain('appendTableCell(row, limits.retrievalTopK)');
     expect(adminAppSource).toContain('appendTableCell(row, limits.contextTopK)');
     expect(adminAppSource).toContain('appendTableCell(row, limits.contextMaxChars)');
@@ -261,6 +274,10 @@ describe('AI admin helpers', () => {
     expect(adminAppSource).not.toContain('appendInputRow(form, "rag-maxContextChunks"');
     expect(adminAppSource).not.toContain('appendInputRow(form, "rag-maxContextChars"');
     expect(adminAppSource).toContain('lexicalBackend');
+    expect(ruMessages['aiadmin-section-retrieval-profile-response']).toBe('Поведение ответа');
+    expect(ruMessages['aiadmin-section-chat-runtime-defaults']).toBe('Fallback-настройки выполнения чата');
+    expect(enMessages['aiadmin-section-chat-runtime-defaults']).toBe('Chat runtime fallbacks');
+    expect(enMessages['aiadmin-field-llm-model-override']).toContain('Profile LLM');
     expect(ruMessages['aiadmin-field-opensearch-enabled']).toContain('backend');
     expect(enMessages['aiadmin-field-opensearch-enabled']).toContain('backend');
   });
@@ -286,23 +303,41 @@ describe('AI admin helpers', () => {
     expect(enMessages['aiadmin-chat-profile-name-chat_followup_questions']).toContain('Follow-up');
   });
 
-  it('wires one-shot chat debug trace into the admin UI', () => {
+  it('wires chain debug trace into a dedicated admin tab', () => {
     expect(specialAdminSource).toContain('aiadmin-chat-debug-form');
     expect(specialAdminSource).toContain('aiadmin-run-chat-debug');
     expect(specialAdminSource).toContain('aiadmin-chat-debug-result');
+    expect(specialAdminSource).toContain('data-ai-tab="debug-chain"');
+    expect(specialAdminSource).toContain('data-ai-panel="debug-chain"');
+    const ragPanel = specialAdminSource.match(/data-ai-panel="rag"[\s\S]*?data-ai-panel="debug-chain"/)?.[0] || '';
+    expect(ragPanel).not.toContain('aiadmin-chat-debug-form');
+    const debugPanel = specialAdminSource.match(/data-ai-panel="debug-chain"[\s\S]*?data-ai-panel="bm25"/)?.[0] || '';
+    expect(debugPanel).toContain('aiadmin-chat-debug-form');
+    expect(debugPanel).toContain('aiadmin-debug-chain-links');
     expect(adminAppSource).toContain('/api/admin/chat/debug-trace');
     expect(adminAppSource).toContain('collectChatDebugTrace');
     expect(adminAppSource).toContain('renderChatDebugTrace');
+    expect(adminAppSource).toContain('renderDebugChainConfig');
+    expect(adminAppSource).toContain('renderDebugChainNavigation');
     expect(adminAppSource).toContain('chat-debug-verbosity');
+    expect(adminAppSource).toContain('Prompt stack');
+    expect(adminAppSource).toContain('Final LLM HTTP trace');
     expect(adminAppSource).toContain('Final LLM request');
     expect(adminAppSource).toContain('Final LLM response');
+    expect(adminAppSource).toContain('Attachment index coverage');
     expect(adminAppSource).toContain('Copy prompt');
-    expect(ruMessages['aiadmin-section-chat-debug']).toBe('Debug одного вопроса');
-    expect(enMessages['aiadmin-section-chat-debug']).toBe('One-shot question debug');
+    expect(adminAppSource).toContain('chunks raw/readable/trusted/context');
+    expect(ruMessages['aiadmin-tab-debug-chain']).toBe('Debug цепочки');
+    expect(enMessages['aiadmin-tab-debug-chain']).toBe('Chain debug');
+    expect(ruMessages['aiadmin-section-chat-debug']).toBe('Debug пользовательского запроса');
+    expect(enMessages['aiadmin-section-chat-debug']).toBe('User request debug');
+    expect(ruMessages['aiadmin-help-debug-chain']).toContain('весь путь ответа');
+    expect(enMessages['aiadmin-help-debug-chain']).toContain('full answer path');
   });
 
   it('replaces search composition with the MediaWiki retrieval profile selector', () => {
-    expect(adminAppSource).toContain('/api/admin/mediawiki-profile/config');
+    expect(adminAppSource).toContain('/api/admin/knowledge-source-profile/config');
+    expect(adminHelpersSource).toContain('/api/admin/mediawiki-profile/config');
     expect(adminAppSource).toContain('loadMediaWikiProfilePayload(request)');
     expect(adminAppSource).toContain('renderMediaWikiProfileSelector(form, data');
     expect(adminHelpersSource).toContain('mediawiki-default-retrieval-profile');
@@ -317,15 +352,19 @@ describe('AI admin helpers', () => {
     expect(adminAppSource).not.toContain('appendSelectRow(compositionForm, "rag-lexicalBackend"');
     expect(specialAdminSource).toContain('aiadmin-mediawiki-profile-config');
     expect(specialAdminSource).toContain('aiadmin-save-mediawiki-profile-config');
-    expect(ruMessages['aiadmin-tab-composition']).toBe('Выбор профиля для MediaWiki');
-    expect(enMessages['aiadmin-tab-composition']).toBe('MediaWiki profile');
+    expect(ruMessages['aiadmin-tab-composition']).toBe('Источники знаний');
+    expect(enMessages['aiadmin-tab-composition']).toBe('Knowledge sources');
   });
 
   it('renders the MediaWiki profile selector with real profile options and readiness details', () => {
     const root = document.createElement('form');
 
     renderMediaWikiProfileSelector(root, {
-      values: { defaultRetrievalProfileId: 'opensearch_hybrid_colbert' },
+      values: {
+        id: 'default',
+        sourceIds: ['mediawiki'],
+        retrievalProfileId: 'opensearch_hybrid_colbert',
+      },
       selectedProfile: {
         id: 'opensearch_hybrid_colbert',
         name: 'OpenSearch hybrid + ColBERT',
@@ -396,8 +435,9 @@ describe('AI admin helpers', () => {
     expect(select.options[0].textContent).toContain('OpenSearch');
     expect(select.options[0].textContent).toContain('Hybrid + ColBERT');
     expect(select.options[1].textContent).toContain('not_ready');
-    expect(root.textContent).toContain('Готовность профиля MediaWiki: prod_ready');
+    expect(root.textContent).toContain('Готовность профиля источников знаний: prod_ready');
     expect(root.textContent).toContain('OpenSearch hybrid + ColBERT (opensearch_hybrid_colbert)');
+    expect(root.textContent).toContain('mediawiki');
     expect(root.textContent).toContain('hybrid_colbert');
     expect(root.textContent).toContain('OpenSearch');
     expect(root.textContent).toContain('colbert_v2');
@@ -434,15 +474,19 @@ describe('AI admin helpers', () => {
     root.querySelector('#mediawiki-default-retrieval-profile').value = 'semantic_broad';
 
     expect(collectMediaWikiProfileConfig(root)).toEqual({
-      defaultRetrievalProfileId: 'semantic_broad',
+      id: 'default',
+      sourceIds: ['mediawiki'],
+      retrievalProfileId: 'semantic_broad',
+      failurePolicy: 'partial_with_warning',
+      mergePolicy: 'normalize_rerank',
     });
   });
 
-  it('falls back to /api/admin/retrieval-profiles when the MediaWiki profile response has no profile list', async () => {
+  it('falls back to /api/admin/retrieval-profiles when the knowledge source profile response has no profile list', async () => {
     const request = vi.fn(async (path) => {
-      if (path === '/api/admin/mediawiki-profile/config') {
+      if (path === '/api/admin/knowledge-source-profile/config') {
         return {
-          values: { defaultRetrievalProfileId: 'opensearch_hybrid_colbert' },
+          values: { retrievalProfileId: 'opensearch_hybrid_colbert', sourceIds: ['mediawiki'] },
           retrievalProfiles: [],
         };
       }
@@ -458,11 +502,34 @@ describe('AI admin helpers', () => {
 
     const payload = await loadMediaWikiProfilePayload(request);
 
-    expect(request).toHaveBeenCalledWith('/api/admin/mediawiki-profile/config');
+    expect(request).toHaveBeenCalledWith('/api/admin/knowledge-source-profile/config');
     expect(request).toHaveBeenCalledWith('/api/admin/retrieval-profiles');
     expect(payload.retrievalProfiles).toEqual([
       expect.objectContaining({ id: 'opensearch_hybrid_colbert' }),
     ]);
+  });
+
+  it('falls back to the legacy MediaWiki profile endpoint when the knowledge source endpoint is unavailable', async () => {
+    const request = vi.fn(async (path) => {
+      if (path === '/api/admin/knowledge-source-profile/config') {
+        throw new Error('Route GET:/api/admin/knowledge-source-profile/config not found');
+      }
+      if (path === '/api/admin/mediawiki-profile/config') {
+        return {
+          values: { defaultRetrievalProfileId: 'opensearch_hybrid_colbert' },
+          retrievalProfiles: [
+            { id: 'opensearch_hybrid_colbert', name: 'OpenSearch hybrid + ColBERT', readiness: { status: 'prod_ready' } },
+          ],
+        };
+      }
+      throw new Error(`Unexpected path ${path}`);
+    });
+
+    const payload = await loadMediaWikiProfilePayload(request);
+
+    expect(request).toHaveBeenCalledWith('/api/admin/knowledge-source-profile/config');
+    expect(request).toHaveBeenCalledWith('/api/admin/mediawiki-profile/config');
+    expect(payload.values.defaultRetrievalProfileId).toBe('opensearch_hybrid_colbert');
   });
 
   it('warns and offers restore when MediaWiki profile options do not include OpenSearch profiles', () => {

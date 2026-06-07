@@ -338,6 +338,7 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-field-litellm-base-url',
       'aiadmin-field-litellm-model',
       'aiadmin-field-llm-key-configured',
+      'aiadmin-field-llm-model-override',
       'aiadmin-field-llm-timeout-ms',
       'aiadmin-field-manual-approval',
       'aiadmin-field-max-active-chats',
@@ -444,6 +445,7 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-field-search-history-limit',
       'aiadmin-field-show-raw-scores',
       'aiadmin-field-show-sources',
+      'aiadmin-field-show-sources-default',
       'aiadmin-field-smw-property',
       'aiadmin-field-smw-properties-csv',
       'aiadmin-field-smw-type',
@@ -487,6 +489,7 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-help-indexing-automation',
       'aiadmin-help-indexing-profile-editor',
       'aiadmin-help-indexing-manual-run',
+      'aiadmin-help-debug-chain',
       'aiadmin-help-conflict-detection',
       'aiadmin-help-conflict-system-prompt',
       'aiadmin-help-ontology-actions',
@@ -607,14 +610,17 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-section-hybrid-search',
       'aiadmin-section-lexical-experimental',
       'aiadmin-section-retrieval-profile-limits',
+      'aiadmin-section-retrieval-profile-response',
       'aiadmin-section-retrieval-profiles',
       'aiadmin-section-model-assignments',
       'aiadmin-section-opensearch',
       'aiadmin-section-opensearch-effective',
       'aiadmin-section-opensearch-index-state',
       'aiadmin-section-assistant-ui',
+      'aiadmin-section-chat-runtime-defaults',
       'aiadmin-section-chat-management',
       'aiadmin-section-chat-debug',
+      'aiadmin-section-debug-chain-navigation',
       'aiadmin-section-chat-profiles',
       'aiadmin-section-chat-retention',
       'aiadmin-section-indexing-profiles',
@@ -634,6 +640,7 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-tab-chat-retention',
       'aiadmin-tab-colbert',
       'aiadmin-tab-composition',
+      'aiadmin-tab-debug-chain',
       'aiadmin-tab-documents',
       'aiadmin-tab-embeddings',
       'aiadmin-tab-external-api',
@@ -750,6 +757,10 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-value-lexical-gate-when-bm25',
       'aiadmin-value-fail-search',
       'aiadmin-value-legacy-global-rag',
+      'aiadmin-value-default',
+      'aiadmin-value-assistant-ui-compact',
+      'aiadmin-value-assistant-ui-standard',
+      'aiadmin-value-assistant-ui-expert',
       'aiadmin-value-fallback-current',
       'aiadmin-value-none',
       'aiadmin-value-current-default',
@@ -894,6 +905,7 @@ class SpecialAIAdmin extends SpecialPage
         <button type="button" class="ai-admin-tab" data-ai-tab="llm">' . $this->msgHtml('aiadmin-tab-llm') . '</button>
         <button type="button" class="ai-admin-tab" data-ai-tab="embeddings">' . $this->msgHtml('aiadmin-tab-embeddings') . '</button>
         <button type="button" class="ai-admin-tab" data-ai-tab="rag">' . $this->msgHtml('aiadmin-tab-rag') . '</button>
+        <button type="button" class="ai-admin-tab" data-ai-tab="debug-chain">' . $this->msgHtml('aiadmin-tab-debug-chain') . '</button>
         <button type="button" class="ai-admin-tab" data-ai-tab="bm25">' . $this->msgHtml('aiadmin-tab-bm25') . '</button>
         <button type="button" class="ai-admin-tab" data-ai-tab="opensearch">' . $this->msgHtml('aiadmin-tab-opensearch') . '</button>
         <button type="button" class="ai-admin-tab" data-ai-tab="colbert">' . $this->msgHtml('aiadmin-tab-colbert') . '</button>
@@ -952,7 +964,12 @@ class SpecialAIAdmin extends SpecialPage
         <form id="aiadmin-rag-config"></form>
         <button type="button" class="ai-admin-btn ai-admin-btn-primary" id="aiadmin-save-rag-config">' . $this->msgHtml('aiadmin-save') . '</button>
         <span id="aiadmin-rag-status"></span>
+      </div>
+      <div class="ai-admin-card ai-admin-panel" data-ai-panel="debug-chain">
         <h3>' . $this->msgHtml('aiadmin-section-chat-debug') . '</h3>
+        <div class="ai-admin-muted">' . $this->msgHtml('aiadmin-help-debug-chain') . '</div>
+        <h3>' . $this->msgHtml('aiadmin-section-debug-chain-navigation') . '</h3>
+        <div id="aiadmin-debug-chain-links" class="ai-admin-row"></div>
         <form id="aiadmin-chat-debug-form"></form>
         <button type="button" class="ai-admin-btn ai-admin-btn-primary" id="aiadmin-run-chat-debug">' . $this->msgHtml('aiadmin-action-run-chat-debug') . '</button>
         <span id="aiadmin-chat-debug-status"></span>

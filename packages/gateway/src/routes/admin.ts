@@ -150,6 +150,10 @@ import {
   getMediaWikiProfileConfigStatus,
   setMediaWikiProfileConfig,
 } from '../services/mediawiki-profile-config.js';
+import {
+  getKnowledgeSourceProfileConfigStatus,
+  setKnowledgeSourceProfileConfig,
+} from '../services/knowledge-sources.js';
 import { runAdminChatDebugTrace } from '../services/chat-debug-trace.js';
 import { principalFromMwUser } from '../services/principal-auth.js';
 import { type WikiPageUrlOptions } from '../services/mediawiki-url.js';
@@ -554,6 +558,41 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
   );
 
   app.get(
+    '/api/admin/knowledge-source-profile/config',
+    { preHandler: mwAuthMiddleware },
+    async (request, reply) => {
+      if (rejectNonAdmin(request as AuthenticatedRequest, reply)) return;
+      reply.send({
+        ...(await getKnowledgeSourceProfileConfigStatus()),
+        metadata: { secretsRedacted: true },
+      });
+    }
+  );
+
+  app.post(
+    '/api/admin/knowledge-source-profile/config',
+    { preHandler: mwAuthMiddleware },
+    async (request, reply) => {
+      const authenticated = request as AuthenticatedRequest;
+      if (rejectNonAdmin(authenticated, reply)) return;
+
+      try {
+        await setKnowledgeSourceProfileConfig(request.body, auditActor(authenticated));
+        reply.send({
+          status: 'saved',
+          ...(await getKnowledgeSourceProfileConfigStatus()),
+          metadata: { secretsRedacted: true },
+        });
+      } catch (err) {
+        reply.status(400).send({
+          error: 'Invalid knowledge source profile config',
+          message: err instanceof Error ? err.message : 'Unknown validation error',
+        });
+      }
+    }
+  );
+
+  app.get(
     '/api/admin/mediawiki-profile/config',
     { preHandler: mwAuthMiddleware },
     async (request, reply) => {
@@ -573,7 +612,10 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       if (rejectNonAdmin(authenticated, reply)) return;
 
       try {
-        await setMediaWikiProfileConfig(request.body, auditActor(authenticated));
+        const values = await setMediaWikiProfileConfig(request.body, auditActor(authenticated));
+        await setKnowledgeSourceProfileConfig({
+          retrievalProfileId: values.defaultRetrievalProfileId,
+        }, auditActor(authenticated));
         reply.send({
           status: 'saved',
           ...(await getMediaWikiProfileConfigStatus()),

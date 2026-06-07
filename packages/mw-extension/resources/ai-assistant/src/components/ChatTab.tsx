@@ -61,6 +61,7 @@ interface StoredChatMessage {
 }
 
 type SessionFilter = 'active' | 'archived';
+type AssistantUiMode = 'compact' | 'standard' | 'expert';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -72,6 +73,15 @@ function readString(value: unknown): string | undefined {
 
 function readNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function readAssistantUiMode(value: unknown): AssistantUiMode {
+  return value === 'compact' || value === 'expert' ? value : 'standard';
+}
+
+function normalizeAssistantUiModeConfig(value: unknown): AssistantUiMode {
+  const values = isRecord(value) && isRecord(value.values) ? value.values : value;
+  return isRecord(values) ? readAssistantUiMode(values.assistantUiMode) : 'standard';
 }
 
 function readSource(value: unknown): MessageSource | undefined {
@@ -237,6 +247,7 @@ export default function ChatTab({ gatewayUrl }: ChatTabProps) {
   const [activeSessionStatus, setActiveSessionStatus] = useState<ChatSessionSummary['status'] | undefined>();
   const [conversationId, setConversationId] = useState<string | undefined>();
   const [historyError, setHistoryError] = useState<string | undefined>();
+  const [assistantUiMode, setAssistantUiMode] = useState<AssistantUiMode>('standard');
   const bottomRef = useRef<HTMLDivElement>(null);
   const sessionLoadRequestRef = useRef(0);
   const archiveReadOnly = activeSessionStatus === 'archived';
@@ -244,6 +255,29 @@ export default function ChatTab({ gatewayUrl }: ChatTabProps) {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadUiConfig = async (): Promise<void> => {
+      try {
+        const res = await fetch(`${gatewayUrl}/api/ui/config`, { credentials: 'include' });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled) {
+          setAssistantUiMode(normalizeAssistantUiModeConfig(data));
+        }
+      } catch {
+        if (!cancelled) setAssistantUiMode('standard');
+      }
+    };
+
+    void loadUiConfig();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [gatewayUrl]);
 
   const loadSessions = async (filter = sessionFilter): Promise<ChatSessionSummary[]> => {
     const requestId = sessionLoadRequestRef.current + 1;
@@ -426,6 +460,8 @@ export default function ChatTab({ gatewayUrl }: ChatTabProps) {
                 if (last && last.role === 'assistant') last.retrievalDiagnostics = retrievalDiagnostics;
                 return copy;
               });
+            } else if (data.type === 'ui') {
+              setAssistantUiMode(readAssistantUiMode(data.assistantUiMode));
             } else if (data.type === 'sources') {
               sources = data.sources || [];
             }
@@ -460,7 +496,7 @@ export default function ChatTab({ gatewayUrl }: ChatTabProps) {
   };
 
   return (
-    <div className="ai-assistant__chat">
+    <div className={`ai-assistant__chat ai-assistant__chat--${assistantUiMode}`}>
       <aside className="ai-assistant__sidebar">
         <div className="ai-assistant__toolbar" aria-label="Управление чатами">
           <button

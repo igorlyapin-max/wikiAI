@@ -100,8 +100,26 @@ export interface ChunkTrustMetadata {
   };
 }
 
+export type KnowledgeSourceType = 'mediawiki' | (string & {});
+
+export type KnowledgeSourceAclMode = 'source_acl_callback' | 'groups_only';
+
+export interface KnowledgeSourceSummary {
+  id: string;
+  type: KnowledgeSourceType;
+  displayName: string;
+  readiness: 'ready' | 'degraded' | 'not_ready';
+  aclMode: KnowledgeSourceAclMode;
+  semanticProviderId?: string;
+}
+
 export interface SearchChunk {
   id: number;
+  sourceId?: string;
+  documentId?: string;
+  displayTitle?: string;
+  sourceUrl?: string;
+  spaceKey?: string;
   pageId: number;
   title: string;
   pageUrl?: string;
@@ -127,10 +145,19 @@ export interface SearchChunk {
   trust?: ChunkTrustMetadata;
 }
 
+export type DocumentChunk = SearchChunk & {
+  sourceId: string;
+  documentId: string;
+  displayTitle: string;
+  sourceUrl: string;
+  spaceKey: string;
+};
+
 export interface SearchRequest {
   query: string;
   topK?: number;
   retrievalProfileId?: string;
+  knowledgeSourceProfileId?: string;
   context?: ExternalRequestContext;
 }
 
@@ -145,6 +172,7 @@ export interface ChatRequest {
   stream?: boolean;
   topK?: number;
   retrievalProfileId?: string;
+  knowledgeSourceProfileId?: string;
   context?: ExternalRequestContext;
 }
 

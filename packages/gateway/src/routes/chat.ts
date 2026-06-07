@@ -24,7 +24,7 @@ import {
 } from '../services/runtime-chat.js';
 import { RuntimeHttpError } from '../services/runtime-errors.js';
 import { principalFromMwUser } from '../services/principal-auth.js';
-import { getMediaWikiProfileConfig } from '../services/mediawiki-profile-config.js';
+import { getKnowledgeSourceProfileConfig } from '../services/knowledge-sources.js';
 import { ChatRequest } from '../types/index.js';
 
 export { buildChatRetrievalQuery };
@@ -35,6 +35,7 @@ const chatRequestSchema = z.object({
   stream: z.boolean().optional(),
   topK: z.number().int().min(1).max(20).optional(),
   retrievalProfileId: z.string().trim().min(1).optional(),
+  knowledgeSourceProfileId: z.string().trim().min(1).optional(),
   context: z.unknown().optional(),
 }).strict();
 
@@ -230,13 +231,16 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
       const cookie = (request as AuthenticatedRequest).sessionCookie;
 
       try {
-        const mediaWikiProfile = await getMediaWikiProfileConfig();
+        const sourceProfile = await getKnowledgeSourceProfileConfig();
         const prepared = await prepareRuntimeChat({
           message,
           conversationId,
           topK,
-          retrievalProfileId: mediaWikiProfile.defaultRetrievalProfileId,
+          retrievalProfileId: sourceProfile.retrievalProfileId,
           retrievalProfileSurface: 'mediawiki',
+          knowledgeSourceProfileId: sourceProfile.id,
+          sourceIds: sourceProfile.sourceIds,
+          sourceFailurePolicy: sourceProfile.failurePolicy,
           principal: principalFromMwUser(mwUser, cookie),
           wikiUrlOptions: wikiUrlOptionsFromRequest(request),
           aclMode: 'mediawiki_check',

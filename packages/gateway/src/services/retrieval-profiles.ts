@@ -1,6 +1,7 @@
 import {
   getRagAdminConfig,
   getRetrievalProfiles,
+  type AssistantUiMode,
   type HttpTestResult,
   type RagAdminConfig,
   type RetrievalProfile,
@@ -37,6 +38,9 @@ export interface RetrievalProfileCapability {
   searchMode: RagAdminConfig['searchMode'];
   rerankMode: RagAdminConfig['rerankMode'];
   chatRetrievalQueryMode: RagAdminConfig['chatRetrievalQueryMode'];
+  llmModel?: string;
+  showSources?: boolean;
+  assistantUiMode?: AssistantUiMode;
   readiness: RetrievalProfileReadiness;
 }
 
@@ -61,9 +65,19 @@ export function applyRetrievalProfileToRagConfig(
   base: RagAdminConfig,
   profile: RetrievalProfile
 ): RagAdminConfig {
+  const {
+    llmModel: _llmModel,
+    llmTemperature: _llmTemperature,
+    llmMaxTokens: _llmMaxTokens,
+    llmTimeoutMs: _llmTimeoutMs,
+    showSources: _showSources,
+    assistantUiMode: _assistantUiMode,
+    ...ragOverrides
+  } = profile.config;
+
   return {
     ...base,
-    ...profile.config,
+    ...ragOverrides,
     colbertBaseUrl: base.colbertBaseUrl,
     colbertModel: base.colbertModel,
     colbertCollection: base.colbertCollection,
@@ -250,6 +264,9 @@ export async function getRetrievalProfileCapabilities(): Promise<RetrievalProfil
     searchMode: profile.config.searchMode,
     rerankMode: profile.config.rerankMode,
     chatRetrievalQueryMode: profile.config.chatRetrievalQueryMode,
+    llmModel: profile.config.llmModel,
+    showSources: profile.config.showSources,
+    assistantUiMode: profile.config.assistantUiMode ?? 'standard',
     readiness: profile.readiness,
   }));
 }

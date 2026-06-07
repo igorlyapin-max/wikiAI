@@ -66,6 +66,23 @@ describe('ChatTab', () => {
     );
   });
 
+  it('применяет режим интерфейса ассистента из UI config', async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/ui/config')) {
+        return Promise.resolve(jsonResponse({ values: { assistantUiMode: 'compact' } }));
+      }
+      return Promise.resolve(jsonResponse({ values: [] }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { container } = render(<ChatTab gatewayUrl="https://gateway.example" />);
+
+    await waitFor(() => {
+      expect(container.querySelector('.ai-assistant__chat--compact')).toBeInTheDocument();
+    });
+  });
+
   it('не перетирает список чатов поздним ответом предыдущей загрузки', async () => {
     const activeRequest = deferredResponse();
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
@@ -131,31 +148,43 @@ describe('ChatTab', () => {
   });
 
   it('открывает archived session в режиме только чтение', async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse({ values: [] }))
-      .mockResolvedValueOnce(jsonResponse({
-        values: [
-          {
-            id: 'arch-1',
-            conversationId: 'arch-c1',
-            title: 'Архивный чат',
-            status: 'archived',
-            messageCount: 1,
-            createdAt: '2026-06-03T10:00:00Z',
-            updatedAt: '2026-06-03T10:00:00Z',
-          },
-        ],
-      }))
-      .mockResolvedValueOnce(jsonResponse({
-        values: [
-          {
-            id: 'm1',
-            role: 'assistant',
-            content: 'Старый ответ',
-            createdAt: '2026-06-03T10:00:00Z',
-          },
-        ],
-      }));
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/ui/config')) {
+        return Promise.resolve(jsonResponse({ assistantUiMode: 'standard' }));
+      }
+      if (url.includes('/api/chat/sessions?status=active')) {
+        return Promise.resolve(jsonResponse({ values: [] }));
+      }
+      if (url.includes('/api/chat/sessions?status=archived')) {
+        return Promise.resolve(jsonResponse({
+          values: [
+            {
+              id: 'arch-1',
+              conversationId: 'arch-c1',
+              title: 'Архивный чат',
+              status: 'archived',
+              messageCount: 1,
+              createdAt: '2026-06-03T10:00:00Z',
+              updatedAt: '2026-06-03T10:00:00Z',
+            },
+          ],
+        }));
+      }
+      if (url.includes('/api/chat/sessions/arch-1/messages')) {
+        return Promise.resolve(jsonResponse({
+          values: [
+            {
+              id: 'm1',
+              role: 'assistant',
+              content: 'Старый ответ',
+              createdAt: '2026-06-03T10:00:00Z',
+            },
+          ],
+        }));
+      }
+      return Promise.resolve(jsonResponse({ values: [] }));
+    });
     vi.stubGlobal('fetch', fetchMock);
 
     render(<ChatTab gatewayUrl="https://gateway.example" />);
@@ -170,30 +199,45 @@ describe('ChatTab', () => {
   });
 
   it('отправляет сообщение и рендерит streaming ответ, sources и conflict warning', async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse({ values: [] }))
-      .mockResolvedValueOnce(streamResponse([
-        'data: {"type":"conversation","conversationId":"c-stream"}\n',
-        'data: {"type":"diagnostics","diagnostics":{"originalMessage":"Что актуально?","retrievalQuery":"Что актуально?","retrievalQueryMode":"current_message","historyInjectedIntoRetrieval":false,"historyMessagesUsed":1,"requestedTopK":null,"retrievalTopK":4,"effectiveTopK":4,"contextTopK":2,"contextMaxChars":12000,"searchMode":"hybrid","rawChunks":3,"readableChunks":2,"trustedChunks":1,"finalSources":1,"contextSources":1,"tailSourcesBelowThreshold":1,"colbertScores":[{"id":7,"score":0.912},{"id":8,"score":0.541}]}}\n',
-        'data: {"type":"token","content":"Ответ"}\n',
-        'data: {"type":"token","content":" готов"}\n',
-        'data: {"type":"conflict","conflict":{"hasConflict":true,"lowTrust":true,"confidence":0.82,"summary":"Есть расхождение","conflictingSources":[{"title":"Черновик","claim":"Старое значение","trustScore":0.31}],"recommendedSourceTitle":"Регламент","lowTrustReason":"Источник требует проверки"}}\n',
-        'data: {"type":"sources","sources":[{"title":"Регламент","pageId":7,"pageUrl":"https://wiki.example/Reglament"}]}\n',
-        'data: [DONE]\n',
-      ]))
-      .mockResolvedValueOnce(jsonResponse({
-        values: [
-          {
-            id: 's-stream',
-            conversationId: 'c-stream',
-            title: 'Новый чат',
-            status: 'active',
-            messageCount: 2,
-            createdAt: '2026-06-03T10:00:00Z',
-            updatedAt: '2026-06-03T10:01:00Z',
-          },
-        ],
-      }));
+    let activeSessionRequests = 0;
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/ui/config')) {
+        return Promise.resolve(jsonResponse({ assistantUiMode: 'standard' }));
+      }
+      if (url.endsWith('/api/chat')) {
+        return Promise.resolve(streamResponse([
+          'data: {"type":"conversation","conversationId":"c-stream"}\n',
+          'data: {"type":"ui","assistantUiMode":"expert"}\n',
+          'data: {"type":"diagnostics","diagnostics":{"originalMessage":"Что актуально?","retrievalQuery":"Что актуально?","retrievalQueryMode":"current_message","historyInjectedIntoRetrieval":false,"historyMessagesUsed":1,"requestedTopK":null,"retrievalTopK":4,"effectiveTopK":4,"contextTopK":2,"contextMaxChars":12000,"searchMode":"hybrid","rawChunks":3,"readableChunks":2,"trustedChunks":1,"finalSources":1,"contextSources":1,"tailSourcesBelowThreshold":1,"colbertScores":[{"id":7,"score":0.912},{"id":8,"score":0.541}]}}\n',
+          'data: {"type":"token","content":"Ответ"}\n',
+          'data: {"type":"token","content":" готов"}\n',
+          'data: {"type":"conflict","conflict":{"hasConflict":true,"lowTrust":true,"confidence":0.82,"summary":"Есть расхождение","conflictingSources":[{"title":"Черновик","claim":"Старое значение","trustScore":0.31}],"recommendedSourceTitle":"Регламент","lowTrustReason":"Источник требует проверки"}}\n',
+          'data: {"type":"sources","sources":[{"title":"Регламент","pageId":7,"pageUrl":"https://wiki.example/Reglament"}]}\n',
+          'data: [DONE]\n',
+        ]));
+      }
+      if (url.includes('/api/chat/sessions?status=active')) {
+        activeSessionRequests += 1;
+        if (activeSessionRequests === 1) {
+          return Promise.resolve(jsonResponse({ values: [] }));
+        }
+        return Promise.resolve(jsonResponse({
+          values: [
+            {
+              id: 's-stream',
+              conversationId: 'c-stream',
+              title: 'Новый чат',
+              status: 'active',
+              messageCount: 2,
+              createdAt: '2026-06-03T10:00:00Z',
+              updatedAt: '2026-06-03T10:01:00Z',
+            },
+          ],
+        }));
+      }
+      return Promise.resolve(jsonResponse({ values: [] }));
+    });
     vi.stubGlobal('fetch', fetchMock);
 
     render(<ChatTab gatewayUrl="https://gateway.example" />);
@@ -203,6 +247,7 @@ describe('ChatTab', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Отправить' }));
 
     expect(await screen.findByText('Ответ готов')).toBeInTheDocument();
+    expect(document.querySelector('.ai-assistant__chat--expert')).not.toBeNull();
     expect(screen.getByText('Есть расхождение')).toBeInTheDocument();
     expect(screen.getByText('Найдены противоречия и снижена надежность источников')).toBeInTheDocument();
     expect(screen.getByText('Приоритетный источник: Регламент')).toBeInTheDocument();
@@ -226,27 +271,41 @@ describe('ChatTab', () => {
   });
 
   it('делает inline citation ссылкой на источник с тем же номером', async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse({ values: [] }))
-      .mockResolvedValueOnce(streamResponse([
-        'data: {"type":"conversation","conversationId":"c-citation"}\n',
-        'data: {"type":"token","content":"Карибский бассейн популярен для отдыха [Источник 3], первый источник тоже доступен [источник 1], но неизвестная ссылка [Источник 9] остается текстом."}\n',
-        'data: {"type":"sources","sources":[{"title":"Источник 1","pageId":1,"pageUrl":"https://wiki.example/One"},{"title":"Источник 2","pageId":2},{"title":"Карибский бассейн","pageId":3,"pageUrl":"https://wiki.example/Caribbean"}]}\n',
-        'data: [DONE]\n',
-      ]))
-      .mockResolvedValueOnce(jsonResponse({
-        values: [
-          {
-            id: 's-citation',
-            conversationId: 'c-citation',
-            title: 'Цитаты',
-            status: 'active',
-            messageCount: 2,
-            createdAt: '2026-06-03T10:00:00Z',
-            updatedAt: '2026-06-03T10:01:00Z',
-          },
-        ],
-      }));
+    let activeSessionRequests = 0;
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/ui/config')) {
+        return Promise.resolve(jsonResponse({ assistantUiMode: 'standard' }));
+      }
+      if (url.endsWith('/api/chat')) {
+        return Promise.resolve(streamResponse([
+          'data: {"type":"conversation","conversationId":"c-citation"}\n',
+          'data: {"type":"token","content":"Карибский бассейн популярен для отдыха [Источник 3], первый источник тоже доступен [источник 1], но неизвестная ссылка [Источник 9] остается текстом."}\n',
+          'data: {"type":"sources","sources":[{"title":"Источник 1","pageId":1,"pageUrl":"https://wiki.example/One"},{"title":"Источник 2","pageId":2},{"title":"Карибский бассейн","pageId":3,"pageUrl":"https://wiki.example/Caribbean"}]}\n',
+          'data: [DONE]\n',
+        ]));
+      }
+      if (url.includes('/api/chat/sessions?status=active')) {
+        activeSessionRequests += 1;
+        if (activeSessionRequests === 1) {
+          return Promise.resolve(jsonResponse({ values: [] }));
+        }
+        return Promise.resolve(jsonResponse({
+          values: [
+            {
+              id: 's-citation',
+              conversationId: 'c-citation',
+              title: 'Цитаты',
+              status: 'active',
+              messageCount: 2,
+              createdAt: '2026-06-03T10:00:00Z',
+              updatedAt: '2026-06-03T10:01:00Z',
+            },
+          ],
+        }));
+      }
+      return Promise.resolve(jsonResponse({ values: [] }));
+    });
     vi.stubGlobal('fetch', fetchMock);
 
     render(<ChatTab gatewayUrl="https://gateway.example" />);

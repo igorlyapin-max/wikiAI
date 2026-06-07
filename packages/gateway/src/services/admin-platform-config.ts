@@ -181,6 +181,8 @@ export interface RagAdminConfig {
   includeSemanticHeader: boolean;
 }
 
+export type AssistantUiMode = 'compact' | 'standard' | 'expert';
+
 export type RetrievalProfileReadinessStatus = 'prod_ready' | 'limited_ready' | 'not_ready';
 
 export interface RetrievalProfileReadiness {
@@ -188,6 +190,15 @@ export interface RetrievalProfileReadiness {
   reasons: string[];
   requiredIndexTargets?: string[];
   missingIndexTargets?: string[];
+}
+
+export interface RetrievalProfileResponseOverrides {
+  llmModel?: string;
+  llmTemperature?: number;
+  llmMaxTokens?: number;
+  llmTimeoutMs?: number;
+  showSources?: boolean;
+  assistantUiMode?: AssistantUiMode;
 }
 
 export type RetrievalProfileOverrides = Pick<RagAdminConfig,
@@ -227,7 +238,7 @@ export type RetrievalProfileOverrides = Pick<RagAdminConfig,
   | 'semanticFactsInContext'
   | 'includeAttachments'
   | 'includeSemanticHeader'
->;
+> & RetrievalProfileResponseOverrides;
 
 export interface RetrievalProfile {
   id: string;
@@ -737,7 +748,7 @@ const ragConfigSchema = ragConfigBaseSchema
 
 const ragConfigUpdateSchema = ragConfigBaseSchema.partial().strict();
 
-const retrievalProfileConfigSchema = ragConfigBaseSchema.pick({
+const retrievalProfileRagConfigSchema = ragConfigBaseSchema.pick({
   retrievalTopK: true,
   contextTopK: true,
   contextMaxChars: true,
@@ -774,6 +785,15 @@ const retrievalProfileConfigSchema = ragConfigBaseSchema.pick({
   semanticFactsInContext: true,
   includeAttachments: true,
   includeSemanticHeader: true,
+});
+
+const retrievalProfileConfigSchema = retrievalProfileRagConfigSchema.extend({
+  llmModel: z.string().trim().min(1).max(200).optional(),
+  llmTemperature: z.number().min(0).max(2).optional(),
+  llmMaxTokens: z.number().int().min(64).max(4096).optional(),
+  llmTimeoutMs: z.number().int().min(5000).max(120000).optional(),
+  showSources: z.boolean().optional(),
+  assistantUiMode: z.enum(['compact', 'standard', 'expert']).optional(),
 }).strict();
 
 const retrievalProfileInputSchema = z.object({
@@ -1438,6 +1458,7 @@ async function getDefaultIndexingProfile(): Promise<IndexingProfile> {
   const rag = await getRagAdminConfig();
   const now = new Date().toISOString();
   const namespaces = [0];
+  const attachmentsEnabled = true;
   return {
     id: 'default',
     name: 'Default env profile',
@@ -1450,13 +1471,13 @@ async function getDefaultIndexingProfile(): Promise<IndexingProfile> {
     documentPolicyId: 'default',
     runMode: 'manual',
     indexTargets: defaultIndexTargets({
-      attachmentsEnabled: rag.includeAttachments,
+      attachmentsEnabled,
       semanticFactsEnabled: true,
       ontologyVectorsEnabled: false,
       colbertEnabled: rag.colbertEnabled,
       opensearchEnabled: rag.lexicalBackend === 'opensearch',
     }),
-    attachmentsEnabled: rag.includeAttachments,
+    attachmentsEnabled,
     semanticFactsEnabled: true,
     ontologyVectorsEnabled: false,
     chunkSize: rag.chunkSize,
@@ -1752,7 +1773,7 @@ export async function getRagAdminConfig(): Promise<RagAdminConfig> {
     colbertMinScore: 0,
     colbertFailMode: 'fallback_current',
     semanticFactsInContext: true,
-    includeAttachments: false,
+    includeAttachments: true,
     includeSemanticHeader: true,
   };
   const stored = (await getAdminStore().getJson<DeepPartial<RagAdminConfig>>(RAG_CONFIG_AREA, DEFAULT_KEY)) ?? {};

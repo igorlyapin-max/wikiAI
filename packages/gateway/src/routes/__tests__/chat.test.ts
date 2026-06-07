@@ -168,6 +168,7 @@ describe('chat routes', () => {
       tags: ['test'],
       config: {
         ...template.config,
+        includeAttachments: false,
         searchMode: 'vector_only',
         rerankMode: 'none',
         colbertEnabled: false,
@@ -228,6 +229,19 @@ describe('chat routes', () => {
         contextMaxChars: 12000,
         searchMode: 'hybrid',
         retrievalProfileId: 'test_mediawiki_vector',
+        knowledgeSourceProfileId: 'default',
+        knowledgeSourceIds: ['mediawiki'],
+        knowledgeSourceFailurePolicy: 'partial_with_warning',
+        sourceFanout: [
+          expect.objectContaining({
+            sourceId: 'mediawiki',
+            status: 'ok',
+            rawChunks: 1,
+            readableChunks: 1,
+            trustedChunks: 1,
+            finalChunks: 1,
+          }),
+        ],
         rawChunks: 1,
         readableChunks: 1,
         trustedChunks: 1,
@@ -236,6 +250,11 @@ describe('chat routes', () => {
       },
       sources: [
         {
+          sourceId: 'mediawiki',
+          documentId: 'mediawiki:page:10',
+          displayTitle: 'CorpIT:FAQ VPN',
+          sourceUrl: 'http://127.0.0.1:8082/index.php/CorpIT:FAQ_VPN',
+          spaceKey: 'mw-namespace-3030',
           pageId: 10,
           title: 'CorpIT:FAQ VPN',
           namespace: 3030,
@@ -343,6 +362,7 @@ describe('chat routes', () => {
         topK: 3,
         maxContextChunks: 1,
         maxContextChars: 1000,
+        includeAttachments: false,
         searchMode: 'vector_only',
         rerankMode: 'none',
         colbertEnabled: false,
@@ -389,6 +409,70 @@ describe('chat routes', () => {
     expect(contextMessage?.content).toContain('[1] CorpIT:FAQ VPN');
     expect(contextMessage?.content).not.toContain('CorpIT:FAQ WiFi');
     expect(contextMessage?.content).not.toContain('[2]');
+
+    await app.close();
+  });
+
+  it('uses retrieval profile response settings for LLM calls and source visibility', async () => {
+    const template = (await getDefaultRetrievalProfiles()).find((profile) => profile.id === 'semantic_broad');
+    if (!template) throw new Error('semantic_broad retrieval profile template is missing');
+    await upsertRetrievalProfile({
+      id: 'test_mediawiki_response',
+      name: 'Test MediaWiki response',
+      description: 'Test profile with response settings',
+      enabled: true,
+      apiEnabled: false,
+      mcpEnabled: false,
+      anonymousAllowed: false,
+      maxTopK: 20,
+      tags: ['test'],
+      config: {
+        ...template.config,
+        includeAttachments: false,
+        searchMode: 'vector_only',
+        rerankMode: 'none',
+        colbertEnabled: false,
+        llmModel: 'profile-chat-model',
+        llmTemperature: 0.12,
+        llmMaxTokens: 256,
+        llmTimeoutMs: 9000,
+        showSources: false,
+        assistantUiMode: 'expert',
+      },
+    });
+    await setMediaWikiProfileConfig({ defaultRetrievalProfileId: 'test_mediawiki_response' });
+
+    const app = await makeApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/chat',
+      headers: { cookie: 'mw=1', origin: 'http://127.0.0.1:8082' },
+      payload: {
+        message: 'Как подключить VPN?',
+        conversationId: 'conv-response-settings',
+        stream: false,
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().sources).toBeUndefined();
+    expect(res.json()).toMatchObject({
+      assistantUiMode: 'expert',
+      diagnostics: {
+        llmModel: 'profile-chat-model',
+        llmTemperature: 0.12,
+        llmMaxTokens: 256,
+        llmTimeoutMs: 9000,
+        showSources: false,
+        assistantUiMode: 'expert',
+      },
+    });
+    expect(callLiteLLM).toHaveBeenCalledWith(
+      expect.any(Array),
+      'profile-chat-model',
+      9000,
+      { temperature: 0.12, maxTokens: 256 }
+    );
 
     await app.close();
   });
@@ -488,6 +572,7 @@ describe('chat routes', () => {
       tags: ['test'],
       config: {
         ...template.config,
+        includeAttachments: false,
         chatRetrievalQueryMode: 'history_augmented',
         searchMode: 'vector_only',
         rerankMode: 'none',
@@ -580,6 +665,7 @@ describe('chat routes', () => {
       tags: ['test'],
       config: {
         ...template.config,
+        includeAttachments: false,
         chatRetrievalQueryMode: 'current_message',
         searchMode: 'vector_only',
         rerankMode: 'none',
@@ -755,6 +841,8 @@ describe('chat routes', () => {
     expect(res.headers['access-control-allow-credentials']).toBe('true');
     expect(res.payload).toContain('"type":"conversation"');
     expect(res.payload).toContain('"conversationId":"conv-stream-conflict"');
+    expect(res.payload).toContain('"type":"ui"');
+    expect(res.payload).toContain('"assistantUiMode":"standard"');
     expect(res.payload).toContain('"type":"conflict"');
     expect(res.payload).toContain('"type":"diagnostics"');
     expect(res.payload).toContain('"originalMessage":"Можно ли VPN без MFA?"');
@@ -762,6 +850,7 @@ describe('chat routes', () => {
     expect(res.payload).toContain('"type":"sources"');
     expect(res.payload).toContain('"pageUrl":"http://127.0.0.1:8082/index.php/CorpIT:FAQ_VPN"');
     expect(res.payload.indexOf('"type":"conversation"')).toBeLessThan(res.payload.indexOf('"type":"conflict"'));
+    expect(res.payload.indexOf('"type":"ui"')).toBeLessThan(res.payload.indexOf('"type":"diagnostics"'));
     expect(res.payload.indexOf('"type":"conflict"')).toBeLessThan(res.payload.indexOf('"type":"diagnostics"'));
     expect(res.payload.indexOf('"type":"diagnostics"')).toBeLessThan(res.payload.indexOf('"type":"sources"'));
     await app.close();

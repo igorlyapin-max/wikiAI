@@ -137,6 +137,7 @@ describe('search routes trust filtering', () => {
         searchMode: 'vector_only',
         rerankMode: 'none',
         colbertEnabled: false,
+        includeAttachments: false,
       },
     });
     await setMediaWikiProfileConfig({ defaultRetrievalProfileId: 'test_mediawiki_vector' });
@@ -158,6 +159,7 @@ describe('search routes trust filtering', () => {
       config: {
         ...template.config,
         ...config,
+        includeAttachments: false,
       },
     });
     await setMediaWikiProfileConfig({ defaultRetrievalProfileId: id });
@@ -182,9 +184,16 @@ describe('search routes trust filtering', () => {
       values: {
         searchHistoryEnabled: false,
         searchHistoryLimit: 3,
+        knowledgeSourceProfileId: 'default',
+        knowledgeSourceIds: ['mediawiki'],
+        knowledgeSourceRetrievalProfileId: 'test_mediawiki_vector',
+        knowledgeSourceRetrievalProfileName: 'Test MediaWiki vector',
+        knowledgeSourceRetrievalProfileReadiness: 'limited_ready',
         mediaWikiRetrievalProfileId: 'test_mediawiki_vector',
         mediaWikiRetrievalProfileName: 'Test MediaWiki vector',
         mediaWikiRetrievalProfileReadiness: 'limited_ready',
+        assistantUiMode: 'standard',
+        showSources: true,
       },
     });
     expect(JSON.stringify(res.json())).not.toContain('secret prompt');
@@ -221,6 +230,11 @@ describe('search routes trust filtering', () => {
     expect(res.statusCode).toBe(200);
     expect(res.json().results).toHaveLength(1);
     expect(res.json().results[0]).toMatchObject({
+      sourceId: 'mediawiki',
+      documentId: 'mediawiki:page:12',
+      displayTitle: 'CorpIT:Инструкция VPN',
+      sourceUrl: 'http://127.0.0.1:8082/index.php/CorpIT:%D0%98%D0%BD%D1%81%D1%82%D1%80%D1%83%D0%BA%D1%86%D0%B8%D1%8F_VPN',
+      spaceKey: 'mw-namespace-3030',
       title: 'CorpIT:Инструкция VPN',
       pageUrl: 'http://127.0.0.1:8082/index.php/CorpIT:%D0%98%D0%BD%D1%81%D1%82%D1%80%D1%83%D0%BA%D1%86%D0%B8%D1%8F_VPN',
       trust: {
@@ -324,6 +338,19 @@ describe('search routes trust filtering', () => {
         retrievalQuery: 'vpn',
         searchMode: 'hybrid',
         retrievalProfileId: 'test_mediawiki_vector',
+        knowledgeSourceProfileId: 'default',
+        knowledgeSourceIds: ['mediawiki'],
+        knowledgeSourceFailurePolicy: 'partial_with_warning',
+        sourceFanout: [
+          expect.objectContaining({
+            sourceId: 'mediawiki',
+            status: 'ok',
+            rawChunks: 2,
+            readableChunks: 1,
+            trustedChunks: 1,
+            finalChunks: 1,
+          }),
+        ],
         requestedTopK: 2,
         effectiveTopK: 2,
         rawChunks: 2,
@@ -337,6 +364,9 @@ describe('search routes trust filtering', () => {
       },
       results: [
         {
+          sourceId: 'mediawiki',
+          documentId: 'mediawiki:page:12',
+          displayTitle: 'CorpIT:Инструкция VPN',
           title: 'CorpIT:Инструкция VPN',
         },
       ],
@@ -360,6 +390,8 @@ describe('search routes trust filtering', () => {
     expect(res.statusCode).toBe(200);
     expect(res.json().diagnostics).toMatchObject({
       retrievalProfileId: 'test_mediawiki_vector',
+      knowledgeSourceProfileId: 'default',
+      knowledgeSourceIds: ['mediawiki'],
       effectiveSearchMode: 'vector_only',
     });
     expect(searchRagChunks).toHaveBeenCalledWith(expect.objectContaining({

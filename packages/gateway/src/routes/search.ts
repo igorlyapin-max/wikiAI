@@ -7,15 +7,16 @@ import { RuntimeHttpError } from '../services/runtime-errors.js';
 import { principalFromMwUser } from '../services/principal-auth.js';
 import { getRuntimeConfig } from '../services/config.js';
 import {
-  getMediaWikiProfileConfig,
-  getMediaWikiProfileConfigStatus,
-} from '../services/mediawiki-profile-config.js';
+  getKnowledgeSourceProfileConfig,
+  getKnowledgeSourceProfileConfigStatus,
+} from '../services/knowledge-sources.js';
 import { SearchRequest } from '../types/index.js';
 
 const searchRequestSchema = z.object({
   query: z.string().trim().min(1),
   topK: z.number().int().min(1).max(20).optional(),
   retrievalProfileId: z.string().trim().min(1).optional(),
+  knowledgeSourceProfileId: z.string().trim().min(1).optional(),
   context: z.unknown().optional(),
 }).strict();
 
@@ -35,16 +36,24 @@ export async function searchRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/ui/config', async (_request, reply) => {
     const [runtime, profileStatus] = await Promise.all([
       getRuntimeConfig(),
-      getMediaWikiProfileConfigStatus(),
+      getKnowledgeSourceProfileConfigStatus(),
     ]);
     reply.send({
       values: {
         searchHistoryEnabled: runtime.searchHistoryEnabled,
         searchHistoryLimit: runtime.searchHistoryLimit,
-        mediaWikiRetrievalProfileId: profileStatus.values.defaultRetrievalProfileId,
+        knowledgeSourceProfileId: profileStatus.values.id,
+        knowledgeSourceIds: profileStatus.values.sourceIds,
+        knowledgeSourceRetrievalProfileId: profileStatus.values.retrievalProfileId,
+        knowledgeSourceRetrievalProfileName: profileStatus.selectedProfile?.name,
+        knowledgeSourceRetrievalProfileReadiness: profileStatus.selectedProfile?.readiness.status,
+        knowledgeSourceRetrievalProfileReasons: profileStatus.selectedProfile?.readiness.reasons ?? [],
+        mediaWikiRetrievalProfileId: profileStatus.values.retrievalProfileId,
         mediaWikiRetrievalProfileName: profileStatus.selectedProfile?.name,
         mediaWikiRetrievalProfileReadiness: profileStatus.selectedProfile?.readiness.status,
         mediaWikiRetrievalProfileReasons: profileStatus.selectedProfile?.readiness.reasons ?? [],
+        assistantUiMode: profileStatus.selectedProfile?.config.assistantUiMode ?? 'standard',
+        showSources: profileStatus.selectedProfile?.config.showSources ?? runtime.showSources,
       },
     });
   });
@@ -73,12 +82,15 @@ export async function searchRoutes(app: FastifyInstance): Promise<void> {
       const cookie = (request as AuthenticatedRequest).sessionCookie;
 
       try {
-        const mediaWikiProfile = await getMediaWikiProfileConfig();
+        const sourceProfile = await getKnowledgeSourceProfileConfig();
         reply.send(await executeRuntimeSearch({
           query,
           topK,
-          retrievalProfileId: mediaWikiProfile.defaultRetrievalProfileId,
+          retrievalProfileId: sourceProfile.retrievalProfileId,
           retrievalProfileSurface: 'mediawiki',
+          knowledgeSourceProfileId: sourceProfile.id,
+          sourceIds: sourceProfile.sourceIds,
+          sourceFailurePolicy: sourceProfile.failurePolicy,
           principal: principalFromMwUser(mwUser, cookie),
           wikiUrlOptions: wikiUrlOptionsFromRequest(request),
           aclMode: 'mediawiki_check',
