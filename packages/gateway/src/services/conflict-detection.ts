@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import {
+  AttachmentParentConflictMode,
   ConflictDetectionConfig,
   ConflictDetectionRunMode,
   getConflictDetectionConfig,
@@ -32,6 +33,8 @@ export interface ConflictDetectionResult {
     runMode: ConflictDetectionRunMode;
     sourceCount: number;
     trustGap?: number;
+    attachmentParentConflictMode?: AttachmentParentConflictMode;
+    attachmentParentPairs?: number;
   };
 }
 
@@ -41,11 +44,36 @@ export interface PreparedConflictSource {
   title: string;
   namespace: number;
   text: string;
+  sourceType?: string;
+  attachmentFilename?: string;
+  attachmentMime?: string;
   trustScore?: number;
   trustFlags: string[];
   lastModified?: string;
   semanticFacts?: SemanticFacts;
   status: string;
+}
+
+export interface AttachmentParentConflictPair {
+  attachmentSourceIndex: number;
+  parentSourceIndex: number;
+  pageId: number;
+  parentTitle: string;
+  attachmentFilename: string;
+}
+
+export interface AttachmentParentConflictMissingParent {
+  attachmentSourceIndex: number;
+  pageId: number;
+  parentTitle: string;
+  attachmentFilename: string;
+}
+
+export interface AttachmentParentConflictDiagnostics {
+  mode: AttachmentParentConflictMode;
+  pairs: AttachmentParentConflictPair[];
+  missingParents: AttachmentParentConflictMissingParent[];
+  riskSignal: boolean;
 }
 
 interface DetectConflictsOptions {
@@ -61,6 +89,7 @@ export interface ConflictDetectionTrace {
     trustGap?: number;
   };
   preparedSources: PreparedConflictSource[];
+  attachmentParent: AttachmentParentConflictDiagnostics;
   skippedReason?: ConflictDetectionResult['skippedReason'];
   response?: ChatCompletionResponse;
   responseContent?: string;
@@ -142,6 +171,9 @@ function prepareSources(chunks: SearchChunk[], config: ConflictDetectionConfig):
       title: chunk.title,
       namespace: chunk.namespace,
       text: truncateText(chunk.text, config.maxCharsPerSource),
+      sourceType: chunk.sourceType,
+      attachmentFilename: chunk.attachmentFilename,
+      attachmentMime: chunk.attachmentMime,
       trustScore: chunk.trust?.score,
       trustFlags: chunk.trust?.flags ?? [],
       lastModified: chunk.trust?.lastModified ?? chunk.lastModified,
@@ -151,6 +183,52 @@ function prepareSources(chunks: SearchChunk[], config: ConflictDetectionConfig):
     source.status = formatSourceStatus(source);
     return source;
   });
+}
+
+function isAttachmentSource(source: PreparedConflictSource): boolean {
+  return source.sourceType === 'attachment' || Boolean(source.attachmentFilename);
+}
+
+export function analyzeAttachmentParentConflicts(
+  sources: PreparedConflictSource[],
+  mode: AttachmentParentConflictMode
+): AttachmentParentConflictDiagnostics {
+  const parentByPageId = new Map<number, PreparedConflictSource>();
+  for (const source of sources) {
+    if (isAttachmentSource(source)) continue;
+    if (!parentByPageId.has(source.pageId)) parentByPageId.set(source.pageId, source);
+  }
+
+  const pairs: AttachmentParentConflictPair[] = [];
+  const missingParents: AttachmentParentConflictMissingParent[] = [];
+  for (const source of sources.filter(isAttachmentSource)) {
+    const attachmentFilename = source.attachmentFilename || source.title;
+    const parent = parentByPageId.get(source.pageId);
+    if (parent) {
+      pairs.push({
+        attachmentSourceIndex: source.sourceIndex,
+        parentSourceIndex: parent.sourceIndex,
+        pageId: source.pageId,
+        parentTitle: parent.title,
+        attachmentFilename,
+      });
+      continue;
+    }
+
+    missingParents.push({
+      attachmentSourceIndex: source.sourceIndex,
+      pageId: source.pageId,
+      parentTitle: source.title,
+      attachmentFilename,
+    });
+  }
+
+  return {
+    mode,
+    pairs,
+    missingParents,
+    riskSignal: mode !== 'disabled' && pairs.length > 0,
+  };
 }
 
 function calculateTrustGap(sources: PreparedConflictSource[]): number | undefined {
@@ -166,7 +244,8 @@ function skippedResult(
   config: ConflictDetectionConfig,
   sourceCount: number,
   skippedReason: ConflictDetectionResult['skippedReason'],
-  trustGap?: number
+  trustGap?: number,
+  attachmentParent?: AttachmentParentConflictDiagnostics
 ): ConflictDetectionResult {
   return {
     enabled: config.enabled,
@@ -182,6 +261,8 @@ function skippedResult(
       runMode: config.runMode,
       sourceCount,
       trustGap,
+      attachmentParentConflictMode: config.attachmentParentConflictMode,
+      attachmentParentPairs: attachmentParent?.pairs.length ?? 0,
     },
   };
 }
@@ -189,6 +270,7 @@ function skippedResult(
 function shouldRunDetection(
   config: ConflictDetectionConfig,
   sources: PreparedConflictSource[],
+  attachmentParent: AttachmentParentConflictDiagnostics,
   trustGap: number | undefined,
   force: boolean
 ): ConflictDetectionResult['skippedReason'] | undefined {
@@ -196,6 +278,7 @@ function shouldRunDetection(
   if (sources.length < 2) return 'not_enough_sources';
   if (config.runMode === 'manual' && !force) return 'manual_mode';
   if (config.runMode === 'risk_only' && !force) {
+    if (attachmentParent.riskSignal) return undefined;
     const scores = sources.map((source) => source.trustScore);
     const hasMissingTrustScore = scores.some((score) => score === undefined);
     const hasLowTrustSource = scores.some((score) => score !== undefined && score < config.lowConfidenceThreshold);
@@ -210,20 +293,43 @@ function shouldRunDetection(
 function buildPrompt(
   query: string,
   sources: PreparedConflictSource[],
-  systemPrompt: string
+  systemPrompt: string,
+  attachmentParent: AttachmentParentConflictDiagnostics
 ): Array<{ role: string; content: string }> {
+  const parentIndexes = new Set(attachmentParent.pairs.map((pair) => pair.parentSourceIndex));
   const sourceText = sources.map((source) => {
     const semanticFacts = formatSemanticFacts(source.semanticFacts);
+    const role = isAttachmentSource(source)
+      ? 'attachment'
+      : parentIndexes.has(source.sourceIndex) ? 'parent_page' : 'wiki_page';
     return [
       `Источник ${source.sourceIndex}`,
+      `role: ${role}`,
       `title: ${source.title}`,
       `pageId: ${source.pageId}`,
       `namespace: ${source.namespace}`,
+      source.sourceType ? `sourceType: ${source.sourceType}` : undefined,
+      source.attachmentFilename ? `attachmentFilename: ${source.attachmentFilename}` : undefined,
+      source.attachmentMime ? `attachmentMime: ${source.attachmentMime}` : undefined,
       source.status ? `trust: ${source.status}` : undefined,
       semanticFacts ? `semanticFacts:\n${semanticFacts}` : undefined,
       `text:\n${source.text}`,
     ].filter((part): part is string => Boolean(part)).join('\n');
   }).join('\n\n---\n\n');
+  const attachmentParentText = attachmentParent.pairs.length > 0
+    ? [
+      `Режим проверки attachment vs parent_page: ${attachmentParent.mode}`,
+      ...attachmentParent.pairs.map((pair) => [
+        `Пара: attachment Источник ${pair.attachmentSourceIndex}`,
+        `parent_page Источник ${pair.parentSourceIndex}`,
+        `pageId=${pair.pageId}`,
+        `parentTitle=${pair.parentTitle}`,
+        `attachmentFilename=${pair.attachmentFilename}`,
+      ].join('; ')),
+      'Сравнивай пары только по несовместимым фактам, датам, статусам, регламентам и числовым значениям.',
+      'Не отмечай конфликт, если вложение только уточняет или расширяет текст родительской страницы.',
+    ].join('\n')
+    : '';
 
   return [
     {
@@ -234,6 +340,7 @@ function buildPrompt(
       role: 'user',
       content: [
         `Вопрос пользователя: ${query}`,
+        attachmentParentText ? `\nAttachment-parent пары:\n${attachmentParentText}` : '',
         '',
         'Источники:',
         sourceText,
@@ -289,7 +396,8 @@ export async function detectConflictsWithTrace(
   const config = options.config ?? await getConflictDetectionConfig();
   const sources = prepareSources(chunks, config);
   const trustGap = calculateTrustGap(sources);
-  const messages = buildPrompt(query, sources, config.systemPrompt);
+  const attachmentParent = analyzeAttachmentParentConflicts(sources, config.attachmentParentConflictMode);
+  const messages = buildPrompt(query, sources, config.systemPrompt, attachmentParent);
   const traceBase: Omit<ConflictDetectionTrace, 'response' | 'responseContent' | 'parsedPayload' | 'result'> = {
     request: {
       model: config.model,
@@ -298,10 +406,11 @@ export async function detectConflictsWithTrace(
       trustGap,
     },
     preparedSources: sources,
+    attachmentParent,
   };
-  const skippedReason = shouldRunDetection(config, sources, trustGap, Boolean(options.force));
+  const skippedReason = shouldRunDetection(config, sources, attachmentParent, trustGap, Boolean(options.force));
   if (skippedReason) {
-    const result = skippedResult(config, sources.length, skippedReason, trustGap);
+    const result = skippedResult(config, sources.length, skippedReason, trustGap, attachmentParent);
     return {
       result,
       trace: {
@@ -334,6 +443,8 @@ export async function detectConflictsWithTrace(
       runMode: config.runMode,
       sourceCount: sources.length,
       trustGap,
+      attachmentParentConflictMode: config.attachmentParentConflictMode,
+      attachmentParentPairs: attachmentParent.pairs.length,
     },
   };
 

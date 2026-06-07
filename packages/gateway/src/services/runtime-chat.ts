@@ -756,6 +756,15 @@ export async function prepareRuntimeChat(input: RuntimeChatInput): Promise<Prepa
       llmTimeoutMs: responseSettings.timeoutMs,
       answerSystemPromptSource: promptSources.answerSystemPrompt,
       conflictSystemPromptSource: promptSources.conflictSystemPrompt,
+      attachmentParentConflictMode: (conflictTrace && 'attachmentParent' in conflictTrace)
+        ? conflictTrace.attachmentParent.mode
+        : undefined,
+      attachmentParentConflictPairs: (conflictTrace && 'attachmentParent' in conflictTrace)
+        ? conflictTrace.attachmentParent.pairs.length
+        : undefined,
+      attachmentParentConflictMissingParents: (conflictTrace && 'attachmentParent' in conflictTrace)
+        ? conflictTrace.attachmentParent.missingParents.length
+        : undefined,
       showSources: responseSettings.showSources,
       assistantUiMode: responseSettings.assistantUiMode,
     },

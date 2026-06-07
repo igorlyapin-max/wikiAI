@@ -317,6 +317,41 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "403":
           $ref: "#/components/responses/Forbidden"
+  /api/admin/conflict-detection/config:
+    get:
+      summary: Return conflict detection settings used by chat and debug trace.
+      security:
+        - mediaWikiSession: []
+      responses:
+        "200":
+          description: Conflict detection config.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConflictDetectionConfigResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      summary: Save conflict detection settings.
+      security:
+        - mediaWikiSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConflictDetectionConfig"
+      responses:
+        "200":
+          description: Saved conflict detection config.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConflictDetectionConfigResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
   /api/admin/chat-profiles:
     get:
       summary: Return chat prompt/retrieval profiles.
@@ -963,6 +998,55 @@ components:
             updatedAt:
               type: string
               format: date-time
+    ConflictDetectionConfigResponse:
+      type: object
+      required: [values, metadata]
+      properties:
+        status:
+          type: string
+          example: saved
+        values:
+          $ref: "#/components/schemas/ConflictDetectionConfig"
+        metadata:
+          type: object
+          properties:
+            paidApiPossible:
+              type: boolean
+              description: Conflict detection may call an OpenAI-compatible LLM endpoint.
+    ConflictDetectionConfig:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        runMode:
+          type: string
+          enum: [risk_only, always, manual]
+        attachmentParentConflictMode:
+          type: string
+          enum: [disabled, risk_only, always]
+          description: Compares attachment chunks with their parent wiki page only when both are already in the answer context. Gateway does not fetch the parent page just for this check.
+        model:
+          type: string
+        systemPrompt:
+          type: string
+        maxSources:
+          type: integer
+          minimum: 2
+          maximum: 10
+        maxCharsPerSource:
+          type: integer
+          minimum: 300
+          maximum: 12000
+        trustGapThreshold:
+          type: number
+          minimum: 0
+          maximum: 1
+        lowConfidenceThreshold:
+          type: number
+          minimum: 0
+          maximum: 1
+        showConflictBlock:
+          type: boolean
     ReindexRequest:
       type: object
       properties:

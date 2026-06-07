@@ -132,6 +132,9 @@
 - [ ] Изменения trust model/entities/rules фиксируются в audit log.
 - [ ] Search/chat фильтруют readable chunks по активной trust policy.
 - [ ] Search/chat response содержит trust metadata у возвращенных источников/chunks.
+- [ ] `Проверка противоречий` содержит настройку `attachmentParentConflictMode` с дефолтом `risk_only`.
+- [ ] Если attachment chunk и обычный page chunk той же страницы оба попали в context, `risk_only` запускает conflict detector и debug показывает пару в блоке `Attachment vs parent page`.
+- [ ] Если attachment chunk есть, но parent page не попал в context, Gateway не делает дополнительный fetch/retrieval страницы, а debug показывает missing parent.
 - [ ] `POST /api/admin/trust-scores/recalculate` с `dryRun=true` не пишет Qdrant payload.
 - [ ] `POST /api/admin/trust-scores/recalculate` с `dryRun=false` пишет trust payload в Qdrant.
 - [ ] Qdrant payload содержит `trust_score`, `trust_flags`, `applied_rules`, `applied_entities`, `trust_model_id`.

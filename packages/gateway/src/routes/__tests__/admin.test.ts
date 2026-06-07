@@ -846,6 +846,7 @@ describe('admin routes', () => {
     expect(read.json().values).toMatchObject({
       enabled: true,
       runMode: 'risk_only',
+      attachmentParentConflictMode: 'risk_only',
       model: 'test-model',
       systemPrompt: expect.stringContaining('wiki-источники на противоречия'),
       showConflictBlock: true,
@@ -859,6 +860,7 @@ describe('admin routes', () => {
       payload: {
         enabled: true,
         runMode: 'manual',
+        attachmentParentConflictMode: 'always',
         model: 'conflict-checker',
         systemPrompt: 'Проверяй только прямые несовместимые утверждения. Верни JSON.',
         maxSources: 3,
@@ -872,6 +874,7 @@ describe('admin routes', () => {
     expect(saved.statusCode).toBe(200);
     expect(saved.json().values).toMatchObject({
       runMode: 'manual',
+      attachmentParentConflictMode: 'always',
       model: 'conflict-checker',
       systemPrompt: 'Проверяй только прямые несовместимые утверждения. Верни JSON.',
       maxSources: 3,

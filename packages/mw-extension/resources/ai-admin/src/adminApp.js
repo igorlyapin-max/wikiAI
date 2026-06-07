@@ -385,7 +385,7 @@ export function initializeAIAdmin(options = {}) {
         form.appendChild(row);
         return input;
       };
-      const appendSelectRow = (form, id, label, value, options) => {
+      const appendSelectRow = (form, id, label, value, options, rowOptions = {}) => {
         const row = document.createElement("div");
         row.className = "ai-admin-row";
         const labelNode = document.createElement("label");
@@ -406,6 +406,12 @@ export function initializeAIAdmin(options = {}) {
         const firstOption = options[0];
         select.value = value ?? (Array.isArray(firstOption) ? firstOption[0] : firstOption?.value) ?? "";
         row.append(labelNode, select);
+        if (rowOptions.help) {
+          const help = document.createElement("div");
+          help.className = "ai-admin-muted";
+          help.textContent = rowOptions.help;
+          row.appendChild(help);
+        }
         form.appendChild(row);
         return select;
       };
@@ -1895,6 +1901,7 @@ export function initializeAIAdmin(options = {}) {
         appendDebugPre(root, "Attachment index coverage", values.retrieval?.attachmentIndexCoverage || []);
         appendDebugPre(root, "Chunks", values.retrieval?.chunks || {});
         appendDebugPre(root, "Context", values.retrieval?.contextText || "");
+        appendDebugPre(root, "Attachment vs parent page", values.conflict?.attachmentParent || {});
         appendDebugPre(root, "Conflict detector", values.conflict || {});
       };
 
@@ -4173,6 +4180,23 @@ export function initializeAIAdmin(options = {}) {
           { value: "always", label: t("aiadmin-value-conflict-mode-always") },
           { value: "manual", label: t("aiadmin-value-conflict-mode-manual") },
         ]);
+        appendSelectRow(
+          form,
+          "conflict-attachment-parent-mode",
+          t("aiadmin-field-conflict-attachment-parent-mode", "Attachment vs parent page"),
+          conflictDetectionConfig.attachmentParentConflictMode || "risk_only",
+          [
+            { value: "risk_only", label: t("aiadmin-value-attachment-parent-conflict-risk-only", "Risk only") },
+            { value: "always", label: t("aiadmin-value-attachment-parent-conflict-always", "Always") },
+            { value: "disabled", label: t("aiadmin-value-attachment-parent-conflict-disabled", "Disabled") },
+          ],
+          {
+            help: t(
+              "aiadmin-help-conflict-attachment-parent-mode",
+              "Compares an attachment with its parent wiki page only when both are already in the answer context. It never fetches the parent page just for this check."
+            )
+          }
+        );
         appendInputRow(form, "conflict-model", t("aiadmin-field-conflict-model"), conflictDetectionConfig.model);
         appendInputRow(
           form,
@@ -4197,6 +4221,7 @@ export function initializeAIAdmin(options = {}) {
       const collectConflictDetectionConfig = () => ({
         enabled: document.getElementById("conflict-enabled").checked,
         runMode: document.getElementById("conflict-runmode").value,
+        attachmentParentConflictMode: document.getElementById("conflict-attachment-parent-mode").value,
         model: document.getElementById("conflict-model").value.trim(),
         systemPrompt: document.getElementById("conflict-system-prompt").value.trim(),
         maxSources: Number(document.getElementById("conflict-max-sources").value),

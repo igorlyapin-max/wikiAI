@@ -98,14 +98,22 @@ describe('AI admin helpers', () => {
   });
 
   it('keeps the conflict detection system prompt visible and saved in the admin UI', () => {
+    expect(adminAppSource).toContain('conflict-attachment-parent-mode');
+    expect(adminAppSource).toContain('attachmentParentConflictMode');
+    expect(adminAppSource).toContain('aiadmin-field-conflict-attachment-parent-mode');
+    expect(adminAppSource).toContain('aiadmin-help-conflict-attachment-parent-mode');
     expect(adminAppSource).toContain('conflict-system-prompt');
     expect(adminAppSource).toContain('aiadmin-field-conflict-system-prompt');
     expect(adminAppSource).toContain('aiadmin-help-conflict-system-prompt');
     expect(adminAppSource).toContain('systemPrompt: document.getElementById("conflict-system-prompt").value.trim()');
     expect(specialAdminSource).toContain('aiadmin-field-conflict-system-prompt');
+    expect(specialAdminSource).toContain('aiadmin-field-conflict-attachment-parent-mode');
     expect(specialAdminSource).toContain('aiadmin-help-conflict-system-prompt');
+    expect(specialAdminSource).toContain('aiadmin-help-conflict-attachment-parent-mode');
     expect(ruMessages['aiadmin-field-conflict-system-prompt']).toBe('System prompt проверки противоречий fallback');
+    expect(ruMessages['aiadmin-field-conflict-attachment-parent-mode']).toBe('Вложение vs родительская страница');
     expect(enMessages['aiadmin-field-conflict-system-prompt']).toBe('Conflict detection system prompt fallback');
+    expect(enMessages['aiadmin-field-conflict-attachment-parent-mode']).toBe('Attachment vs parent page');
   });
 
   it('keeps attachment reindex status visible in the admin UI', () => {
@@ -348,6 +356,7 @@ describe('AI admin helpers', () => {
     expect(adminAppSource).toContain('Final LLM request');
     expect(adminAppSource).toContain('Final LLM response');
     expect(adminAppSource).toContain('Attachment index coverage');
+    expect(adminAppSource).toContain('Attachment vs parent page');
     expect(adminAppSource).toContain('Copy prompt');
     expect(adminAppSource).toContain('chunks raw/readable/trusted/context');
     expect(adminAppSource).toContain('answer prompt source');

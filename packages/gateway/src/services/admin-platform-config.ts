@@ -339,10 +339,12 @@ export interface TrustRecalculationConfig {
 }
 
 export type ConflictDetectionRunMode = 'risk_only' | 'always' | 'manual';
+export type AttachmentParentConflictMode = 'disabled' | 'risk_only' | 'always';
 
 export interface ConflictDetectionConfig {
   enabled: boolean;
   runMode: ConflictDetectionRunMode;
+  attachmentParentConflictMode: AttachmentParentConflictMode;
   model: string;
   systemPrompt: string;
   maxSources: number;
@@ -356,6 +358,8 @@ export const DEFAULT_CONFLICT_DETECTION_SYSTEM_PROMPT = [
   'Ты проверяешь корпоративные wiki-источники на противоречия для RAG-ответа.',
   'Нужно сравнить только предоставленные источники. Не добавляй внешние знания.',
   'Считай противоречием только несовместимые утверждения об одном и том же объекте, правиле, сроке, числе или факте.',
+  'Если источник помечен как attachment, а другой источник как parent_page той же страницы, сравнивай вложение с текстом родительской страницы по фактам, датам, статусам, регламентам и числовым значениям.',
+  'Не считай конфликтом то, что вложение подробнее страницы, страница короче вложения, или источники описывают разные разделы одной темы.',
   'Разные темы, разные предметные области, разные кухни, разные процедуры или нерелевантные источники сами по себе не являются противоречием.',
   'Верни только JSON без Markdown.',
   'Схема JSON: {"hasConflict":boolean,"confidence":number,"summary":string,"conflictingSources":[{"sourceIndex":number,"title":string,"claim":string,"status":string}],"recommendedSourceIndex":number,"recommendedSourceTitle":string,"lowTrustReason":string}.',
@@ -977,6 +981,7 @@ const trustRecalculationConfigUpdateSchema = trustRecalculationConfigSchema.part
 const conflictDetectionConfigSchema = z.object({
   enabled: z.boolean(),
   runMode: z.enum(['risk_only', 'always', 'manual']),
+  attachmentParentConflictMode: z.enum(['disabled', 'risk_only', 'always']),
   model: z.string().trim().min(1).max(200),
   systemPrompt: z.string().trim().min(1).max(8000),
   maxSources: z.number().int().min(2).max(10),
@@ -2289,6 +2294,7 @@ export async function getConflictDetectionConfig(): Promise<ConflictDetectionCon
   const defaults: ConflictDetectionConfig = {
     enabled: true,
     runMode: 'risk_only',
+    attachmentParentConflictMode: 'risk_only',
     model: llm.model,
     systemPrompt: DEFAULT_CONFLICT_DETECTION_SYSTEM_PROMPT,
     maxSources: 5,

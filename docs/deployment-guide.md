@@ -253,6 +253,13 @@ curl -s -X POST http://127.0.0.1:3000/api/admin/reindex \
 reindex с target `opensearch`; изменение retrieval profile само по себе
 OpenSearch index не наполняет.
 
+Проверка противоречий "вложение vs родительская страница" не делает отдельный
+fetch страницы при ответе. Для нее должны быть проиндексированы и attachment
+chunks, и обычные page chunks, а retrieval profile/context limits должны
+позволить обеим группам попасть в текущий prompt context. Если файл найден, но
+страница не вошла в `contextTopK`, блок `Debug цепочки -> Attachment vs parent
+page` покажет missing parent, а специальная проверка пары будет пропущена.
+
 OpenSearch vector search не является production default в этой версии. Qdrant
 остается dense-vector backend; OpenSearch используется как lexical/relevance
 layer и может быть усилен ColBERT rerank через profile
