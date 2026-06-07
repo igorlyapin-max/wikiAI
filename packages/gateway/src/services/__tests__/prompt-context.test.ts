@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatChunksForPrompt } from '../prompt-context.js';
+import { formatChunksForPrompt, formatSourceGroupsForPrompt } from '../prompt-context.js';
 import { SearchChunk } from '../../types/index.js';
 
 describe('prompt context formatting', () => {
@@ -113,5 +113,55 @@ describe('prompt context formatting', () => {
         'Текст регламента.',
       ].join('\n')
     );
+  });
+
+  it('formats source groups with stable citation indexes and chunk fragments', () => {
+    const chunks: SearchChunk[] = [
+      {
+        id: 530000,
+        pageId: 53,
+        title: 'CorpCommon:Приказы/Режим рабочего времени',
+        text: 'Первый фрагмент презентации.',
+        namespace: 6,
+        allowedGroups: ['ai-it'],
+        score: 0.95,
+        sourceType: 'attachment',
+        attachmentFilename: 'Wikiai-architecture.pptx',
+        attachmentMime: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      },
+      {
+        id: 530001,
+        pageId: 53,
+        title: 'CorpCommon:Приказы/Режим рабочего времени',
+        text: 'Второй фрагмент презентации.',
+        namespace: 6,
+        allowedGroups: ['ai-it'],
+        score: 0.91,
+        sourceType: 'attachment',
+        attachmentFilename: 'Wikiai-architecture.pptx',
+        attachmentMime: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      },
+    ];
+
+    expect(formatSourceGroupsForPrompt([
+      {
+        citationIndex: 1,
+        title: 'CorpCommon:Приказы/Режим рабочего времени',
+        sourceType: 'attachment',
+        attachmentFilename: 'Wikiai-architecture.pptx',
+        attachmentMime: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        chunks,
+      },
+    ])).toBe([
+      '[Источник 1] Файл: Wikiai-architecture.pptx',
+      'Родительская страница: CorpCommon:Приказы/Режим рабочего времени',
+      'MIME: application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      '',
+      'Фрагмент 1:',
+      'Первый фрагмент презентации.',
+      '',
+      'Фрагмент 2:',
+      'Второй фрагмент презентации.',
+    ].join('\n'));
   });
 });

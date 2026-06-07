@@ -9,6 +9,7 @@ const upsertChunks = vi.hoisted(() => vi.fn());
 const fetchEffectiveEmbeddingConfig = vi.hoisted(() => vi.fn());
 const fetchIndexingProfiles = vi.hoisted(() => vi.fn());
 const fetchIndexingAutomationConfig = vi.hoisted(() => vi.fn());
+const fetchChunkingPolicy = vi.hoisted(() => vi.fn());
 const enrichPageForReindex = vi.hoisted(() => vi.fn());
 
 vi.mock('../mediawiki.js', () => ({
@@ -40,6 +41,7 @@ vi.mock('../gateway.js', () => ({
   fetchEffectiveEmbeddingConfig,
   fetchIndexingProfiles,
   fetchIndexingAutomationConfig,
+  fetchChunkingPolicy,
   enrichPageForReindex,
 }));
 
@@ -76,6 +78,8 @@ describe('runReindex profile Gateway storage', () => {
       scheduleEnabled: false,
       scheduleIntervalMinutes: 1440,
     });
+    fetchChunkingPolicy.mockReset();
+    fetchChunkingPolicy.mockResolvedValue(undefined);
     enrichPageForReindex.mockReset();
     enrichPageForReindex.mockResolvedValue({
       summary: 'Profile enrichment summary',

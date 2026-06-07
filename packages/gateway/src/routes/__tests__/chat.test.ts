@@ -245,8 +245,10 @@ describe('chat routes', () => {
         rawChunks: 1,
         readableChunks: 1,
         trustedChunks: 1,
+        retrievedSources: 1,
         finalSources: 1,
         contextSources: 1,
+        displaySources: 1,
       },
       sources: [
         {
@@ -271,12 +273,16 @@ describe('chat routes', () => {
       config: expect.objectContaining({ searchMode: 'vector_only' }),
     }));
     expect(filterReadableChunks).toHaveBeenCalledWith(chunks, 'mw=1', 20);
-    expect(detectConflictsForChat).toHaveBeenCalledWith('Как подключить VPN?', [
-      expect.objectContaining({
-        title: 'CorpIT:FAQ VPN',
-        trust: expect.objectContaining({ score: 0.7 }),
-      }),
-    ]);
+    expect(detectConflictsForChat).toHaveBeenCalledWith(
+      'Как подключить VPN?',
+      [
+        expect.objectContaining({
+          title: 'CorpIT:FAQ VPN',
+          trust: expect.objectContaining({ score: 0.7 }),
+        }),
+      ],
+      expect.objectContaining({ config: expect.any(Object) })
+    );
     await expect(getSqlChatHistory('mw=1', 'conv-retention', 77)).resolves.toEqual([
       { role: 'user', content: 'Как подключить VPN?' },
       { role: 'assistant', content: 'Use MFA for VPN.' },
@@ -312,7 +318,7 @@ describe('chat routes', () => {
     await app.close();
   });
 
-  it('uses retrievalTopK for returned sources and contextTopK for the LLM prompt', async () => {
+  it('uses contextTopK for chat sources and the LLM prompt after retrievalTopK collection', async () => {
     const manyChunks: SearchChunk[] = [
       {
         id: 11,
@@ -390,15 +396,22 @@ describe('chat routes', () => {
     });
 
     expect(res.statusCode).toBe(200);
-    expect(res.json().sources).toHaveLength(3);
+    expect(res.json().sources).toHaveLength(1);
+    expect(res.json().sources.map((source: { title: string }) => source.title)).toEqual(['CorpIT:FAQ VPN']);
     expect(res.json().diagnostics).toMatchObject({
       requestedTopK: null,
       retrievalTopK: 3,
       effectiveTopK: 3,
       contextTopK: 1,
       contextMaxChars: 1000,
-      finalSources: 3,
+      retrievedSources: 3,
+      finalSources: 1,
       contextSources: 1,
+      contextSourceGroups: 1,
+      displaySources: 1,
+      citedSources: 0,
+      duplicateContextChunksCollapsed: 0,
+      sourceDisplayMode: 'no_citations_fallback',
     });
     expect(searchRagChunks).toHaveBeenCalledWith(expect.objectContaining({
       fallbackTopK: 3,
@@ -406,9 +419,214 @@ describe('chat routes', () => {
     }));
     const messages = callLiteLLM.mock.calls[0][0] as Array<{ role: string; content: string }>;
     const contextMessage = messages.find((messageItem) => messageItem.content.startsWith('Documents for answer:'));
-    expect(contextMessage?.content).toContain('[1] CorpIT:FAQ VPN');
+    expect(contextMessage?.content).toContain('[Источник 1] CorpIT:FAQ VPN');
     expect(contextMessage?.content).not.toContain('CorpIT:FAQ WiFi');
-    expect(contextMessage?.content).not.toContain('[2]');
+    expect(contextMessage?.content).not.toContain('[Источник 2]');
+
+    await app.close();
+  });
+
+  it('returns only cited context sources while keeping original citation numbers', async () => {
+    const manyChunks: SearchChunk[] = [
+      {
+        id: 21,
+        pageId: 201,
+        title: 'CorpIT:FAQ VPN',
+        text: 'VPN access requires MFA.',
+        namespace: 3030,
+        allowedGroups: ['ai-it'],
+        score: 0.91,
+      },
+      {
+        id: 22,
+        pageId: 202,
+        title: 'CorpIT:FAQ WiFi',
+        text: 'WiFi access uses corporate credentials.',
+        namespace: 3030,
+        allowedGroups: ['ai-it'],
+        score: 0.88,
+      },
+      {
+        id: 23,
+        pageId: 203,
+        title: 'CorpIT:FAQ MFA',
+        text: 'MFA enrollment is required.',
+        namespace: 3030,
+        allowedGroups: ['ai-it'],
+        score: 0.86,
+      },
+    ];
+    const template = (await getDefaultRetrievalProfiles()).find((profile) => profile.id === 'semantic_broad');
+    if (!template) throw new Error('semantic_broad retrieval profile template is missing');
+    await upsertRetrievalProfile({
+      id: 'test_mediawiki_context_citations',
+      name: 'Test MediaWiki context citations',
+      description: 'Test profile with cited-only sources',
+      enabled: true,
+      apiEnabled: false,
+      mcpEnabled: false,
+      anonymousAllowed: false,
+      maxTopK: 20,
+      tags: ['test'],
+      config: {
+        ...template.config,
+        retrievalTopK: 3,
+        contextTopK: 3,
+        contextMaxChars: 1000,
+        topK: 3,
+        maxContextChunks: 3,
+        maxContextChars: 1000,
+        includeAttachments: false,
+        searchMode: 'vector_only',
+        rerankMode: 'none',
+        colbertEnabled: false,
+      },
+    });
+    await setMediaWikiProfileConfig({ defaultRetrievalProfileId: 'test_mediawiki_context_citations' });
+    searchRagChunks.mockResolvedValueOnce({
+      chunks: manyChunks,
+      limit: 3,
+      aclCandidateLimit: 15,
+      showRawScores: false,
+      mode: 'hybrid',
+    });
+    filterReadableChunks.mockResolvedValueOnce(manyChunks);
+    callLiteLLM.mockResolvedValueOnce({
+      choices: [
+        {
+          message: { role: 'assistant', content: 'Для WiFi используйте корпоративные учетные данные [Источник 2].' },
+          finish_reason: 'stop',
+          index: 0,
+        },
+      ],
+    });
+
+    const app = await makeApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/chat',
+      headers: { cookie: 'mw=1', origin: 'http://127.0.0.1:8082' },
+      payload: {
+        message: 'Как подключить WiFi?',
+        conversationId: 'conv-cited-only',
+        stream: false,
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().sources).toEqual([
+      expect.objectContaining({
+        citationIndex: 2,
+        title: 'CorpIT:FAQ WiFi',
+      }),
+    ]);
+    expect(res.json().diagnostics).toMatchObject({
+      retrievedSources: 3,
+      contextSources: 3,
+      contextSourceGroups: 3,
+      citedSources: 1,
+      displaySources: 1,
+      finalSources: 1,
+      sourceDisplayMode: 'cited_only',
+    });
+
+    await app.close();
+  });
+
+  it('returns attachment sources with filename and parent page link metadata', async () => {
+    const attachmentChunks: SearchChunk[] = [
+      {
+        id: 530000,
+        pageId: 53,
+        title: 'CorpCommon:Приказы/Режим рабочего времени',
+        text: 'Файл: Wikiai-architecture.pptx\nMIME: application/vnd.openxmlformats-officedocument.presentationml.presentation\nРодительская страница: CorpCommon:Приказы/Режим рабочего времени\nАрхитектурный WikiAI RAG ColBERT Qdrant ACL.',
+        namespace: 6,
+        allowedGroups: ['ai-it'],
+        score: 0.95,
+        sourceType: 'attachment',
+        attachmentFilename: 'Wikiai-architecture.pptx',
+        attachmentMime: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        attachmentProcessingMode: 'text',
+      },
+      {
+        id: 530001,
+        pageId: 53,
+        title: 'CorpCommon:Приказы/Режим рабочего времени',
+        text: 'Фрагмент презентации про RAG и ACL.',
+        namespace: 6,
+        allowedGroups: ['ai-it'],
+        score: 0.9,
+        sourceType: 'attachment',
+        attachmentFilename: 'Wikiai-architecture.pptx',
+        attachmentMime: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        attachmentProcessingMode: 'text',
+      },
+    ];
+    searchRagChunks.mockResolvedValueOnce({
+      chunks: attachmentChunks,
+      limit: 4,
+      aclCandidateLimit: 20,
+      showRawScores: false,
+      mode: 'hybrid',
+    });
+    filterReadableChunks.mockResolvedValueOnce(attachmentChunks);
+    callLiteLLM.mockResolvedValueOnce({
+      choices: [
+        {
+          message: {
+            role: 'assistant',
+            content: 'Презентация найдена [Источник 1].\n\nИсточники: [1] CorpCommon:Приказы/Режим рабочего времени, [2] Французская кухня',
+          },
+          finish_reason: 'stop',
+          index: 0,
+        },
+      ],
+    });
+
+    const app = await makeApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/chat',
+      headers: { cookie: 'mw=1', origin: 'http://127.0.0.1:8082' },
+      payload: {
+        message: 'Wikiai-architecture.pptx',
+        conversationId: 'conv-attachment-source',
+        stream: false,
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().message).toBe('Презентация найдена [Источник 1].');
+    expect(res.json().sources).toEqual([
+      expect.objectContaining({
+        citationIndex: 1,
+        displayTitle: 'Wikiai-architecture.pptx',
+        title: 'CorpCommon:Приказы/Режим рабочего времени',
+        pageUrl: 'http://127.0.0.1:8082/index.php/CorpCommon:%D0%9F%D1%80%D0%B8%D0%BA%D0%B0%D0%B7%D1%8B/%D0%A0%D0%B5%D0%B6%D0%B8%D0%BC_%D1%80%D0%B0%D0%B1%D0%BE%D1%87%D0%B5%D0%B3%D0%BE_%D0%B2%D1%80%D0%B5%D0%BC%D0%B5%D0%BD%D0%B8',
+        sourceType: 'attachment',
+        attachmentFilename: 'Wikiai-architecture.pptx',
+        attachmentMime: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        attachmentProcessingMode: 'text',
+        parentPageTitle: 'CorpCommon:Приказы/Режим рабочего времени',
+        parentPageUrl: 'http://127.0.0.1:8082/index.php/CorpCommon:%D0%9F%D1%80%D0%B8%D0%BA%D0%B0%D0%B7%D1%8B/%D0%A0%D0%B5%D0%B6%D0%B8%D0%BC_%D1%80%D0%B0%D0%B1%D0%BE%D1%87%D0%B5%D0%B3%D0%BE_%D0%B2%D1%80%D0%B5%D0%BC%D0%B5%D0%BD%D0%B8',
+      }),
+    ]);
+    expect(res.json().diagnostics).toMatchObject({
+      contextSources: 1,
+      contextSourceGroups: 1,
+      citedSources: 1,
+      displaySources: 1,
+      duplicateContextChunksCollapsed: 1,
+      sourceDisplayMode: 'cited_only',
+    });
+    const messages = callLiteLLM.mock.calls[0][0] as Array<{ role: string; content: string }>;
+    const contextMessage = messages.find((messageItem) => messageItem.content.startsWith('Documents for answer:'));
+    expect(contextMessage?.content).toContain('[Источник 1] Файл: Wikiai-architecture.pptx');
+    expect(contextMessage?.content).toContain('Родительская страница: CorpCommon:Приказы/Режим рабочего времени');
+    expect(contextMessage?.content).toContain('MIME: application/vnd.openxmlformats-officedocument.presentationml.presentation');
+    expect(contextMessage?.content).toContain('Фрагмент 1:');
+    expect(contextMessage?.content).toContain('Фрагмент 2:');
+    expect(contextMessage?.content).not.toContain('[Источник 2]');
 
     await app.close();
   });
@@ -436,6 +654,8 @@ describe('chat routes', () => {
         llmTemperature: 0.12,
         llmMaxTokens: 256,
         llmTimeoutMs: 9000,
+        systemPrompt: 'Отвечай как профильный эксперт WikiAI и не используй внешние знания.',
+        conflictSystemPrompt: 'Проверяй противоречия строго по источникам этого профиля. Верни JSON.',
         showSources: false,
         assistantUiMode: 'expert',
       },
@@ -463,10 +683,26 @@ describe('chat routes', () => {
         llmTemperature: 0.12,
         llmMaxTokens: 256,
         llmTimeoutMs: 9000,
+        answerSystemPromptSource: 'profile_override',
+        conflictSystemPromptSource: 'profile_override',
         showSources: false,
         assistantUiMode: 'expert',
       },
     });
+    const messages = callLiteLLM.mock.calls[0][0] as Array<{ role: string; content: string }>;
+    expect(messages[0]).toEqual({
+      role: 'system',
+      content: 'Отвечай как профильный эксперт WikiAI и не используй внешние знания.',
+    });
+    expect(detectConflictsForChat).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(Array),
+      expect.objectContaining({
+        config: expect.objectContaining({
+          systemPrompt: 'Проверяй противоречия строго по источникам этого профиля. Верни JSON.',
+        }),
+      })
+    );
     expect(callLiteLLM).toHaveBeenCalledWith(
       expect.any(Array),
       'profile-chat-model',

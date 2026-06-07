@@ -1,6 +1,7 @@
 import { config } from '../config.js';
 import { measureDependency } from './metrics.js';
 import { currentTraceHeaders } from './tracing.js';
+import type { ChunkingPolicy } from './chunking-policy.js';
 
 export interface TrustRecalculationNotification {
   pageId: number;
@@ -350,6 +351,11 @@ export async function fetchIndexingAutomationConfig(): Promise<IndexingAutomatio
     scheduledReindexProfileId: body.values?.scheduledReindexProfileId,
     updatedAt: body.values?.updatedAt,
   };
+}
+
+export async function fetchChunkingPolicy(): Promise<ChunkingPolicy | undefined> {
+  const body = await fetchGatewayJson<{ values?: unknown }>('/api/internal/rag/chunking-policy');
+  return body.values as ChunkingPolicy | undefined;
 }
 
 export async function fetchGatewayEmbedding(text: string): Promise<GatewayEmbeddingResult> {

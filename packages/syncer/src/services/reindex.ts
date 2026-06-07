@@ -1,6 +1,6 @@
 import { config } from '../config.js';
 import { getAllowedGroups } from './acl.js';
-import { getMetadataText, processAttachment } from './attachment.js';
+import { buildAttachmentSearchableChunks, getMetadataText, processAttachment } from './attachment.js';
 import { splitText } from './chunker.js';
 import { getDocumentProcessingConfig, getMimeProcessingRule } from './document-policy.js';
 import {
@@ -31,6 +31,15 @@ import {
 } from './gateway.js';
 import { extractCmdbDynamicSources, fetchCmdbDynamicSnapshotChunks } from './cmdbdynamicpages.js';
 import { toIndexPlainText } from './text-normalization.js';
+import {
+  chunkingPolicySummary,
+  legacyChunkingRule,
+  normalizeChunkingPolicy,
+  resolveChunkingOptions,
+  type ChunkingPolicy,
+  type ChunkingSourceType,
+} from './chunking-policy.js';
+import { logOperationalEvent } from './logging.js';
 
 export interface ReindexOptions {
   profileId?: string;
@@ -50,6 +59,7 @@ export interface ReindexOptions {
   chunkSize?: number;
   chunkOverlap?: number;
   chunkSeparators?: string[];
+  chunkingPolicy?: ChunkingPolicy;
   dryRun?: boolean;
   llmEnrichmentEnabled?: boolean;
   llmEnrichmentModel?: string;
@@ -77,6 +87,7 @@ export interface ReindexSummary {
   embeddingCalls: number;
   llmEnrichmentCalls: number;
   estimatedPaidCalls: number;
+  chunkSourceCounts: Record<string, number>;
   attachmentsRequested: boolean;
   attachmentsActive: boolean;
   documentPolicyEnabled: boolean;
@@ -113,6 +124,7 @@ export interface ReindexProgress {
   embeddingCalls?: number;
   llmEnrichmentCalls?: number;
   estimatedPaidCalls?: number;
+  chunkSourceCounts?: Record<string, number>;
   attachmentsRequested?: boolean;
   attachmentsActive?: boolean;
   documentPolicyEnabled?: boolean;
@@ -193,6 +205,23 @@ export function normalizeIndexTargets(
         'ontologyVectors',
       ].includes(item))
   ));
+}
+
+function createChunkSourceCounts(): Record<string, number> {
+  return {
+    wiki_page: 0,
+    attachment_text: 0,
+    attachment_metadata: 0,
+    cmdb_dynamic_snapshot: 0,
+  };
+}
+
+function recordChunkSourceCount(
+  counts: Record<string, number>,
+  sourceType: ChunkingSourceType,
+  chunks: number
+): void {
+  counts[sourceType] = (counts[sourceType] ?? 0) + Math.max(0, chunks);
 }
 
 export function getProtectedReindexNamespaces(
@@ -389,7 +418,20 @@ export async function runReindex(
   const dryRun = effectiveOptions.dryRun ?? false;
   const llmEnrichmentEnabled = effectiveOptions.llmEnrichmentEnabled ?? false;
   const cmdbDynamicPagesEnabled = effectiveOptions.cmdbDynamicPagesEnabled ?? config.cmdbDynamicPagesEnabled;
+  const legacyRule = legacyChunkingRule({
+    chunkSize: effectiveOptions.chunkSize,
+    chunkOverlap: effectiveOptions.chunkOverlap,
+    chunkSeparators: effectiveOptions.chunkSeparators,
+  });
+  const chunkingPolicy = normalizeChunkingPolicy(effectiveOptions.chunkingPolicy, legacyRule);
+  if (effectiveOptions.chunkingPolicy) {
+    logOperationalEvent('info', 'syncer.chunking_policy.selected', {
+      profileId: effectiveOptions.profileId,
+      ...chunkingPolicySummary(chunkingPolicy),
+    });
+  }
   const maxPages = getMaxPages(effectiveOptions.maxPages);
+  const chunkSourceCounts = createChunkSourceCounts();
   const attachmentCounters: AttachmentCounters = {
     attachmentsRequested: requestedAttachmentsEnabled,
     attachmentsActive: !dryRun && attachmentsEnabled && documentPolicy.attachmentsEnabled,
@@ -421,6 +463,7 @@ export async function runReindex(
       embeddingCalls: 0,
       llmEnrichmentCalls: 0,
       estimatedPaidCalls: 0,
+      chunkSourceCounts: { ...chunkSourceCounts },
       ...attachmentProgressFields(attachmentCounters),
     });
     const payloadSummary = await syncSearchIndexFromQdrantPayload({
@@ -446,6 +489,7 @@ export async function runReindex(
       embeddingCalls: 0,
       llmEnrichmentCalls: 0,
       estimatedPaidCalls: 0,
+      chunkSourceCounts: { ...chunkSourceCounts },
       ...attachmentCounters,
       dynamicBlocksMatched: 0,
       dynamicSnapshotsIndexed: 0,
@@ -471,6 +515,7 @@ export async function runReindex(
       embeddingCalls: 0,
       llmEnrichmentCalls: 0,
       estimatedPaidCalls: 0,
+      chunkSourceCounts: { ...chunkSourceCounts },
       ...attachmentProgressFields(attachmentCounters),
     });
     return summary;
@@ -503,6 +548,7 @@ export async function runReindex(
     embeddingCalls: 0,
     llmEnrichmentCalls: 0,
     estimatedPaidCalls: 0,
+    chunkSourceCounts: { ...chunkSourceCounts },
     ...attachmentProgressFields(attachmentCounters),
   });
   const allPages = (
@@ -541,6 +587,7 @@ export async function runReindex(
     embeddingCalls,
     llmEnrichmentCalls,
     estimatedPaidCalls,
+    chunkSourceCounts: { ...chunkSourceCounts },
     ...attachmentProgressFields(attachmentCounters),
   });
 
@@ -565,6 +612,7 @@ export async function runReindex(
           embeddingCalls,
           llmEnrichmentCalls,
           estimatedPaidCalls,
+          chunkSourceCounts: { ...chunkSourceCounts },
           ...attachmentProgressFields(attachmentCounters),
           currentTitle: page.title,
         });
@@ -587,11 +635,12 @@ export async function runReindex(
       }
       const enrichmentText = enrichmentToText(enrichment);
       const indexText = [semanticText, enrichmentText, pageIndexText].filter(Boolean).join('\n\n');
-      const chunks = splitText(indexText, {
-        chunkSize: effectiveOptions.chunkSize,
-        chunkOverlap: effectiveOptions.chunkOverlap,
-        chunkSeparators: effectiveOptions.chunkSeparators,
-      });
+      const chunks = splitText(indexText, resolveChunkingOptions({
+        policy: chunkingPolicy,
+        sourceType: 'wiki_page',
+        namespace: page.ns,
+      }));
+      recordChunkSourceCount(chunkSourceCounts, 'wiki_page', chunks.length);
       const allowedGroups = getAllowedGroups(page.ns, effectiveNamespaceAcl);
       const lastModified = content.lastModified ?? new Date().toISOString();
       const estimatedPagePaidCalls = (denseEnabled && embeddingConfig?.provider === 'openai_compatible' ? chunks.length : 0)
@@ -637,12 +686,13 @@ export async function runReindex(
 
         if (snapshotChunks.length > 0) {
           const expandedSnapshotChunks = snapshotChunks.flatMap((snapshot) =>
-            splitText(snapshot.text, {
-              chunkSize: effectiveOptions.chunkSize,
-              chunkOverlap: effectiveOptions.chunkOverlap,
-              chunkSeparators: effectiveOptions.chunkSeparators,
-            }).map((chunk) => ({ ...snapshot, text: chunk.text }))
+            splitText(snapshot.text, resolveChunkingOptions({
+              policy: chunkingPolicy,
+              sourceType: 'cmdb_dynamic_snapshot',
+              namespace: page.ns,
+            })).map((chunk) => ({ ...snapshot, text: chunk.text }))
           );
+          recordChunkSourceCount(chunkSourceCounts, 'cmdb_dynamic_snapshot', expandedSnapshotChunks.length);
           totalChunks += expandedSnapshotChunks.length;
           if (denseEnabled && embeddingConfig?.provider === 'openai_compatible') {
             estimatedPaidCalls += expandedSnapshotChunks.length;
@@ -704,7 +754,7 @@ export async function runReindex(
                 page.title,
                 filename,
                 fileInfo.mime,
-                getMetadataText(filename, fileInfo.mime, metadata),
+                getMetadataText(filename, fileInfo.mime, metadata, page.title),
                 allowedGroups,
                 lastModified,
                 metadata,
@@ -717,6 +767,8 @@ export async function runReindex(
               );
               assertAttachmentWriteOk(writeResult, filename);
               recordAttachmentTargetWrites(attachmentCounters, writeResult);
+              totalChunks += 1;
+              recordChunkSourceCount(chunkSourceCounts, 'attachment_metadata', 1);
               attachmentCounters.attachmentsProcessed++;
               onProgress?.({
                 phase: 'page',
@@ -734,6 +786,7 @@ export async function runReindex(
                 embeddingCalls,
                 llmEnrichmentCalls,
                 estimatedPaidCalls,
+                chunkSourceCounts: { ...chunkSourceCounts },
                 ...attachmentProgressFields(attachmentCounters, currentAttachment),
                 currentTitle: page.title,
               });
@@ -748,15 +801,25 @@ export async function runReindex(
 
             const result = await processAttachment(buffer, fileInfo.mime, filename, documentPolicy);
             if (result.text && result.text.trim().length > 0) {
-              const attachmentChunks = splitText(result.text);
-              if (denseEnabled && embeddingConfig?.provider === 'openai_compatible') estimatedPaidCalls += attachmentChunks.length;
-              if (denseEnabled) embeddingCalls += attachmentChunks.length;
+              const rawAttachmentChunks = splitText(result.text, resolveChunkingOptions({
+                policy: chunkingPolicy,
+                sourceType: 'attachment_text',
+                namespace: page.ns,
+              }));
+              const attachmentChunkTexts = buildAttachmentSearchableChunks({
+                filename,
+                mimeType: fileInfo.mime,
+                pageTitle: page.title,
+                chunks: rawAttachmentChunks.map((chunk) => chunk.text),
+              });
+              if (denseEnabled && embeddingConfig?.provider === 'openai_compatible') estimatedPaidCalls += attachmentChunkTexts.length;
+              if (denseEnabled) embeddingCalls += attachmentChunkTexts.length;
               const writeResult = await upsertAttachmentChunks(
                 page.pageid,
                 page.title,
                 filename,
                 fileInfo.mime,
-                attachmentChunks.map((chunk) => chunk.text),
+                attachmentChunkTexts,
                 allowedGroups,
                 lastModified,
                 result.metadata,
@@ -769,6 +832,8 @@ export async function runReindex(
               );
               assertAttachmentWriteOk(writeResult, filename);
               recordAttachmentTargetWrites(attachmentCounters, writeResult);
+              totalChunks += attachmentChunkTexts.length;
+              recordChunkSourceCount(chunkSourceCounts, 'attachment_text', attachmentChunkTexts.length);
             } else {
               attachmentCounters.attachmentsSkippedEmpty++;
               if (denseEnabled && embeddingConfig?.provider === 'openai_compatible') estimatedPaidCalls++;
@@ -778,7 +843,7 @@ export async function runReindex(
                 page.title,
                 filename,
                 fileInfo.mime,
-                getMetadataText(filename, fileInfo.mime, result.metadata),
+                getMetadataText(filename, fileInfo.mime, result.metadata, page.title),
                 allowedGroups,
                 lastModified,
                 result.metadata,
@@ -791,6 +856,8 @@ export async function runReindex(
               );
               assertAttachmentWriteOk(writeResult, filename);
               recordAttachmentTargetWrites(attachmentCounters, writeResult);
+              totalChunks += 1;
+              recordChunkSourceCount(chunkSourceCounts, 'attachment_metadata', 1);
             }
             attachmentCounters.attachmentsProcessed++;
             onProgress?.({
@@ -809,6 +876,7 @@ export async function runReindex(
               embeddingCalls,
               llmEnrichmentCalls,
               estimatedPaidCalls,
+              chunkSourceCounts: { ...chunkSourceCounts },
               ...attachmentProgressFields(attachmentCounters, currentAttachment),
               currentTitle: page.title,
             });
@@ -834,6 +902,7 @@ export async function runReindex(
         embeddingCalls,
         llmEnrichmentCalls,
         estimatedPaidCalls,
+        chunkSourceCounts: { ...chunkSourceCounts },
         ...attachmentProgressFields(attachmentCounters),
         currentTitle: page.title,
       });
@@ -855,6 +924,7 @@ export async function runReindex(
         embeddingCalls,
         llmEnrichmentCalls,
         estimatedPaidCalls,
+        chunkSourceCounts: { ...chunkSourceCounts },
         ...attachmentProgressFields(attachmentCounters),
         currentTitle: page.title,
       });
@@ -877,6 +947,7 @@ export async function runReindex(
     embeddingCalls,
     llmEnrichmentCalls,
     estimatedPaidCalls,
+    chunkSourceCounts: { ...chunkSourceCounts },
     ...attachmentCounters,
     dynamicBlocksMatched,
     dynamicSnapshotsIndexed,
@@ -903,6 +974,7 @@ export async function runReindex(
     embeddingCalls,
     llmEnrichmentCalls,
     estimatedPaidCalls,
+    chunkSourceCounts: { ...chunkSourceCounts },
     ...attachmentProgressFields(attachmentCounters),
   });
 

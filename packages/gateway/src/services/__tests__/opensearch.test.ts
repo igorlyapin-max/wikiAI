@@ -259,6 +259,35 @@ describe('OpenSearch service', () => {
     });
   });
 
+  it('boosts exact attachment filename terms during retrieval', async () => {
+    config.opensearchEnabled = true;
+    const fetchMock = vi.fn(async (_url: string, _options: RequestInit) => response({
+      ok: true,
+      status: 200,
+      text: { hits: { total: { value: 0 }, hits: [] } },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await searchOpenSearchChunksWithDiagnostics(
+      'Wikiai-architecture.pptx',
+      5,
+      await getRagAdminConfig()
+    );
+
+    const firstCall = fetchMock.mock.calls[0];
+    if (!firstCall) throw new Error('OpenSearch search request was not sent');
+    const body = JSON.parse((firstCall[1] as RequestInit).body as string);
+    expect(body.query.bool.should).toContainEqual({
+      term: {
+        attachmentFilename: {
+          value: 'Wikiai-architecture.pptx',
+          boost: 8,
+          case_insensitive: true,
+        },
+      },
+    });
+  });
+
   it('looks up attachment documents by filename', async () => {
     config.opensearchEnabled = true;
     vi.stubGlobal('fetch', vi.fn(async () => response({

@@ -97,8 +97,12 @@ MediaWiki; для заказчика сборка должна быть част
   `NODE_ENV=production`, Syncer requires `SYNCER_ADMIN_TOKEN` and fails startup
   when the token is empty.
 - `GATEWAY_BASE_URL` - URL Gateway из Syncer для webhook trust recalculation.
-- `CHUNK_SIZE`
-- `CHUNK_OVERLAP`
+- `CHUNK_SIZE`, `CHUNK_OVERLAP` - legacy fallback for Syncer when no admin
+  `chunkingPolicy` is available. In normal deployments source-aware chunking is
+  configured in `AI-администрирование -> RAG / Chunking`: `wiki_page`,
+  `attachment_text`, `attachment_metadata`, `cmdb_dynamic_snapshot` and optional
+  namespace overrides for wiki pages. Any change requires reindex of affected
+  profiles/targets.
 - `SMW_SYNC_ENABLED`
 - `SMW_SYNC_PROPERTIES`
 - `CMDBDYNAMICPAGES_ENABLED` - включает обработку явных dynamic block markers

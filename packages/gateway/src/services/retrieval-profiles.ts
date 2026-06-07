@@ -70,6 +70,8 @@ export function applyRetrievalProfileToRagConfig(
     llmTemperature: _llmTemperature,
     llmMaxTokens: _llmMaxTokens,
     llmTimeoutMs: _llmTimeoutMs,
+    systemPrompt: _systemPrompt,
+    conflictSystemPrompt: _conflictSystemPrompt,
     showSources: _showSources,
     assistantUiMode: _assistantUiMode,
     ...ragOverrides

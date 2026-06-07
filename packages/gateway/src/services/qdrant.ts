@@ -17,15 +17,43 @@ type QdrantSearchResult = {
   score: number;
   payload?: Record<string, unknown> | null;
 };
+type QdrantPayloadPoint = {
+  id?: string | number;
+  payload?: Record<string, unknown> | null;
+};
 
 export interface QdrantPayloadIndexDefinition {
   fieldName: string;
   schema: PayloadSchemaType;
 }
 
+export interface QdrantAttachmentDiagnostics {
+  status: 'ok' | 'error';
+  ready: boolean;
+  collection: string;
+  filename: string;
+  chunks: number;
+  found: boolean;
+  samples: Array<{
+    id: number;
+    pageId: number;
+    title: string;
+    sourceType?: string;
+    attachmentFilename?: string;
+    attachmentMime?: string;
+    attachmentProcessingMode?: string;
+    chunkIndex?: number;
+    totalChunks?: number;
+    text?: string;
+  }>;
+  error?: string;
+}
+
 export const REQUIRED_QDRANT_PAYLOAD_INDEXES: readonly QdrantPayloadIndexDefinition[] = [
   { fieldName: 'allowed_groups', schema: 'keyword' },
   { fieldName: 'namespace', schema: 'integer' },
+  { fieldName: 'source_type', schema: 'keyword' },
+  { fieldName: 'attachment_filename', schema: 'keyword' },
   { fieldName: 'trust_score', schema: 'float' },
   { fieldName: 'trust_flags', schema: 'keyword' },
   { fieldName: 'applied_rules', schema: 'keyword' },
@@ -39,6 +67,36 @@ export const REQUIRED_QDRANT_PAYLOAD_INDEXES: readonly QdrantPayloadIndexDefinit
   { fieldName: 'trust_require_sources', schema: 'bool' },
   { fieldName: 'trust_calculated_at', schema: 'datetime' },
 ];
+
+function readPayloadString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function readPayloadNumber(value: unknown, fallback = 0): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim().length > 0) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return fallback;
+}
+
+function qdrantAttachmentSample(point: QdrantPayloadPoint): QdrantAttachmentDiagnostics['samples'][number] {
+  const payload = point.payload ?? {};
+  const text = readPayloadString(payload.text);
+  return {
+    id: readPayloadNumber(point.id),
+    pageId: readPayloadNumber(payload.page_id),
+    title: readPayloadString(payload.title) ?? '',
+    sourceType: readPayloadString(payload.source_type),
+    attachmentFilename: readPayloadString(payload.attachment_filename),
+    attachmentMime: readPayloadString(payload.attachment_mime),
+    attachmentProcessingMode: readPayloadString(payload.attachment_processing_mode),
+    chunkIndex: typeof payload.chunk_index === 'number' ? payload.chunk_index : undefined,
+    totalChunks: typeof payload.total_chunks === 'number' ? payload.total_chunks : undefined,
+    text: text ? text.slice(0, 500) : undefined,
+  };
+}
 
 function isPayloadIndexAlreadyExistsError(err: unknown): boolean {
   return err instanceof Error && /already exists|already indexed|exists/i.test(err.message);
@@ -92,6 +150,60 @@ export async function ensureCollection(): Promise<void> {
   }
 
   await ensurePayloadIndexes();
+}
+
+export async function getQdrantAttachmentDiagnostics(
+  filename: string,
+  limit = 5
+): Promise<QdrantAttachmentDiagnostics> {
+  const normalizedFilename = filename.trim();
+  const normalizedLimit = normalizeCandidateLimit(limit, 5);
+  const filter = {
+    must: [
+      { key: 'attachment_filename', match: { value: normalizedFilename } },
+    ],
+  };
+  const base = {
+    collection: config.qdrantCollection,
+    filename: normalizedFilename,
+    chunks: 0,
+    found: false,
+    samples: [],
+  };
+
+  try {
+    const [countResult, page] = await Promise.all([
+      qdrant.count(config.qdrantCollection, {
+        filter,
+        exact: true,
+      }),
+      qdrant.scroll(config.qdrantCollection, {
+        limit: normalizedLimit,
+        with_payload: true,
+        with_vector: false,
+        filter,
+      }),
+    ]);
+    const samples = Array.isArray(page.points)
+      ? (page.points as QdrantPayloadPoint[]).map(qdrantAttachmentSample)
+      : [];
+    const chunks = typeof countResult.count === 'number' ? countResult.count : samples.length;
+    return {
+      ...base,
+      status: 'ok',
+      ready: true,
+      chunks,
+      found: chunks > 0,
+      samples,
+    };
+  } catch (err) {
+    return {
+      ...base,
+      status: 'error',
+      ready: false,
+      error: err instanceof Error ? err.message : 'Unknown Qdrant attachment diagnostics error',
+    };
+  }
 }
 
 function mapQdrantSearchResults(results: QdrantSearchResult[]): SearchChunk[] {

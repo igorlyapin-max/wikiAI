@@ -1390,6 +1390,8 @@ export function initializeAIAdmin(options = {}) {
         llmTemperature: value.llmTemperature === undefined ? undefined : Number(value.llmTemperature),
         llmMaxTokens: value.llmMaxTokens === undefined ? undefined : Number(value.llmMaxTokens),
         llmTimeoutMs: value.llmTimeoutMs === undefined ? undefined : Number(value.llmTimeoutMs),
+        systemPrompt: value.systemPrompt,
+        conflictSystemPrompt: value.conflictSystemPrompt,
         showSources: value.showSources,
         assistantUiMode: value.assistantUiMode || "standard",
       });
@@ -1481,6 +1483,26 @@ export function initializeAIAdmin(options = {}) {
         appendInputRow(form, "retrieval-profile-llm-temperature", t("aiadmin-field-temperature"), profile.config?.llmTemperature ?? "", { type: "number", min: 0, max: 2, step: "0.01" });
         appendInputRow(form, "retrieval-profile-llm-max-tokens", t("aiadmin-field-max-tokens"), profile.config?.llmMaxTokens ?? "", { type: "number", min: 64, max: 4096 });
         appendInputRow(form, "retrieval-profile-llm-timeout-ms", t("aiadmin-field-timeout-ms"), profile.config?.llmTimeoutMs ?? "", { type: "number", min: 5000, max: 120000 });
+        appendInputRow(
+          form,
+          "retrieval-profile-system-prompt",
+          t("aiadmin-field-answer-system-prompt-override", "Answer system prompt override"),
+          profile.config?.systemPrompt || "",
+          {
+            textarea: true,
+            help: t("aiadmin-help-answer-system-prompt-override", "Optional system prompt for chat answers with this retrieval profile. Empty value uses the LLM fallback prompt.")
+          }
+        ).rows = 8;
+        appendInputRow(
+          form,
+          "retrieval-profile-conflict-system-prompt",
+          t("aiadmin-field-conflict-system-prompt-override", "Conflict prompt override"),
+          profile.config?.conflictSystemPrompt || "",
+          {
+            textarea: true,
+            help: t("aiadmin-help-conflict-system-prompt-override", "Optional system prompt for the conflict detector when this retrieval profile is used. Empty value uses the trust fallback prompt.")
+          }
+        ).rows = 8;
         appendCheckboxRow(form, "retrieval-profile-show-sources", t("aiadmin-field-show-sources"), profile.config?.showSources ?? llmConfig?.showSources ?? true);
         appendSelectRow(form, "retrieval-profile-assistant-ui-mode", t("aiadmin-section-assistant-ui"), profile.config?.assistantUiMode || "standard", assistantUiModeOptions());
         appendInputRow(form, "retrieval-profile-tags", t("aiadmin-field-tags-csv"), (profile.tags || []).join(", "));
@@ -1572,6 +1594,8 @@ export function initializeAIAdmin(options = {}) {
             llmTemperature: optionalNumber("retrieval-profile-llm-temperature"),
             llmMaxTokens: optionalNumber("retrieval-profile-llm-max-tokens"),
             llmTimeoutMs: optionalNumber("retrieval-profile-llm-timeout-ms"),
+            systemPrompt: optionalText("retrieval-profile-system-prompt"),
+            conflictSystemPrompt: optionalText("retrieval-profile-conflict-system-prompt"),
             showSources: document.getElementById("retrieval-profile-show-sources").checked,
             assistantUiMode: document.getElementById("retrieval-profile-assistant-ui-mode").value,
           }
@@ -1831,6 +1855,7 @@ export function initializeAIAdmin(options = {}) {
         root.appendChild(summary);
 
         const diagnostics = values.diagnostics || {};
+        const promptSources = values.promptSources || {};
         const summaryTable = document.createElement("table");
         summaryTable.className = "ai-admin-table";
         summaryTable.innerHTML = tableHtml(["aiadmin-table-setting", "aiadmin-table-value"]);
@@ -1848,6 +1873,8 @@ export function initializeAIAdmin(options = {}) {
             diagnostics.contextSources
           ].map((value) => value ?? "-").join(" / ")],
           ["LLM model", diagnostics.llmModel || ""],
+          ["answer prompt source", promptSources.answerSystemPrompt || diagnostics.answerSystemPromptSource || ""],
+          ["conflict prompt source", promptSources.conflictSystemPrompt || diagnostics.conflictSystemPromptSource || ""],
           ["answerChars", (values.answer || "").length],
         ].forEach(([label, value]) => {
           const row = document.createElement("tr");
@@ -1869,6 +1896,138 @@ export function initializeAIAdmin(options = {}) {
         appendDebugPre(root, "Chunks", values.retrieval?.chunks || {});
         appendDebugPre(root, "Context", values.retrieval?.contextText || "");
         appendDebugPre(root, "Conflict detector", values.conflict || {});
+      };
+
+      const chunkingSourceTypes = ["wiki_page", "attachment_text", "attachment_metadata", "cmdb_dynamic_snapshot"];
+      const chunkingSourceLabels = {
+        wiki_page: "aiadmin-chunking-source-wiki-page",
+        attachment_text: "aiadmin-chunking-source-attachment-text",
+        attachment_metadata: "aiadmin-chunking-source-attachment-metadata",
+        cmdb_dynamic_snapshot: "aiadmin-chunking-source-cmdb-dynamic-snapshot",
+      };
+      const defaultChunkSeparators = ["\n## ", "\n### ", "\n\n", "\n", ". ", " "];
+
+      const normalizeChunkingRule = (rule, fallback = {}) => ({
+        chunkSize: Number(rule?.chunkSize ?? fallback.chunkSize ?? ragConfig?.chunkSize ?? 512),
+        chunkOverlap: Number(rule?.chunkOverlap ?? fallback.chunkOverlap ?? ragConfig?.chunkOverlap ?? 50),
+        chunkSeparators: Array.isArray(rule?.chunkSeparators)
+          ? rule.chunkSeparators
+          : Array.isArray(fallback.chunkSeparators) ? fallback.chunkSeparators : defaultChunkSeparators,
+      });
+
+      const normalizeChunkingPolicy = (policy = {}) => {
+        const defaults = normalizeChunkingRule(policy.defaults);
+        const sources = {};
+        chunkingSourceTypes.forEach((sourceType) => {
+          sources[sourceType] = normalizeChunkingRule(policy.sources?.[sourceType], defaults);
+        });
+        return {
+          defaults,
+          sources,
+          namespaceOverrides: policy.namespaceOverrides || {},
+        };
+      };
+
+      const appendChunkingInputCell = (row, input) => {
+        const cell = document.createElement("td");
+        cell.appendChild(input);
+        row.appendChild(cell);
+      };
+
+      const chunkingInput = (id, value, options = {}) => {
+        const input = document.createElement("input");
+        input.id = id;
+        input.type = options.type || "number";
+        input.value = value ?? "";
+        if (options.className) input.className = options.className;
+        if (options.min !== undefined) input.min = String(options.min);
+        if (options.max !== undefined) input.max = String(options.max);
+        return input;
+      };
+
+      const renderChunkingRuleInputs = (tbody, prefix, label, rule) => {
+        const row = document.createElement("tr");
+        appendTableCell(row, label);
+        appendChunkingInputCell(row, chunkingInput(`${prefix}-size`, rule.chunkSize, { min: 128, max: 4096 }));
+        appendChunkingInputCell(row, chunkingInput(`${prefix}-overlap`, rule.chunkOverlap, { min: 0, max: 2048 }));
+        appendChunkingInputCell(row, chunkingInput(`${prefix}-separators`, JSON.stringify(rule.chunkSeparators || []), { type: "text" }));
+        tbody.appendChild(row);
+      };
+
+      const renderNamespaceOverrideRow = (tbody, namespace = "", override = {}) => {
+        const row = document.createElement("tr");
+        row.className = "rag-chunking-namespace-row";
+        appendChunkingInputCell(row, chunkingInput("", namespace, { className: "rag-chunking-namespace-id", min: 0 }));
+        appendChunkingInputCell(row, chunkingInput("", override.chunkSize ?? "", { className: "rag-chunking-namespace-size", min: 128, max: 4096 }));
+        appendChunkingInputCell(row, chunkingInput("", override.chunkOverlap ?? "", { className: "rag-chunking-namespace-overlap", min: 0, max: 2048 }));
+        appendChunkingInputCell(row, chunkingInput("", override.chunkSeparators ? JSON.stringify(override.chunkSeparators) : "", {
+          className: "rag-chunking-namespace-separators",
+          type: "text"
+        }));
+        tbody.appendChild(row);
+      };
+
+      const renderChunkingPolicyForm = (form, policyInput) => {
+        const policy = normalizeChunkingPolicy(policyInput);
+        const title = document.createElement("h3");
+        title.textContent = t("aiadmin-section-source-aware-chunking");
+        form.appendChild(title);
+        const help = document.createElement("p");
+        help.className = "ai-admin-muted";
+        help.textContent = t("aiadmin-help-source-aware-chunking");
+        form.appendChild(help);
+
+        const table = document.createElement("table");
+        table.className = "ai-admin-table";
+        table.innerHTML = tableHtml([
+          "aiadmin-table-source",
+          "aiadmin-field-chunk-size",
+          "aiadmin-field-chunk-overlap",
+          "aiadmin-field-chunk-separators-json"
+        ]);
+        const tbody = table.querySelector("tbody");
+        renderChunkingRuleInputs(tbody, "rag-chunking-defaults", t("aiadmin-chunking-source-defaults"), policy.defaults);
+        chunkingSourceTypes.forEach((sourceType) => {
+          renderChunkingRuleInputs(
+            tbody,
+            `rag-chunking-source-${sourceType}`,
+            t(chunkingSourceLabels[sourceType]),
+            policy.sources[sourceType]
+          );
+        });
+        form.appendChild(table);
+
+        const namespaceTitle = document.createElement("h4");
+        namespaceTitle.textContent = t("aiadmin-section-namespace-chunking-overrides");
+        form.appendChild(namespaceTitle);
+        const namespaceHelp = document.createElement("p");
+        namespaceHelp.className = "ai-admin-muted";
+        namespaceHelp.textContent = t("aiadmin-help-namespace-chunking-overrides");
+        form.appendChild(namespaceHelp);
+        const namespaceTable = document.createElement("table");
+        namespaceTable.className = "ai-admin-table";
+        namespaceTable.innerHTML = tableHtml([
+          "aiadmin-field-namespace",
+          "aiadmin-field-chunk-size",
+          "aiadmin-field-chunk-overlap",
+          "aiadmin-field-chunk-separators-json"
+        ]);
+        const namespaceBody = namespaceTable.querySelector("tbody");
+        Object.entries(policy.namespaceOverrides || {}).forEach(([namespace, override]) => {
+          renderNamespaceOverrideRow(namespaceBody, namespace, override);
+        });
+        renderNamespaceOverrideRow(namespaceBody);
+        form.appendChild(namespaceTable);
+        const actions = document.createElement("div");
+        actions.className = "ai-admin-row";
+        const addButton = document.createElement("button");
+        addButton.type = "button";
+        addButton.className = "ai-admin-btn";
+        addButton.id = "aiadmin-add-namespace-chunking";
+        addButton.textContent = t("aiadmin-action-add-namespace-override");
+        addButton.addEventListener("click", () => renderNamespaceOverrideRow(namespaceBody));
+        actions.appendChild(addButton);
+        form.appendChild(actions);
       };
 
       const renderRagConfig = async () => {
@@ -1903,6 +2062,7 @@ export function initializeAIAdmin(options = {}) {
         appendInputRow(form, "rag-minChunkLength", t("aiadmin-field-min-chunk-length"), ragConfig.minChunkLength, { type: "number", min: 1, max: 1024 });
         appendInputRow(form, "rag-maxChunksPerPage", t("aiadmin-field-max-chunks-per-page"), ragConfig.maxChunksPerPage, { type: "number", min: 1, max: 10000 });
         appendInputRow(form, "rag-chunkSeparators", t("aiadmin-field-chunk-separators-json"), JSON.stringify(ragConfig.chunkSeparators || []), { textarea: true });
+        renderChunkingPolicyForm(form, ragConfig.chunkingPolicy);
         const hybridTitle = document.createElement("h3");
         hybridTitle.textContent = t("aiadmin-section-hybrid-search");
         bm25Form.appendChild(hybridTitle);
@@ -2038,6 +2198,66 @@ export function initializeAIAdmin(options = {}) {
         return node ? node.checked : Boolean(fallback);
       };
 
+      const readChunkingSeparators = (id, fallback) => {
+        const raw = readFormValue(id, JSON.stringify(fallback || defaultChunkSeparators)).trim();
+        const parsed = JSON.parse(raw || "[]");
+        if (!Array.isArray(parsed) || parsed.length === 0) {
+          throw new Error(`${id}: ${t("aiadmin-field-chunk-separators-json")}`);
+        }
+        return parsed;
+      };
+
+      const collectChunkingRule = (prefix, fallback) => ({
+        chunkSize: readFormNumber(`${prefix}-size`, fallback.chunkSize),
+        chunkOverlap: readFormNumber(`${prefix}-overlap`, fallback.chunkOverlap),
+        chunkSeparators: readChunkingSeparators(`${prefix}-separators`, fallback.chunkSeparators),
+      });
+
+      const collectNamespaceChunkingOverrides = () => {
+        const overrides = {};
+        document.querySelectorAll(".rag-chunking-namespace-row").forEach((row) => {
+          const namespace = row.querySelector(".rag-chunking-namespace-id")?.value.trim();
+          if (!namespace) return;
+          const override = {};
+          const size = row.querySelector(".rag-chunking-namespace-size")?.value.trim();
+          const overlap = row.querySelector(".rag-chunking-namespace-overlap")?.value.trim();
+          const separators = row.querySelector(".rag-chunking-namespace-separators")?.value.trim();
+          if (size) override.chunkSize = Number(size);
+          if (overlap) override.chunkOverlap = Number(overlap);
+          if (separators) override.chunkSeparators = JSON.parse(separators);
+          overrides[namespace] = override;
+        });
+        return overrides;
+      };
+
+      const collectChunkingPolicy = () => {
+        const current = normalizeChunkingPolicy(ragConfig?.chunkingPolicy);
+        const defaults = collectChunkingRule("rag-chunking-defaults", current.defaults);
+        const sources = {};
+        chunkingSourceTypes.forEach((sourceType) => {
+          sources[sourceType] = collectChunkingRule(`rag-chunking-source-${sourceType}`, current.sources[sourceType]);
+        });
+        return {
+          defaults,
+          sources,
+          namespaceOverrides: collectNamespaceChunkingOverrides(),
+        };
+      };
+
+      const formatChunkingPolicySummary = (profile) => {
+        const policy = normalizeChunkingPolicy(ragConfig?.chunkingPolicy);
+        const sourceParts = ["wiki_page", "attachment_text", "attachment_metadata", "cmdb_dynamic_snapshot"]
+          .map((sourceType) => {
+            const rule = policy.sources[sourceType] || policy.defaults;
+            return `${t(chunkingSourceLabels[sourceType])}=${rule.chunkSize}/${rule.chunkOverlap}`;
+          });
+        return [
+          `legacy=${profile.chunkSize}/${profile.chunkOverlap}`,
+          ...sourceParts,
+          `namespaceOverrides=${Object.keys(policy.namespaceOverrides || {}).length}`,
+        ].join("; ");
+      };
+
       const collectRagConfig = () => {
         const searchMode = readFormValue("rag-searchMode", ragConfig?.searchMode || "hybrid");
         const rerankMode = readFormValue("rag-rerankMode", ragConfig?.rerankMode || "none");
@@ -2083,6 +2303,7 @@ export function initializeAIAdmin(options = {}) {
           colbertFailMode: readFormValue("rag-colbertFailMode", ragConfig?.colbertFailMode || "fallback_current"),
           chunkSize: readFormNumber("rag-chunkSize", ragConfig?.chunkSize ?? 512),
           chunkOverlap: readFormNumber("rag-chunkOverlap", ragConfig?.chunkOverlap ?? 80),
+          chunkingPolicy: collectChunkingPolicy(),
           minChunkLength: readFormNumber("rag-minChunkLength", ragConfig?.minChunkLength ?? 40),
           maxChunksPerPage: readFormNumber("rag-maxChunksPerPage", ragConfig?.maxChunksPerPage ?? 500),
           chunkSeparators: JSON.parse(readFormValue("rag-chunkSeparators", JSON.stringify(ragConfig?.chunkSeparators || []))),
@@ -2235,6 +2456,13 @@ export function initializeAIAdmin(options = {}) {
             }, "Default: {id}; prompt={prompt}; retrieval={retrieval}")
             : "";
           configRoot.appendChild(effective);
+          const promptOwner = document.createElement("div");
+          promptOwner.className = "ai-admin-muted";
+          promptOwner.textContent = t(
+            "aiadmin-help-chat-prompt-owner",
+            "Chat profiles control history only. Answer and conflict detector prompts are configured in retrieval profiles; LLM and trust prompts remain fallbacks."
+          );
+          configRoot.appendChild(promptOwner);
           document.getElementById("aiadmin-save-chat-management-config").addEventListener("click", async () => {
             try {
               const saved = await request("/api/admin/chat-management/config", {
@@ -4171,7 +4399,7 @@ export function initializeAIAdmin(options = {}) {
             profile.name,
             (profile.namespaces || []).join(", "),
             `title +${(profile.titleFilters?.include || []).join("|")} -${(profile.titleFilters?.exclude || []).join("|")}; category +${(profile.categoryFilters?.include || []).join("|")} -${(profile.categoryFilters?.exclude || []).join("|")}`,
-            `${profile.chunkSize}/${profile.chunkOverlap}`,
+            formatChunkingPolicySummary(profile),
             [
               `targets=${(profile.indexTargets || []).join(",")}`,
               `maxPages=${profile.maxPagesDefault ?? t("aiadmin-value-none")}`,
@@ -5134,6 +5362,17 @@ export function initializeAIAdmin(options = {}) {
             error.textContent = status.error;
             root.appendChild(error);
           }
+          const chunkSourceCounts = firstDefined(progress.chunkSourceCounts, summary.chunkSourceCounts, {});
+          const chunkSourceText = Object.entries(chunkSourceCounts || {})
+            .filter(([, count]) => Number(count) > 0)
+            .map(([source, count]) => `${t(chunkingSourceLabels[source] || source)}:${count}`)
+            .join(", ");
+          const chunkSources = document.createElement("div");
+          chunkSources.className = chunkSourceText ? "ai-admin-muted" : "ai-admin-status-warning";
+          chunkSources.textContent = formatText("aiadmin-reindex-chunk-source-counts", {
+            counts: chunkSourceText || t("aiadmin-value-none"),
+          });
+          root.appendChild(chunkSources);
           const counters = document.createElement("div");
           counters.className = "ai-admin-muted";
           counters.textContent = formatText("aiadmin-reindex-paid-counters", {

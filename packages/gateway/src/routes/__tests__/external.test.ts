@@ -235,6 +235,8 @@ describe('external routes', () => {
         searchMode: 'vector_only',
         colbertEnabled: false,
         includeAttachments: false,
+        systemPrompt: 'External API profile answer prompt must stay private.',
+        conflictSystemPrompt: 'External API profile conflict prompt must stay private.',
       },
     });
 
@@ -257,6 +259,10 @@ describe('external routes', () => {
       topK: 3,
       config: expect.objectContaining({ searchMode: 'vector_only' }),
     }));
+    const capabilities = await app.inject({ method: 'GET', url: '/api/v1/capabilities' });
+    expect(capabilities.statusCode).toBe(200);
+    expect(JSON.stringify(capabilities.json())).not.toContain('External API profile answer prompt');
+    expect(JSON.stringify(capabilities.json())).not.toContain('External API profile conflict prompt');
 
     await app.close();
   });

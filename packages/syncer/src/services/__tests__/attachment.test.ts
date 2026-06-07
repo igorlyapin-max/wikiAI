@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { getMetadataText, processAttachment } from '../attachment.js';
+import { buildAttachmentSearchableChunks, getMetadataText, processAttachment } from '../attachment.js';
 import { normalizeDocumentProcessingConfig } from '../document-policy.js';
 
 const pdfGetText = vi.hoisted(() => vi.fn());
@@ -96,7 +96,24 @@ describe('attachment processing', () => {
     const result = await processAttachment(Buffer.from('hidden'), 'text/plain', 'note.txt', policy);
     expect(result.text).toBe('');
     expect(result.metadata.mode).toBe('metadata');
-    expect(getMetadataText('note.txt', 'text/plain', result.metadata)).toContain('note.txt');
+    expect(getMetadataText('note.txt', 'text/plain', result.metadata, 'Sandbox Page')).toContain('parent page: Sandbox Page');
+  });
+
+  it('adds filename, MIME and parent page to every searchable attachment chunk', () => {
+    const chunks = buildAttachmentSearchableChunks({
+      filename: 'Wikiai-architecture.pptx',
+      mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      pageTitle: 'CorpCommon:Приказы/Режим рабочего времени',
+      chunks: ['Архитектурный WikiAI', 'RAG ColBERT Qdrant ACL'],
+    });
+
+    expect(chunks).toHaveLength(2);
+    for (const chunk of chunks) {
+      expect(chunk).toContain('Файл: Wikiai-architecture.pptx');
+      expect(chunk).toContain('MIME: application/vnd.openxmlformats-officedocument.presentationml.presentation');
+      expect(chunk).toContain('Родительская страница: CorpCommon:Приказы/Режим рабочего времени');
+    }
+    expect(chunks[1]).toContain('RAG ColBERT Qdrant ACL');
   });
 
   it('returns metadata error when maxBytes is exceeded', async () => {

@@ -36,9 +36,18 @@ interface Message {
 }
 
 interface MessageSource {
+  citationIndex?: number;
   title: string;
+  displayTitle?: string;
   pageId: number;
   pageUrl?: string;
+  sourceType?: string;
+  attachmentFilename?: string;
+  attachmentMime?: string;
+  attachmentProcessingMode?: string;
+  parentPageTitle?: string;
+  parentPageUrl?: string;
+  attachmentUrl?: string;
 }
 
 interface ChatSessionSummary {
@@ -89,9 +98,18 @@ function readSource(value: unknown): MessageSource | undefined {
   const title = readString(value.title);
   if (!title) return undefined;
   return {
+    citationIndex: readNumber(value.citationIndex),
     title,
+    displayTitle: readString(value.displayTitle),
     pageId: readNumber(value.pageId) ?? 0,
     pageUrl: readString(value.pageUrl),
+    sourceType: readString(value.sourceType),
+    attachmentFilename: readString(value.attachmentFilename),
+    attachmentMime: readString(value.attachmentMime),
+    attachmentProcessingMode: readString(value.attachmentProcessingMode),
+    parentPageTitle: readString(value.parentPageTitle),
+    parentPageUrl: readString(value.parentPageUrl),
+    attachmentUrl: readString(value.attachmentUrl),
   };
 }
 
@@ -191,33 +209,96 @@ function ProcessingIndicator({ label }: { label: string }) {
   );
 }
 
-function renderAssistantContent(content: string, sources: MessageSource[] | undefined): ReactNode {
-  if (!sources || sources.length === 0) return content;
+function sourceHref(source: MessageSource): string | undefined {
+  return source.parentPageUrl ?? source.pageUrl;
+}
 
+function sourceLabel(source: MessageSource): string {
+  return source.attachmentFilename ?? source.displayTitle ?? source.title;
+}
+
+function renderSourceListItem(source: MessageSource): ReactNode {
+  const label = sourceLabel(source);
+  if (source.attachmentFilename) {
+    const parentTitle = source.parentPageTitle ?? source.title;
+    const parentUrl = source.parentPageUrl ?? source.pageUrl;
+    return (
+      <>
+        {label}
+        {parentTitle && (
+          <>
+            {' — страница: '}
+            {parentUrl ? (
+              <a href={parentUrl} target="_blank" rel="noreferrer" className="ai-assistant__source-link">
+                {parentTitle}
+              </a>
+            ) : (
+              parentTitle
+            )}
+          </>
+        )}
+        {source.attachmentUrl && (
+          <>
+            {' — '}
+            <a href={source.attachmentUrl} target="_blank" rel="noreferrer" className="ai-assistant__source-link">
+              файл
+            </a>
+          </>
+        )}
+      </>
+    );
+  }
+
+  const href = sourceHref(source);
+  return href ? (
+    <a href={href} target="_blank" rel="noreferrer" className="ai-assistant__source-link">
+      {label}
+    </a>
+  ) : label;
+}
+
+function stripTrailingGeneratedSourceList(content: string): string {
+  const matches = Array.from(content.matchAll(/(?:^|\n)\s*Источники:\s*[\s\S]*$/giu));
+  const match = matches[matches.length - 1];
+  if (!match || match.index === undefined) return content;
+  const suffix = content.slice(match.index);
+  if (!/\[(?:источник\s+)?\d+\]/iu.test(suffix)) return content;
+  return content.slice(0, match.index).trimEnd();
+}
+
+function renderAssistantContent(content: string, sources: MessageSource[] | undefined): ReactNode {
+  const visibleContent = stripTrailingGeneratedSourceList(content);
+  if (!sources || sources.length === 0) return visibleContent;
+
+  const sourcesByCitationIndex = new Map<number, MessageSource>();
+  sources.forEach((source, index) => {
+    sourcesByCitationIndex.set(source.citationIndex ?? index + 1, source);
+  });
   const parts: ReactNode[] = [];
   const citationPattern = /\[(?:источник\s+)?(\d+)\]/giu;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
-  while ((match = citationPattern.exec(content)) !== null) {
+  while ((match = citationPattern.exec(visibleContent)) !== null) {
     const [raw, rawNumber] = match;
     const citationNumber = Number(rawNumber);
-    const source = Number.isInteger(citationNumber) ? sources[citationNumber - 1] : undefined;
+    const source = Number.isInteger(citationNumber) ? sourcesByCitationIndex.get(citationNumber) : undefined;
 
     if (match.index > lastIndex) {
-      parts.push(content.slice(lastIndex, match.index));
+      parts.push(visibleContent.slice(lastIndex, match.index));
     }
 
-    if (source?.pageUrl) {
+    const href = source ? sourceHref(source) : undefined;
+    if (source && href) {
       parts.push(
         <a
           key={`${match.index}-${raw}`}
-          href={source.pageUrl}
+          href={href}
           target="_blank"
           rel="noreferrer"
           className="ai-assistant__citation"
-          aria-label={`Открыть источник ${citationNumber}: ${source.title}`}
-          title={source.title}
+          aria-label={`Открыть источник ${citationNumber}: ${sourceLabel(source)}`}
+          title={sourceLabel(source)}
         >
           {raw}
         </a>
@@ -229,11 +310,11 @@ function renderAssistantContent(content: string, sources: MessageSource[] | unde
     lastIndex = match.index + raw.length;
   }
 
-  if (lastIndex < content.length) {
-    parts.push(content.slice(lastIndex));
+  if (lastIndex < visibleContent.length) {
+    parts.push(visibleContent.slice(lastIndex));
   }
 
-  return parts.length > 0 ? parts : content;
+  return parts.length > 0 ? parts : visibleContent;
 }
 
 export default function ChatTab({ gatewayUrl }: ChatTabProps) {
@@ -616,16 +697,10 @@ export default function ChatTab({ gatewayUrl }: ChatTabProps) {
                 <div className="ai-assistant__sources">
                   Источники:{' '}
                   {m.sources.map((s, sourceIndex) => (
-                    <span key={`${s.pageId}-${s.title}`}>
+                    <span key={`${s.pageId}-${s.title}-${sourceIndex}`}>
                       {sourceIndex > 0 ? ', ' : ''}
-                      [{sourceIndex + 1}]{' '}
-                      {s.pageUrl ? (
-                        <a href={s.pageUrl} target="_blank" rel="noreferrer" className="ai-assistant__source-link">
-                          {s.title}
-                        </a>
-                      ) : (
-                        s.title
-                      )}
+                      [{s.citationIndex ?? sourceIndex + 1}]{' '}
+                      {renderSourceListItem(s)}
                     </span>
                   ))}
                 </div>

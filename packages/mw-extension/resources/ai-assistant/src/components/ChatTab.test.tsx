@@ -325,6 +325,115 @@ describe('ChatTab', () => {
     expect(screen.getByText(/неизвестная ссылка \[Источник 9\] остается текстом/)).toBeInTheDocument();
   });
 
+  it('делает inline citation ссылкой по citationIndex и скрывает сгенерированный хвост Источники', async () => {
+    let activeSessionRequests = 0;
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/ui/config')) {
+        return Promise.resolve(jsonResponse({ assistantUiMode: 'standard' }));
+      }
+      if (url.endsWith('/api/chat')) {
+        return Promise.resolve(streamResponse([
+          'data: {"type":"conversation","conversationId":"c-filtered-citation"}\n',
+          'data: {"type":"token","content":"Нужный документ найден [Источник 5].\\n\\nИсточники: [1] Лишний, [5] Нужный"}\n',
+          'data: {"type":"sources","sources":[{"citationIndex":5,"title":"Нужный документ","pageId":5,"pageUrl":"https://wiki.example/Needed"}]}\n',
+          'data: [DONE]\n',
+        ]));
+      }
+      if (url.includes('/api/chat/sessions?status=active')) {
+        activeSessionRequests += 1;
+        if (activeSessionRequests === 1) {
+          return Promise.resolve(jsonResponse({ values: [] }));
+        }
+        return Promise.resolve(jsonResponse({
+          values: [
+            {
+              id: 's-filtered-citation',
+              conversationId: 'c-filtered-citation',
+              title: 'Цитата',
+              status: 'active',
+              messageCount: 2,
+              createdAt: '2026-06-03T10:00:00Z',
+              updatedAt: '2026-06-03T10:01:00Z',
+            },
+          ],
+        }));
+      }
+      return Promise.resolve(jsonResponse({ values: [] }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<ChatTab gatewayUrl="https://gateway.example" />);
+    await screen.findByText('Чатов нет');
+
+    await userEvent.type(screen.getByPlaceholderText('Введите сообщение...'), 'Найди документ');
+    await userEvent.click(screen.getByRole('button', { name: 'Отправить' }));
+
+    expect(await screen.findByRole('link', { name: 'Открыть источник 5: Нужный документ' })).toHaveAttribute(
+      'href',
+      'https://wiki.example/Needed'
+    );
+    expect(screen.getByText(/^\[5\]/)).toBeInTheDocument();
+    expect(screen.queryByText(/Лишний/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Источники: \[1\]/)).not.toBeInTheDocument();
+  });
+
+  it('показывает для attachment источник-файл и ссылку на страницу размещения', async () => {
+    let activeSessionRequests = 0;
+    const parentUrl = 'https://wiki.example/CorpCommon:%D0%9F%D1%80%D0%B8%D0%BA%D0%B0%D0%B7%D1%8B/%D0%A0%D0%B5%D0%B6%D0%B8%D0%BC_%D1%80%D0%B0%D0%B1%D0%BE%D1%87%D0%B5%D0%B3%D0%BE_%D0%B2%D1%80%D0%B5%D0%BC%D0%B5%D0%BD%D0%B8';
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/ui/config')) {
+        return Promise.resolve(jsonResponse({ assistantUiMode: 'standard' }));
+      }
+      if (url.endsWith('/api/chat')) {
+        return Promise.resolve(streamResponse([
+          'data: {"type":"conversation","conversationId":"c-attachment-source"}\n',
+          'data: {"type":"token","content":"Презентация найдена [Источник 1]."}\n',
+          `data: {"type":"sources","sources":[{"title":"CorpCommon:Приказы/Режим рабочего времени","displayTitle":"Wikiai-architecture.pptx","pageId":53,"pageUrl":"${parentUrl}","sourceType":"attachment","attachmentFilename":"Wikiai-architecture.pptx","attachmentMime":"application/vnd.openxmlformats-officedocument.presentationml.presentation","parentPageTitle":"CorpCommon:Приказы/Режим рабочего времени","parentPageUrl":"${parentUrl}"}]}\n`,
+          'data: [DONE]\n',
+        ]));
+      }
+      if (url.includes('/api/chat/sessions?status=active')) {
+        activeSessionRequests += 1;
+        if (activeSessionRequests === 1) {
+          return Promise.resolve(jsonResponse({ values: [] }));
+        }
+        return Promise.resolve(jsonResponse({
+          values: [
+            {
+              id: 's-attachment-source',
+              conversationId: 'c-attachment-source',
+              title: 'PPTX',
+              status: 'active',
+              messageCount: 2,
+              createdAt: '2026-06-03T10:00:00Z',
+              updatedAt: '2026-06-03T10:01:00Z',
+            },
+          ],
+        }));
+      }
+      return Promise.resolve(jsonResponse({ values: [] }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<ChatTab gatewayUrl="https://gateway.example" />);
+    await screen.findByText('Чатов нет');
+
+    await userEvent.type(screen.getByPlaceholderText('Введите сообщение...'), 'Wikiai-architecture.pptx');
+    await userEvent.click(screen.getByRole('button', { name: 'Отправить' }));
+
+    expect(await screen.findByRole('link', { name: 'Открыть источник 1: Wikiai-architecture.pptx' })).toHaveAttribute(
+      'href',
+      parentUrl
+    );
+    expect(screen.getAllByText(/Wikiai-architecture\.pptx/).length).toBeGreaterThan(0);
+    expect(screen.getByRole('link', { name: 'CorpCommon:Приказы/Режим рабочего времени' })).toHaveAttribute(
+      'href',
+      parentUrl
+    );
+  });
+
   it('показывает ошибку истории чатов', async () => {
     const fetchMock = vi.fn(() => Promise.resolve(jsonResponse({ message: 'История недоступна' }, 503)));
     vi.stubGlobal('fetch', fetchMock);

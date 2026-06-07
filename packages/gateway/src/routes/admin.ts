@@ -132,6 +132,7 @@ import {
   searchOpenSearchChunksWithDiagnostics,
   upsertOpenSearchPage,
 } from '../services/opensearch.js';
+import { getQdrantAttachmentDiagnostics } from '../services/qdrant.js';
 import {
   fetchWikiCategories,
   fetchWikiNamespaces,
@@ -792,16 +793,21 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       const limit = isRecord(request.body) && typeof request.body.limit === 'number'
         ? request.body.limit
         : undefined;
-      const [searchIndex, opensearch] = await Promise.all([
+      const [searchIndex, opensearch, qdrant] = await Promise.all([
         getSearchIndexAttachmentDiagnostics(filename, limit),
         getOpenSearchAttachmentDiagnostics(filename, limit),
+        getQdrantAttachmentDiagnostics(filename, limit),
       ]);
       reply.send({
         values: {
           filename,
           searchIndex,
           opensearch,
-          mismatch: searchIndex.chunks > 0 && opensearch.chunks < searchIndex.chunks,
+          qdrant,
+          mismatch: searchIndex.chunks > 0 && (
+            opensearch.chunks < searchIndex.chunks ||
+            qdrant.chunks < searchIndex.chunks
+          ),
         },
       });
     }
@@ -1062,6 +1068,19 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     }
 
     reply.send({ values: await getIndexingAutomationConfig() });
+  });
+
+  app.get('/api/internal/rag/chunking-policy', async (request, reply) => {
+    if (!hasInternalAdminAccess(request.headers)) {
+      reply.status(401).send({ error: 'Invalid internal admin token' });
+      return;
+    }
+
+    const rag = await getRagAdminConfig();
+    reply.send({
+      values: rag.chunkingPolicy,
+      metadata: { secretsRedacted: true },
+    });
   });
 
   app.post('/api/internal/embedding/vector', async (request, reply) => {

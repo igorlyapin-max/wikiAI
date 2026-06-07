@@ -422,11 +422,22 @@ function openSearchAttachmentSample(hit: unknown): OpenSearchAttachmentDiagnosti
   };
 }
 
+function attachmentFilenameTerms(query: string): string[] {
+  const matches = query.match(/[^\s"'<>]+?\.(?:pptx|ppt|docx|doc|xlsx|xls|pdf|txt|odt|ods|odp|png|jpe?g|webp|zip|7z|mp3|wav|mpeg)/giu) ?? [];
+  const byLower = new Map<string, string>();
+  for (const match of matches) {
+    const normalized = match.replace(/[),.;:!?]+$/u, '').trim();
+    if (normalized) byLower.set(normalized.toLocaleLowerCase('ru'), normalized);
+  }
+  return Array.from(byLower.values()).slice(0, 5);
+}
+
 function searchBody(query: string, limit: number, config: EffectiveOpenSearchConfig): JsonRecord {
   const fields = [
     `title^${config.titleBoost}`,
     `text^${config.textBoost}`,
   ];
+  const filenameTerms = attachmentFilenameTerms(query);
   return {
     size: limit,
     track_total_hits: true,
@@ -476,6 +487,15 @@ function searchBody(query: string, limit: number, config: EffectiveOpenSearchCon
               analyzer: config.analyzer,
             },
           }] : []),
+          ...filenameTerms.map((filename) => ({
+            term: {
+              attachmentFilename: {
+                value: filename,
+                boost: 8,
+                case_insensitive: true,
+              },
+            },
+          })),
         ],
         minimum_should_match: 1,
       },

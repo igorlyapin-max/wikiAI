@@ -319,10 +319,13 @@ export async function upsertAttachmentChunks(
   metadata: Record<string, unknown>,
   options: IndexWriteOptions = {}
 ): Promise<SearchIndexNotificationResult | undefined> {
+  const indexChunks = textChunks
+    .map((chunk) => toIndexPlainText(chunk))
+    .filter((chunk) => chunk.length > 0);
   const points = [];
   if (shouldWriteDense(options)) {
-    for (let i = 0; i < textChunks.length; i++) {
-      const chunk = textChunks[i];
+    for (let i = 0; i < indexChunks.length; i++) {
+      const chunk = indexChunks[i];
       const embedding = await getEmbedding(chunk);
       points.push({
         id: pageId * 100000 + 50000 + i,
@@ -334,7 +337,7 @@ export async function upsertAttachmentChunks(
           text: chunk,
           allowed_groups: allowedGroups,
           chunk_index: i,
-          total_chunks: textChunks.length,
+          total_chunks: indexChunks.length,
           last_modified: lastModified,
           source_type: 'attachment',
           attachment_filename: filename,
@@ -360,11 +363,11 @@ export async function upsertAttachmentChunks(
     indexTargets: searchIndexTargets(options),
     colbertModel: options.colbertModel,
     colbertCollection: options.colbertCollection,
-    chunks: textChunks.map((chunk, index) => ({
+    chunks: indexChunks.map((chunk, index) => ({
       id: pageId * 100000 + 50000 + index,
       text: chunk,
       chunkIndex: index,
-      totalChunks: textChunks.length,
+      totalChunks: indexChunks.length,
       sourceType: 'attachment',
       attachmentFilename: filename,
       mimeType,

@@ -6,6 +6,8 @@ const qdrantClient = vi.hoisted(() => ({
   getCollection: vi.fn(),
   createPayloadIndex: vi.fn(),
   search: vi.fn(),
+  count: vi.fn(),
+  scroll: vi.fn(),
 }));
 
 vi.mock('@qdrant/js-client-rest', () => ({
@@ -18,6 +20,7 @@ import {
   ensureCollection,
   ensurePayloadIndexes,
   normalizeTopK,
+  getQdrantAttachmentDiagnostics,
   REQUIRED_QDRANT_PAYLOAD_INDEXES,
   searchChunks,
 } from '../qdrant.js';
@@ -29,6 +32,8 @@ describe('qdrant collection bootstrap', () => {
     qdrantClient.getCollection.mockReset();
     qdrantClient.createPayloadIndex.mockReset();
     qdrantClient.search.mockReset();
+    qdrantClient.count.mockReset();
+    qdrantClient.scroll.mockReset();
     qdrantClient.createCollection.mockResolvedValue({ operation_id: 1, status: 'completed' });
     qdrantClient.createPayloadIndex.mockResolvedValue({ operation_id: 1, status: 'completed' });
   });
@@ -125,5 +130,49 @@ describe('qdrant collection bootstrap', () => {
     expect(normalizeTopK(3.8)).toBe(3);
     expect(normalizeTopK(1000)).toBe(20);
     expect(normalizeTopK(undefined, 7)).toBe(7);
+  });
+
+  it('diagnoses attachment chunks by filename in Qdrant payload', async () => {
+    qdrantClient.count.mockResolvedValue({ count: 32 });
+    qdrantClient.scroll.mockResolvedValue({
+      points: [{
+        id: 10450000,
+        payload: {
+          page_id: 104,
+          title: 'CorpCommon:Приказы/Режим рабочего времени',
+          source_type: 'attachment',
+          attachment_filename: 'Wikiai-architecture.pptx',
+          attachment_mime: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+          attachment_processing_mode: 'text',
+          chunk_index: 0,
+          total_chunks: 32,
+          text: 'Файл: Wikiai-architecture.pptx\nАрхитектурный WikiAI',
+        },
+      }],
+    });
+
+    const diagnostics = await getQdrantAttachmentDiagnostics('Wikiai-architecture.pptx', 5);
+
+    expect(qdrantClient.count).toHaveBeenCalledWith('test_chunks', {
+      exact: true,
+      filter: {
+        must: [{ key: 'attachment_filename', match: { value: 'Wikiai-architecture.pptx' } }],
+      },
+    });
+    expect(qdrantClient.scroll).toHaveBeenCalledWith('test_chunks', expect.objectContaining({
+      limit: 5,
+      with_payload: true,
+      with_vector: false,
+    }));
+    expect(diagnostics).toMatchObject({
+      status: 'ok',
+      ready: true,
+      found: true,
+      chunks: 32,
+      samples: [expect.objectContaining({
+        pageId: 104,
+        attachmentFilename: 'Wikiai-architecture.pptx',
+      })],
+    });
   });
 });

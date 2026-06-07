@@ -38,6 +38,7 @@ import {
   getChangeIndexingProfileFromAdminStorage,
   StoredIndexingProfile,
 } from './services/indexing-profile-store.js';
+import { legacyChunkingRule, normalizeChunkingPolicy, resolveChunkingOptions } from './services/chunking-policy.js';
 import { applySemanticAutofillPatch } from './services/semantic-autofill.js';
 import { qdrant } from './services/qdrant.js';
 import {
@@ -164,6 +165,9 @@ function parseReindexOptions(body: unknown): ReindexOptions {
     chunkSize: parsePositiveInteger(body.chunkSize),
     chunkOverlap: parseNonNegativeInteger(body.chunkOverlap),
     chunkSeparators: parseStringList(body.chunkSeparators),
+    chunkingPolicy: isRecord(body.chunkingPolicy)
+      ? body.chunkingPolicy as unknown as ReindexOptions['chunkingPolicy']
+      : undefined,
     dryRun: parseBoolean(body.dryRun),
     llmEnrichmentEnabled: parseBoolean(body.llmEnrichmentEnabled),
     llmEnrichmentModel: typeof body.llmEnrichmentModel === 'string' && body.llmEnrichmentModel.trim()
@@ -447,12 +451,17 @@ app.post('/webhook/page', async (request, reply) => {
     const pageIndexText = toIndexPlainText(rawContent);
     const semanticText = semanticFactsToText(semanticFacts);
     const indexText = [semanticText, pageIndexText].filter(Boolean).join('\n\n');
-    const chunkOptions = {
+    const legacyRule = legacyChunkingRule({
       chunkSize: webhookProfile.options.chunkSize,
       chunkOverlap: webhookProfile.options.chunkOverlap,
       chunkSeparators: webhookProfile.options.chunkSeparators,
-    };
-    const chunks = splitText(indexText, chunkOptions);
+    });
+    const chunkingPolicy = normalizeChunkingPolicy(webhookProfile.options.chunkingPolicy, legacyRule);
+    const chunks = splitText(indexText, resolveChunkingOptions({
+      policy: chunkingPolicy,
+      sourceType: 'wiki_page',
+      namespace: page.ns,
+    }));
     const allowedGroups = getAllowedGroups(page.ns, webhookProfile.options.namespaceAcl ?? config.namespaceAcl);
     const searchIndexSync = await upsertChunks(
       page.pageid,
@@ -476,7 +485,11 @@ app.post('/webhook/page', async (request, reply) => {
         const sources = extractCmdbDynamicSources(rawContent, page.title);
         const snapshotChunks = await fetchCmdbDynamicSnapshotChunks(sources);
         const expandedSnapshotChunks = snapshotChunks.flatMap((snapshot) =>
-          splitText(snapshot.text, chunkOptions).map((chunk) => ({ ...snapshot, text: chunk.text }))
+          splitText(snapshot.text, resolveChunkingOptions({
+            policy: chunkingPolicy,
+            sourceType: 'cmdb_dynamic_snapshot',
+            namespace: page.ns,
+          })).map((chunk) => ({ ...snapshot, text: chunk.text }))
         );
         const syncResult = expandedSnapshotChunks.length > 0
           ? await upsertCmdbDynamicSnapshotChunks(

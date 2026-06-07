@@ -131,6 +131,40 @@ describe('qdrant indexing payload', () => {
     }));
   });
 
+  it('normalizes attachment chunk text before embeddings and downstream indexes', async () => {
+    const { upsertAttachmentChunks } = await import('../qdrant.js');
+
+    await upsertAttachmentChunks(
+      14,
+      'Parent Page',
+      'Wikiai-architecture.pptx',
+      'text/plain',
+      ['Файл: Wikiai-architecture.pptx\n<code>Архитектурный WikiAI</code> &lt;RAG&gt;'],
+      ['*'],
+      '2026-06-01T10:00:00Z',
+      { mode: 'text' }
+    );
+
+    expect(getEmbedding).toHaveBeenCalledWith('Файл: Wikiai-architecture.pptx\nАрхитектурный WikiAI');
+    expect(upsertMock).toHaveBeenCalledWith('test_chunks', expect.objectContaining({
+      points: [
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            text: 'Файл: Wikiai-architecture.pptx\nАрхитектурный WikiAI',
+          }),
+        }),
+      ],
+    }));
+    expect(syncSearchIndexPage).toHaveBeenCalledWith(expect.objectContaining({
+      chunks: [
+        expect.objectContaining({
+          text: 'Файл: Wikiai-architecture.pptx\nАрхитектурный WikiAI',
+          attachmentFilename: 'Wikiai-architecture.pptx',
+        }),
+      ],
+    }));
+  });
+
   it('writes cmdbdynamicpages static snapshot chunks as an additional page source', async () => {
     const { upsertCmdbDynamicSnapshotChunks } = await import('../qdrant.js');
 

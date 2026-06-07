@@ -378,7 +378,7 @@ paths:
           $ref: "#/components/responses/Forbidden"
   /api/admin/opensearch/attachment-diagnostics:
     post:
-      summary: Compare BM25/PostgreSQL and OpenSearch indexing state for a single attachment filename.
+      summary: Compare search-index, OpenSearch and Qdrant indexing state for a single attachment filename.
       security:
         - mediaWikiSession: []
       requestBody:
@@ -664,7 +664,7 @@ components:
           description: Optional request override for the selected retrieval profile retrievalTopK. Prompt context still uses contextTopK/contextMaxChars.
         retrievalProfileId:
           type: string
-          description: Optional admin-defined retrieval profile id for /api/v1/* external APIs. Ignored by built-in /api/chat, which uses /api/admin/knowledge-source-profile/config. Raw BM25/ColBERT/trigram flags are not accepted by the public API.
+          description: Optional admin-defined retrieval profile id for /api/v1/* external APIs. The selected profile also controls chat answer and conflict-detector prompt overrides. Ignored by built-in /api/chat, which uses /api/admin/knowledge-source-profile/config. Raw BM25/ColBERT/trigram flags are not accepted by the public API.
         knowledgeSourceProfileId:
           type: string
           description: Reserved for future named source profiles. Built-in /api/chat currently uses the admin-selected default profile.
@@ -679,10 +679,9 @@ components:
           type: string
         sources:
           type: array
-          description: Present only when the selected retrieval profile effective showSources is true.
+          description: Present only when the selected retrieval profile effective showSources is true. Built-in chat returns only sources that were included in the final LLM context.
           items:
-            type: object
-            additionalProperties: true
+            $ref: "#/components/schemas/ChatSource"
         conflict:
           type: object
           additionalProperties: true
@@ -695,6 +694,54 @@ components:
           type: string
           enum: [compact, standard, expert]
           description: Effective assistant UI mode from the selected retrieval profile.
+    ChatSource:
+      type: object
+      required: [citationIndex, sourceId, documentId, displayTitle, sourceUrl, spaceKey, pageId, title, namespace, pageUrl]
+      properties:
+        citationIndex:
+          type: integer
+          minimum: 1
+          description: Stable source number used by inline markers such as [Источник 5]. Chat sources may be filtered, so this number is not necessarily the array position.
+        sourceId:
+          type: string
+        documentId:
+          type: string
+        displayTitle:
+          type: string
+          description: User-facing source title. For attachments this is the filename.
+        sourceUrl:
+          type: string
+        spaceKey:
+          type: string
+        pageId:
+          type: integer
+        title:
+          type: string
+          description: Legacy MediaWiki page title. For attachments this is the parent page title.
+        namespace:
+          type: integer
+        pageUrl:
+          type: string
+        sourceType:
+          type: string
+        attachmentFilename:
+          type: string
+        attachmentMime:
+          type: string
+        attachmentProcessingMode:
+          type: string
+        parentPageTitle:
+          type: string
+          description: Parent MediaWiki page where the attachment is placed.
+        parentPageUrl:
+          type: string
+          description: Link to the parent MediaWiki page where the attachment is placed.
+        attachmentUrl:
+          type: string
+          description: Optional direct file/download URL when available.
+        trust:
+          type: object
+          additionalProperties: true
     ExternalContext:
       type: object
       description: Optional caller context for embedded integrations. Gateway validates shape but derives auth server-side.
@@ -793,6 +840,7 @@ components:
             type: string
     RetrievalProfileCapability:
       type: object
+      description: Public-safe retrieval profile summary. Prompt override text is intentionally not exposed here.
       required: [id, name, enabled, apiEnabled, mcpEnabled, maxTopK, readiness]
       properties:
         id:
@@ -933,9 +981,64 @@ components:
           minimum: 1
         dryRun:
           type: boolean
+        chunkingPolicy:
+          $ref: "#/components/schemas/ChunkingPolicy"
         cmdbDynamicPagesEnabled:
           type: boolean
           description: Per-run override for cmdbdynamicpages marker processing.
+    ChunkingRule:
+      type: object
+      required: [chunkSize, chunkOverlap, chunkSeparators]
+      properties:
+        chunkSize:
+          type: integer
+          minimum: 128
+          maximum: 4096
+        chunkOverlap:
+          type: integer
+          minimum: 0
+          maximum: 2048
+        chunkSeparators:
+          type: array
+          minItems: 1
+          maxItems: 16
+          items:
+            type: string
+    ChunkingPolicy:
+      type: object
+      required: [defaults, sources, namespaceOverrides]
+      properties:
+        defaults:
+          $ref: "#/components/schemas/ChunkingRule"
+        sources:
+          type: object
+          properties:
+            wiki_page:
+              $ref: "#/components/schemas/ChunkingRule"
+            attachment_text:
+              $ref: "#/components/schemas/ChunkingRule"
+            attachment_metadata:
+              $ref: "#/components/schemas/ChunkingRule"
+            cmdb_dynamic_snapshot:
+              $ref: "#/components/schemas/ChunkingRule"
+          additionalProperties: false
+        namespaceOverrides:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              chunkSize:
+                type: integer
+                minimum: 128
+                maximum: 4096
+              chunkOverlap:
+                type: integer
+                minimum: 0
+                maximum: 2048
+              chunkSeparators:
+                type: array
+                items:
+                  type: string
     DatabaseDiagnostics:
       type: object
       required: [url, dialect, connectionStatus, migrationStatus]

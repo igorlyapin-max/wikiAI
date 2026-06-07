@@ -22,8 +22,14 @@ export interface RetrievalDiagnostics {
   readableChunks?: number;
   trustedChunks?: number;
   finalResults?: number;
+  retrievedSources?: number;
   finalSources?: number;
   contextSources?: number;
+  contextSourceGroups?: number;
+  citedSources?: number | null;
+  displaySources?: number;
+  duplicateContextChunksCollapsed?: number;
+  sourceDisplayMode?: string;
   tailSourcesBelowThreshold?: number;
   colbertScores?: string;
 }
@@ -92,8 +98,14 @@ export function normalizeRetrievalDiagnostics(value: unknown): RetrievalDiagnost
     readableChunks: readNumber(value.readableChunks),
     trustedChunks: readNumber(value.trustedChunks),
     finalResults: readNumber(value.finalResults),
+    retrievedSources: readNumber(value.retrievedSources),
     finalSources: readNumber(value.finalSources),
     contextSources: readNumber(value.contextSources),
+    contextSourceGroups: readNumber(value.contextSourceGroups),
+    citedSources: readOptionalNumber(value.citedSources),
+    displaySources: readNumber(value.displaySources),
+    duplicateContextChunksCollapsed: readNumber(value.duplicateContextChunksCollapsed),
+    sourceDisplayMode: readString(value.sourceDisplayMode),
     tailSourcesBelowThreshold: readNumber(value.tailSourcesBelowThreshold),
     colbertScores: readColbertScores(value.colbertScores),
   };
@@ -132,8 +144,14 @@ function DiagnosticsGrid({ diagnostics }: { diagnostics: RetrievalDiagnostics })
       diagnostics.trustedChunks,
     ].map(formatValue).join(' / ')],
     ['finalResults', diagnostics.finalResults],
+    ['retrievedSources', diagnostics.retrievedSources],
     ['finalSources', diagnostics.finalSources],
     ['contextSources', diagnostics.contextSources],
+    ['contextSourceGroups', diagnostics.contextSourceGroups],
+    ['citedSources', diagnostics.citedSources],
+    ['displaySources', diagnostics.displaySources],
+    ['duplicateContextChunksCollapsed', diagnostics.duplicateContextChunksCollapsed],
+    ['sourceDisplayMode', diagnostics.sourceDisplayMode],
     ['tailSourcesBelowThreshold', diagnostics.tailSourcesBelowThreshold],
     ['ColBERT scores', diagnostics.colbertScores],
   ];

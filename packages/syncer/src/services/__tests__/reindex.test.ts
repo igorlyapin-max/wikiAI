@@ -219,6 +219,108 @@ describe('runReindex', () => {
     expect(progress.some((entry) => entry.currentAttachmentFilename === 'Manual.pdf')).toBe(true);
   });
 
+  it('passes searchable attachment chunks with filename and parent page context', async () => {
+    fetchAllPages.mockResolvedValueOnce([
+      { pageid: 7, ns: 0, title: 'CorpCommon:Приказы/Режим рабочего времени' },
+    ]);
+    fetchPageContent.mockResolvedValueOnce({
+      pageid: 7,
+      ns: 0,
+      title: 'CorpCommon:Приказы/Режим рабочего времени',
+      content: 'Page body',
+      lastModified: '2026-06-06T04:00:00Z',
+    });
+    fetchPageFiles.mockResolvedValueOnce(['Wikiai-architecture.pptx']);
+    fetchFileInfo.mockResolvedValueOnce({
+      filename: 'Wikiai-architecture.pptx',
+      mime: 'text/plain',
+      size: 2048,
+      url: 'http://wiki/files/Wikiai-architecture.pptx',
+    });
+    getMimeProcessingRule.mockReturnValue({ mode: 'text' });
+    downloadFile.mockResolvedValueOnce(Buffer.from('Архитектурный WikiAI\nRAG ColBERT Qdrant ACL'));
+
+    await runReindex({
+      attachmentsEnabled: true,
+      semanticFactsEnabled: false,
+      indexTargets: ['dense', 'bm25', 'opensearch', 'attachments'],
+    });
+
+    expect(upsertAttachmentChunks).toHaveBeenCalledTimes(1);
+    const call = upsertAttachmentChunks.mock.calls[0];
+    expect(call[0]).toBe(7);
+    expect(call[1]).toBe('CorpCommon:Приказы/Режим рабочего времени');
+    expect(call[2]).toBe('Wikiai-architecture.pptx');
+    expect(call[3]).toBe('text/plain');
+    expect(call[5]).toEqual(['*']);
+    expect(call[6]).toBe('2026-06-06T04:00:00Z');
+    expect(call[7]).toMatchObject({ filename: 'Wikiai-architecture.pptx', mode: 'text' });
+    expect(call[8]).toMatchObject({
+      denseEnabled: true,
+      searchIndexTargets: expect.arrayContaining(['bm25', 'opensearch']),
+    });
+    const textChunks = call[4] as string[];
+    expect(textChunks[0]).toContain('Файл: Wikiai-architecture.pptx');
+    expect(textChunks[0]).toContain('Родительская страница: CorpCommon:Приказы/Режим рабочего времени');
+    expect(textChunks[0]).toContain('Архитектурный WikiAI');
+    expect(textChunks[0]).toContain('RAG ColBERT Qdrant ACL');
+  });
+
+  it('uses source-aware chunking policy for wiki pages and attachment text', async () => {
+    fetchAllPages.mockResolvedValueOnce([
+      { pageid: 30, ns: 3030, title: 'CorpIT:Chunking Policy' },
+    ]);
+    fetchPageContent.mockResolvedValueOnce({
+      pageid: 30,
+      ns: 3030,
+      title: 'CorpIT:Chunking Policy',
+      content: 'п'.repeat(260),
+      lastModified: '2026-06-06T05:00:00Z',
+    });
+    fetchPageFiles.mockResolvedValueOnce(['Manual.txt']);
+    fetchFileInfo.mockResolvedValueOnce({
+      filename: 'Manual.txt',
+      mime: 'text/plain',
+      size: 260,
+      url: 'http://wiki/files/Manual.txt',
+    });
+    getMimeProcessingRule.mockReturnValue({ mode: 'text' });
+    downloadFile.mockResolvedValueOnce(Buffer.from('а'.repeat(260), 'utf8'));
+
+    const summary = await runReindex({
+      namespaces: [3030],
+      namespaceAcl: { '3030': ['*'] },
+      attachmentsEnabled: true,
+      semanticFactsEnabled: false,
+      indexTargets: ['bm25', 'attachments'],
+      chunkSize: 512,
+      chunkOverlap: 50,
+      chunkSeparators: ['\n\n', '\n', ' '],
+      chunkingPolicy: {
+        defaults: { chunkSize: 512, chunkOverlap: 50, chunkSeparators: ['\n\n', '\n', ' '] },
+        sources: {
+          wiki_page: { chunkSize: 512, chunkOverlap: 0, chunkSeparators: ['\n\n'] },
+          attachment_text: { chunkSize: 4096, chunkOverlap: 0, chunkSeparators: ['\n\n'] },
+          attachment_metadata: { chunkSize: 512, chunkOverlap: 0, chunkSeparators: ['\n\n'] },
+          cmdb_dynamic_snapshot: { chunkSize: 900, chunkOverlap: 0, chunkSeparators: ['\n\n'] },
+        },
+        namespaceOverrides: {
+          '3030': { chunkSize: 128, chunkOverlap: 0 },
+        },
+      },
+    });
+
+    expect(upsertChunks.mock.calls[0][3]).toHaveLength(3);
+    expect(upsertAttachmentChunks.mock.calls[0][4]).toHaveLength(1);
+    expect(summary.totalChunks).toBe(4);
+    expect(summary.chunkSourceCounts).toMatchObject({
+      wiki_page: 3,
+      attachment_text: 1,
+      attachment_metadata: 0,
+      cmdb_dynamic_snapshot: 0,
+    });
+  });
+
   it('rejects attachment BM25 reindex when Gateway attachment schema is not ready', async () => {
     getGatewaySearchIndexStatus.mockResolvedValueOnce({
       status: 'ok',

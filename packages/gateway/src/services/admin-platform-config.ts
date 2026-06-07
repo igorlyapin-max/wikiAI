@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { config, DEFAULT_OPENSEARCH_BASE_URL } from '../config.js';
 import { parseDatabaseUrl, getAdminStore, AuditLogEntry } from '../db/admin-store.js';
-import { getRuntimeConfig, setRuntimeConfig } from './config.js';
+import { getRuntimeConfig, setRuntimeConfig, type RuntimeConfig } from './config.js';
 import { qdrant, QDRANT_VECTOR_SIZE } from './qdrant.js';
 import { getSearchIndexStatus } from './search-index.js';
 import { getChatProfiles } from './chat-profiles.js';
@@ -130,10 +130,35 @@ export interface EffectiveOpenSearchConfig extends OpenSearchAdminConfig {
   apiKey?: string;
 }
 
+export type ChunkingSourceType =
+  | 'wiki_page'
+  | 'attachment_text'
+  | 'attachment_metadata'
+  | 'cmdb_dynamic_snapshot';
+
+export interface ChunkingRule {
+  chunkSize: number;
+  chunkOverlap: number;
+  chunkSeparators: string[];
+}
+
+export interface ChunkingNamespaceOverride {
+  chunkSize?: number;
+  chunkOverlap?: number;
+  chunkSeparators?: string[];
+}
+
+export interface ChunkingPolicy {
+  defaults: ChunkingRule;
+  sources: Partial<Record<ChunkingSourceType, ChunkingRule>>;
+  namespaceOverrides: Record<string, ChunkingNamespaceOverride>;
+}
+
 export interface RagAdminConfig {
   chunkSize: number;
   chunkOverlap: number;
   chunkSeparators: string[];
+  chunkingPolicy: ChunkingPolicy;
   minChunkLength: number;
   maxChunksPerPage: number;
   retrievalTopK: number;
@@ -197,6 +222,8 @@ export interface RetrievalProfileResponseOverrides {
   llmTemperature?: number;
   llmMaxTokens?: number;
   llmTimeoutMs?: number;
+  systemPrompt?: string;
+  conflictSystemPrompt?: string;
   showSources?: boolean;
   assistantUiMode?: AssistantUiMode;
 }
@@ -647,6 +674,43 @@ const indexTargetSchema = z.enum([
   'ontologyVectors',
 ]);
 
+const chunkingRuleSchema = z.object({
+  chunkSize: z.number().int().min(128).max(4096),
+  chunkOverlap: z.number().int().min(0).max(2048),
+  chunkSeparators: z.array(z.string().min(1)).min(1).max(16),
+}).strict().refine((value) => value.chunkOverlap < value.chunkSize, {
+  message: 'chunkOverlap must be lower than chunkSize',
+  path: ['chunkOverlap'],
+});
+
+const chunkingNamespaceOverrideSchema = z.object({
+  chunkSize: z.number().int().min(128).max(4096).optional(),
+  chunkOverlap: z.number().int().min(0).max(2048).optional(),
+  chunkSeparators: z.array(z.string().min(1)).min(1).max(16).optional(),
+}).strict().refine((value) => {
+  if (value.chunkSize === undefined || value.chunkOverlap === undefined) return true;
+  return value.chunkOverlap < value.chunkSize;
+}, {
+  message: 'chunkOverlap must be lower than chunkSize',
+  path: ['chunkOverlap'],
+});
+
+const chunkingPolicySchema = z.object({
+  defaults: chunkingRuleSchema,
+  sources: z.object({
+    wiki_page: chunkingRuleSchema.optional(),
+    attachment_text: chunkingRuleSchema.optional(),
+    attachment_metadata: chunkingRuleSchema.optional(),
+    cmdb_dynamic_snapshot: chunkingRuleSchema.optional(),
+  }).strict(),
+  namespaceOverrides: z.record(
+    z.string().regex(/^\d+$/),
+    chunkingNamespaceOverrideSchema
+  ).refine((value) => Object.keys(value).length <= 100, {
+    message: 'namespaceOverrides can contain up to 100 namespaces',
+  }),
+}).strict();
+
 const indexingProfileInputSchema = z.object({
   id: z.string().trim().min(1).max(120).regex(/^[A-Za-z0-9_.-]+$/).optional(),
   name: z.string().trim().min(1).max(120),
@@ -689,6 +753,7 @@ const ragConfigBaseSchema = z.object({
   chunkSize: z.number().int().min(128).max(4096),
   chunkOverlap: z.number().int().min(0).max(2048),
   chunkSeparators: z.array(z.string().min(1)).min(1).max(16),
+  chunkingPolicy: chunkingPolicySchema,
   minChunkLength: z.number().int().min(1).max(1024),
   maxChunksPerPage: z.number().int().min(1).max(10000),
   retrievalTopK: z.number().int().min(1).max(20),
@@ -792,6 +857,8 @@ const retrievalProfileConfigSchema = retrievalProfileRagConfigSchema.extend({
   llmTemperature: z.number().min(0).max(2).optional(),
   llmMaxTokens: z.number().int().min(64).max(4096).optional(),
   llmTimeoutMs: z.number().int().min(5000).max(120000).optional(),
+  systemPrompt: z.string().trim().min(1).max(8000).optional(),
+  conflictSystemPrompt: z.string().trim().min(1).max(8000).optional(),
   showSources: z.boolean().optional(),
   assistantUiMode: z.enum(['compact', 'standard', 'expert']).optional(),
 }).strict();
@@ -1635,7 +1702,13 @@ export async function upsertIndexingProfile(input: unknown, actor?: string): Pro
 export async function applyIndexingProfileToReindexRequest(
   input: StartReindexRequest
 ): Promise<StartReindexRequest> {
-  if (!input.profileId) return input;
+  const rag = await getRagAdminConfig();
+  if (!input.profileId) {
+    return {
+      ...input,
+      chunkingPolicy: input.chunkingPolicy ?? rag.chunkingPolicy,
+    };
+  }
   const profile = (await getIndexingProfiles()).find((item) => item.id === input.profileId);
   if (!profile) {
     throw new Error(`Indexing profile not found: ${input.profileId}`);
@@ -1667,6 +1740,7 @@ export async function applyIndexingProfileToReindexRequest(
     chunkSize: profile.chunkSize,
     chunkOverlap: profile.chunkOverlap,
     chunkSeparators: profile.chunkSeparators,
+    chunkingPolicy: input.chunkingPolicy ?? rag.chunkingPolicy,
     dryRun: input.dryRun ?? profile.dryRunDefault,
     llmEnrichmentEnabled: input.llmEnrichmentEnabled,
     llmEnrichmentModel: input.llmEnrichmentModel,
@@ -1727,12 +1801,48 @@ export function getEffectiveContextMaxChars(configValue: RagAdminConfig, fallbac
   return normalizeRuntimeLimit(configValue.contextMaxChars ?? configValue.maxContextChars, fallback, 1000, 200000);
 }
 
+const DEFAULT_CHUNK_SEPARATORS = ['\n## ', '\n### ', '\n\n', '\n', '. ', ' '];
+
+function defaultChunkingPolicy(runtime: RuntimeConfig): ChunkingPolicy {
+  return {
+    defaults: {
+      chunkSize: runtime.chunkSize,
+      chunkOverlap: runtime.chunkOverlap,
+      chunkSeparators: DEFAULT_CHUNK_SEPARATORS,
+    },
+    sources: {
+      wiki_page: {
+        chunkSize: 800,
+        chunkOverlap: 120,
+        chunkSeparators: DEFAULT_CHUNK_SEPARATORS,
+      },
+      attachment_text: {
+        chunkSize: 1200,
+        chunkOverlap: 180,
+        chunkSeparators: ['\n\n', '\n', '. ', ' '],
+      },
+      attachment_metadata: {
+        chunkSize: 512,
+        chunkOverlap: 0,
+        chunkSeparators: ['\n\n', '\n', '. ', ' '],
+      },
+      cmdb_dynamic_snapshot: {
+        chunkSize: 900,
+        chunkOverlap: 120,
+        chunkSeparators: ['\n\n', '\n', '. ', ' '],
+      },
+    },
+    namespaceOverrides: {},
+  };
+}
+
 export async function getRagAdminConfig(): Promise<RagAdminConfig> {
   const runtime = await getRuntimeConfig();
   const defaults: RagAdminConfig = {
     chunkSize: runtime.chunkSize,
     chunkOverlap: runtime.chunkOverlap,
-    chunkSeparators: ['\n## ', '\n### ', '\n\n', '\n', '. ', ' '],
+    chunkSeparators: DEFAULT_CHUNK_SEPARATORS,
+    chunkingPolicy: defaultChunkingPolicy(runtime),
     minChunkLength: 40,
     maxChunksPerPage: 500,
     retrievalTopK: runtime.topK,
@@ -1930,6 +2040,7 @@ export async function getDefaultRetrievalProfiles(): Promise<RetrievalProfile[]>
       lexicalGateMode: 'when_bm25_available',
       lexicalMinMatchedTerms: 1,
       colbertEnabled: true,
+      colbertTimeoutMs: 12000,
       colbertMinScore: 0.58,
       colbertFailMode: 'fail_search',
     }, ['opensearch', 'hybrid', 'colbert']),

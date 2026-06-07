@@ -104,8 +104,8 @@ describe('AI admin helpers', () => {
     expect(adminAppSource).toContain('systemPrompt: document.getElementById("conflict-system-prompt").value.trim()');
     expect(specialAdminSource).toContain('aiadmin-field-conflict-system-prompt');
     expect(specialAdminSource).toContain('aiadmin-help-conflict-system-prompt');
-    expect(ruMessages['aiadmin-field-conflict-system-prompt']).toBe('System prompt проверки противоречий');
-    expect(enMessages['aiadmin-field-conflict-system-prompt']).toBe('Conflict detection system prompt');
+    expect(ruMessages['aiadmin-field-conflict-system-prompt']).toBe('System prompt проверки противоречий fallback');
+    expect(enMessages['aiadmin-field-conflict-system-prompt']).toBe('Conflict detection system prompt fallback');
   });
 
   it('keeps attachment reindex status visible in the admin UI', () => {
@@ -202,6 +202,19 @@ describe('AI admin helpers', () => {
     expect(adminAppSource).toContain('trigramBackfillPollTimer');
   });
 
+  it('keeps source-aware chunking controls wired into the admin UI', () => {
+    expect(adminAppSource).toContain('renderChunkingPolicyForm');
+    expect(adminAppSource).toContain('collectChunkingPolicy');
+    expect(adminAppSource).toContain('rag-chunking-source-${sourceType}');
+    expect(adminAppSource).toContain('rag-chunking-namespace-row');
+    expect(adminAppSource).toContain('chunkSourceCounts');
+    expect(specialAdminSource).toContain('aiadmin-section-source-aware-chunking');
+    expect(ruMessages['aiadmin-section-source-aware-chunking']).toContain('Source-aware');
+    expect(enMessages['aiadmin-section-source-aware-chunking']).toContain('Source-aware');
+    expect(ruMessages['aiadmin-reindex-chunk-source-counts']).toContain('Chunks');
+    expect(enMessages['aiadmin-reindex-chunk-source-counts']).toContain('Chunks');
+  });
+
   it('keeps OpenSearch controls wired into its admin panel and retrieval profile forms', () => {
     expect(adminAppSource).toContain('aiadmin-opensearch-config');
     expect(adminAppSource).toContain('aiadmin-save-opensearch-config');
@@ -248,6 +261,8 @@ describe('AI admin helpers', () => {
     expect(adminAppSource).toContain('retrieval-profile-llm-temperature');
     expect(adminAppSource).toContain('retrieval-profile-llm-max-tokens');
     expect(adminAppSource).toContain('retrieval-profile-llm-timeout-ms');
+    expect(adminAppSource).toContain('retrieval-profile-system-prompt');
+    expect(adminAppSource).toContain('retrieval-profile-conflict-system-prompt');
     expect(adminAppSource).toContain('retrieval-profile-show-sources');
     expect(adminAppSource).toContain('retrieval-profile-assistant-ui-mode');
     expect(adminAppSource).toContain('aiadmin-retrieval-profile-limits-marker');
@@ -262,6 +277,8 @@ describe('AI admin helpers', () => {
     expect(adminAppSource).toContain('chatProfileId,');
     expect(adminAppSource).toContain('chatRetrievalQueryMode: legacyChatRetrievalModeForChatProfileId(chatProfileId)');
     expect(adminAppSource).toContain('llmModel: optionalText("retrieval-profile-llm-model")');
+    expect(adminAppSource).toContain('systemPrompt: optionalText("retrieval-profile-system-prompt")');
+    expect(adminAppSource).toContain('conflictSystemPrompt: optionalText("retrieval-profile-conflict-system-prompt")');
     expect(adminAppSource).toContain('assistantUiMode: document.getElementById("retrieval-profile-assistant-ui-mode").value');
     expect(adminAppSource).toContain('appendTableCell(row, limits.retrievalTopK)');
     expect(adminAppSource).toContain('appendTableCell(row, limits.contextTopK)');
@@ -278,6 +295,10 @@ describe('AI admin helpers', () => {
     expect(ruMessages['aiadmin-section-chat-runtime-defaults']).toBe('Fallback-настройки выполнения чата');
     expect(enMessages['aiadmin-section-chat-runtime-defaults']).toBe('Chat runtime fallbacks');
     expect(enMessages['aiadmin-field-llm-model-override']).toContain('Profile LLM');
+    expect(ruMessages['aiadmin-field-system-prompt']).toContain('fallback');
+    expect(ruMessages['aiadmin-field-answer-system-prompt-override']).toContain('Промпт выдачи');
+    expect(enMessages['aiadmin-field-answer-system-prompt-override']).toContain('Profile answer');
+    expect(ruMessages['aiadmin-help-conflict-system-prompt-override']).toContain('профиля поиска');
     expect(ruMessages['aiadmin-field-opensearch-enabled']).toContain('backend');
     expect(enMessages['aiadmin-field-opensearch-enabled']).toContain('backend');
   });
@@ -294,6 +315,7 @@ describe('AI admin helpers', () => {
     expect(adminAppSource).toContain('chat-profile-prompt-scope');
     expect(adminAppSource).toContain('chat-profile-retrieval-mode');
     expect(adminAppSource).toContain('chat-management-default-profile');
+    expect(adminAppSource).toContain('aiadmin-help-chat-prompt-owner');
     expect(adminAppSource).toContain('aiadmin-save-chat-management-config');
     expect(adminAppSource).toContain('aiadmin-save-chat-profile');
     expect(adminAppSource).toContain('aiadmin-restore-chat-profiles');
@@ -301,6 +323,7 @@ describe('AI admin helpers', () => {
     expect(enMessages['aiadmin-tab-chat-retention']).toBe('Chat management');
     expect(ruMessages['aiadmin-chat-profile-name-chat_followup_questions']).toContain('Уточняющие');
     expect(enMessages['aiadmin-chat-profile-name-chat_followup_questions']).toContain('Follow-up');
+    expect(ruMessages['aiadmin-help-chat-prompt-owner']).toContain('Профили чата управляют только историей');
   });
 
   it('wires chain debug trace into a dedicated admin tab', () => {
@@ -327,6 +350,8 @@ describe('AI admin helpers', () => {
     expect(adminAppSource).toContain('Attachment index coverage');
     expect(adminAppSource).toContain('Copy prompt');
     expect(adminAppSource).toContain('chunks raw/readable/trusted/context');
+    expect(adminAppSource).toContain('answer prompt source');
+    expect(adminAppSource).toContain('conflict prompt source');
     expect(ruMessages['aiadmin-tab-debug-chain']).toBe('Debug цепочки');
     expect(enMessages['aiadmin-tab-debug-chain']).toBe('Chain debug');
     expect(ruMessages['aiadmin-section-chat-debug']).toBe('Debug пользовательского запроса');

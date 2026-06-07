@@ -16,6 +16,10 @@ import {
   getSearchIndexAttachmentDiagnostics,
   type SearchIndexAttachmentDiagnostics,
 } from './search-index.js';
+import {
+  getQdrantAttachmentDiagnostics,
+  type QdrantAttachmentDiagnostics,
+} from './qdrant.js';
 import { AuthenticatedPrincipal, SearchChunk } from '../types/index.js';
 
 const chatDebugTraceSchema = z.object({
@@ -42,6 +46,7 @@ interface AttachmentIndexCoverage {
   filename: string;
   searchIndex: SearchIndexAttachmentDiagnostics;
   opensearch: OpenSearchAttachmentDiagnostics;
+  qdrant: QdrantAttachmentDiagnostics;
   mismatch: boolean;
 }
 
@@ -95,6 +100,7 @@ export interface ChatDebugTraceResponse {
     contextText?: string;
   };
   conflict?: RuntimeChatDebugTrace['conflictTrace'];
+  promptSources: RuntimeChatDebugTrace['promptSources'];
   promptStack: PromptStackItem[];
   promptText: string;
 }
@@ -220,15 +226,20 @@ function uniqueAttachmentFilenames(filenames: string[]): string[] {
 
 async function getAttachmentIndexCoverage(filenames: string[]): Promise<AttachmentIndexCoverage[]> {
   return Promise.all(filenames.map(async (filename) => {
-    const [searchIndex, opensearch] = await Promise.all([
+    const [searchIndex, opensearch, qdrant] = await Promise.all([
       getSearchIndexAttachmentDiagnostics(filename, 5),
       getOpenSearchAttachmentDiagnostics(filename, 5),
+      getQdrantAttachmentDiagnostics(filename, 5),
     ]);
     return {
       filename,
       searchIndex,
       opensearch,
-      mismatch: searchIndex.chunks > 0 && opensearch.chunks < searchIndex.chunks,
+      qdrant,
+      mismatch: searchIndex.chunks > 0 && (
+        opensearch.chunks < searchIndex.chunks ||
+        qdrant.chunks < searchIndex.chunks
+      ),
     };
   }));
 }
@@ -327,6 +338,7 @@ export async function runAdminChatDebugTrace(input: unknown, options: {
       contextText: parsed.verbosity === 'basic' ? undefined : debug.contextText,
     },
     conflict: debug.conflictTrace,
+    promptSources: debug.promptSources,
     promptStack: promptStack(prepared.messages, parsed.verbosity),
     promptText: promptText(visibleMessages),
   };

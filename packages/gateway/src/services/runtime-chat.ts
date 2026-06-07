@@ -2,7 +2,7 @@ import { streamChatCompletion, callLiteLLM } from './litellm.js';
 import { getChatHistory, appendChatMessage } from './redis.js';
 import { getRuntimeConfig, type RuntimeConfig } from './config.js';
 import { type PrincipalAclMode } from './acl.js';
-import { formatChunksForPrompt } from './prompt-context.js';
+import { formatSourceGroupsForPrompt, type PromptContextSourceGroup } from './prompt-context.js';
 import {
   calculateChatRetentionRedisTtlSeconds,
   getEffectiveContextMaxChars,
@@ -13,6 +13,7 @@ import {
   getRagAdminConfig,
   type AssistantUiMode,
   type ChatRetentionConfig,
+  type ConflictDetectionConfig,
   type RagAdminConfig,
 } from './admin-platform-config.js';
 import {
@@ -53,6 +54,7 @@ import { executeKnowledgeSourceFanout } from './knowledge-source-runtime.js';
 type RetrievalHistoryMessage = { role: string; content: string };
 type LlmMessage = { role: string; content: string };
 type RetrievalQueryMode = RagAdminConfig['chatRetrievalQueryMode'];
+type PromptConfigSource = 'profile_override' | 'fallback';
 
 function assertChatPrincipalCanPersist(principal: AuthenticatedPrincipal): void {
   if (principal.authMode !== 'mediawiki_cookie') return;
@@ -89,6 +91,7 @@ export interface RuntimeChatInput {
 }
 
 export interface RuntimeChatSource {
+  citationIndex: number;
   sourceId: string;
   documentId: string;
   displayTitle: string;
@@ -98,6 +101,13 @@ export interface RuntimeChatSource {
   title: string;
   namespace: number;
   pageUrl: string;
+  sourceType?: string;
+  attachmentFilename?: string;
+  attachmentMime?: string;
+  attachmentProcessingMode?: string;
+  parentPageTitle?: string;
+  parentPageUrl?: string;
+  attachmentUrl?: string;
   trust: SearchChunk['trust'];
 }
 
@@ -106,6 +116,8 @@ export interface RuntimeChatResponseSettings {
   temperature: number;
   maxTokens: number;
   timeoutMs: number;
+  systemPrompt: string;
+  systemPromptSource: PromptConfigSource;
   showSources: boolean;
   assistantUiMode: AssistantUiMode;
 }
@@ -157,6 +169,7 @@ export interface RuntimeChatDebugTrace {
   };
   sourceFanout: KnowledgeSourceFanoutTrace[];
   knowledgeSourceWarnings: KnowledgeSourceWarning[];
+  sourceGroups: RuntimeChatSourceGroup[];
   chunks: {
     raw: DocumentChunk[];
     readable: DocumentChunk[];
@@ -165,11 +178,21 @@ export interface RuntimeChatDebugTrace {
     context: DocumentChunk[];
   };
   contextText: string;
+  promptSources: {
+    answerSystemPrompt: PromptConfigSource;
+    conflictSystemPrompt: PromptConfigSource;
+  };
   conflictTrace?: ConflictDetectionTrace | {
     skippedReason: 'disabled_by_request' | 'show_conflict_block_disabled';
   } | {
     error: string;
   };
+}
+
+interface RuntimeChatSourceGroup {
+  source: RuntimeChatSource;
+  representative: DocumentChunk;
+  chunks: DocumentChunk[];
 }
 
 function compactText(value: string): string {
@@ -354,18 +377,137 @@ function clampTopK(topK: number | undefined, maxTopK: number | undefined): numbe
   return maxTopK === undefined ? normalized : Math.min(normalized, maxTopK);
 }
 
-function chunkToSource(chunk: DocumentChunk): RuntimeChatSource {
+function chunkToSource(chunk: DocumentChunk, citationIndex: number): RuntimeChatSource {
+  const isAttachment = chunk.sourceType === 'attachment' || Boolean(chunk.attachmentFilename);
+  const pageUrl = chunk.pageUrl ?? chunk.sourceUrl;
+  const displayTitle = isAttachment && chunk.attachmentFilename ? chunk.attachmentFilename : chunk.displayTitle;
   return {
+    citationIndex,
     sourceId: chunk.sourceId,
     documentId: chunk.documentId,
-    displayTitle: chunk.displayTitle,
+    displayTitle,
     sourceUrl: chunk.sourceUrl,
     spaceKey: chunk.spaceKey,
     pageId: chunk.pageId,
     title: chunk.title,
     namespace: chunk.namespace,
-    pageUrl: chunk.pageUrl ?? chunk.sourceUrl,
+    pageUrl,
+    sourceType: chunk.sourceType,
+    attachmentFilename: chunk.attachmentFilename,
+    attachmentMime: chunk.attachmentMime,
+    attachmentProcessingMode: chunk.attachmentProcessingMode,
+    ...(isAttachment ? {
+      parentPageTitle: chunk.title,
+      parentPageUrl: pageUrl,
+    } : {}),
     trust: chunk.trust,
+  };
+}
+
+function sourceGroupKey(chunk: DocumentChunk): string {
+  return [
+    chunk.sourceId,
+    String(chunk.pageId),
+    chunk.sourceType ?? 'page',
+    chunk.attachmentFilename ?? '',
+  ].join('\u001f');
+}
+
+function buildSourceGroups(chunks: DocumentChunk[]): RuntimeChatSourceGroup[] {
+  const groupsByKey = new Map<string, RuntimeChatSourceGroup>();
+  const groups: RuntimeChatSourceGroup[] = [];
+
+  for (const chunk of chunks) {
+    const key = sourceGroupKey(chunk);
+    const existing = groupsByKey.get(key);
+    if (existing) {
+      existing.chunks.push(chunk);
+      continue;
+    }
+
+    const group: RuntimeChatSourceGroup = {
+      source: chunkToSource(chunk, groups.length + 1),
+      representative: chunk,
+      chunks: [chunk],
+    };
+    groupsByKey.set(key, group);
+    groups.push(group);
+  }
+
+  return groups;
+}
+
+function sourceGroupsToPromptGroups(groups: RuntimeChatSourceGroup[]): PromptContextSourceGroup[] {
+  return groups.map((group) => ({
+    citationIndex: group.source.citationIndex,
+    title: group.representative.title,
+    text: group.representative.text,
+    sourceType: group.representative.sourceType,
+    attachmentFilename: group.representative.attachmentFilename,
+    attachmentMime: group.representative.attachmentMime,
+    semanticFacts: group.representative.semanticFacts,
+    trust: group.representative.trust,
+    lastModified: group.representative.lastModified,
+    chunks: group.chunks,
+  }));
+}
+
+function sourceGroupsToCombinedChunks(groups: RuntimeChatSourceGroup[]): DocumentChunk[] {
+  return groups.map((group) => ({
+    ...group.representative,
+    text: group.chunks.map((chunk) => chunk.text).join('\n\n'),
+  }));
+}
+
+function stripTrailingGeneratedSourceList(content: string): string {
+  const matches = Array.from(content.matchAll(/(?:^|\n)\s*Источники:\s*[\s\S]*$/giu));
+  const match = matches[matches.length - 1];
+  if (!match || match.index === undefined) return content;
+  const suffix = content.slice(match.index);
+  if (!/\[(?:источник\s+)?\d+\]/iu.test(suffix)) return content;
+  return content.slice(0, match.index).trimEnd();
+}
+
+function citationIndexesFromContent(content: string): Set<number> {
+  const indexes = new Set<number>();
+  for (const match of content.matchAll(/\[(?:источник\s+)?(\d+)\]/giu)) {
+    const index = Number(match[1]);
+    if (Number.isInteger(index) && index > 0) indexes.add(index);
+  }
+  return indexes;
+}
+
+function selectDisplaySources(sources: RuntimeChatSource[], content: string): {
+  content: string;
+  sources: RuntimeChatSource[];
+  diagnostics: Record<string, unknown>;
+} {
+  const cleanContent = stripTrailingGeneratedSourceList(content);
+  const citedIndexes = citationIndexesFromContent(cleanContent);
+  if (citedIndexes.size === 0) {
+    return {
+      content: cleanContent,
+      sources,
+      diagnostics: {
+        citedSources: 0,
+        displaySources: sources.length,
+        finalSources: sources.length,
+        sourceDisplayMode: 'no_citations_fallback',
+      },
+    };
+  }
+
+  const selected = sources.filter((source) => citedIndexes.has(source.citationIndex));
+  return {
+    content: cleanContent,
+    sources: selected,
+    diagnostics: {
+      citedSources: selected.length,
+      requestedCitationIndexes: Array.from(citedIndexes),
+      displaySources: selected.length,
+      finalSources: selected.length,
+      sourceDisplayMode: 'cited_only',
+    },
   };
 }
 
@@ -374,13 +516,33 @@ function buildRuntimeChatResponseSettings(
   profileSelection: ResolvedRetrievalProfile | undefined
 ): RuntimeChatResponseSettings {
   const profileConfig = profileSelection?.profile.config;
+  const profileSystemPrompt = profileConfig?.systemPrompt?.trim();
   return {
     litellmModel: profileConfig?.llmModel ?? runtime.litellmModel,
     temperature: profileConfig?.llmTemperature ?? runtime.temperature,
     maxTokens: profileConfig?.llmMaxTokens ?? runtime.maxTokens,
     timeoutMs: profileConfig?.llmTimeoutMs ?? runtime.timeoutMs,
+    systemPrompt: profileSystemPrompt || runtime.systemPrompt,
+    systemPromptSource: profileSystemPrompt ? 'profile_override' : 'fallback',
     showSources: profileConfig?.showSources ?? runtime.showSources,
     assistantUiMode: profileConfig?.assistantUiMode ?? 'standard',
+  };
+}
+
+function buildRuntimeConflictDetectionConfig(
+  baseConfig: ConflictDetectionConfig,
+  profileSelection: ResolvedRetrievalProfile | undefined
+): { config: ConflictDetectionConfig; systemPromptSource: PromptConfigSource } {
+  const profilePrompt = profileSelection?.profile.config.conflictSystemPrompt?.trim();
+  if (!profilePrompt) {
+    return { config: baseConfig, systemPromptSource: 'fallback' };
+  }
+  return {
+    config: {
+      ...baseConfig,
+      systemPrompt: profilePrompt,
+    },
+    systemPromptSource: 'profile_override',
   };
 }
 
@@ -474,21 +636,34 @@ export async function prepareRuntimeChat(input: RuntimeChatInput): Promise<Prepa
     wikiUrlOptions: input.wikiUrlOptions ?? {},
   });
   const verifiedChunks = sourceSearch.mergedChunks;
-  const sources = verifiedChunks.map((chunk) => chunkToSource(chunk));
   const contextTopK = getEffectiveContextTopK(ragConfig, effectiveTopK);
   const contextMaxChars = getEffectiveContextMaxChars(ragConfig);
   const contextChunks = verifiedChunks.slice(0, contextTopK);
+  const sourceGroups = buildSourceGroups(contextChunks);
+  const sources = sourceGroups.map((group) => group.source);
+  const groupedContextChunks = sourceGroupsToCombinedChunks(sourceGroups);
   let conflict: Awaited<ReturnType<typeof detectConflictsForChat>> = null;
   let conflictTrace: RuntimeChatDebugTrace['conflictTrace'];
+  const promptSources: RuntimeChatDebugTrace['promptSources'] = {
+    answerSystemPrompt: responseSettings.systemPromptSource,
+    conflictSystemPrompt: profileSelection?.profile.config.conflictSystemPrompt?.trim()
+      ? 'profile_override'
+      : 'fallback',
+  };
   if (input.runConflictDetection === false) {
     if (input.includeDebugTrace) conflictTrace = { skippedReason: 'disabled_by_request' };
   } else if (input.includeDebugTrace) {
-    const conflictConfig = await getConflictDetectionConfig();
+    const conflictSelection = buildRuntimeConflictDetectionConfig(
+      await getConflictDetectionConfig(),
+      profileSelection
+    );
+    promptSources.conflictSystemPrompt = conflictSelection.systemPromptSource;
+    const conflictConfig = conflictSelection.config;
     if (!conflictConfig.showConflictBlock) {
       conflictTrace = { skippedReason: 'show_conflict_block_disabled' };
     } else {
       try {
-        const checked = await detectConflictsWithTrace(retrievalQuery, verifiedChunks, { config: conflictConfig });
+        const checked = await detectConflictsWithTrace(retrievalQuery, groupedContextChunks, { config: conflictConfig });
         conflictTrace = checked.trace;
         if (checked.result.checked && (checked.result.hasConflict || checked.result.lowTrust)) {
           conflict = checked.result;
@@ -500,17 +675,26 @@ export async function prepareRuntimeChat(input: RuntimeChatInput): Promise<Prepa
       }
     }
   } else {
-    conflict = await detectConflictsForChat(retrievalQuery, verifiedChunks);
+    const conflictSelection = buildRuntimeConflictDetectionConfig(
+      await getConflictDetectionConfig(),
+      profileSelection
+    );
+    promptSources.conflictSystemPrompt = conflictSelection.systemPromptSource;
+    conflict = await detectConflictsForChat(retrievalQuery, groupedContextChunks, { config: conflictSelection.config });
   }
 
   if (!input.dryRun) {
     await appendChatMessage(sessionHash, convId, { role: 'user', content: message }, chatTtlSeconds);
   }
 
-  const contextText = formatChunksForPrompt(contextChunks, { maxChars: contextMaxChars });
+  const contextText = formatSourceGroupsForPrompt(sourceGroupsToPromptGroups(sourceGroups), { maxChars: contextMaxChars });
+  const citationInstruction = contextText
+    ? 'Правила цитирования: ссылайся только на предоставленные маркеры вида [Источник N]. Не добавляй отдельный текстовый список "Источники:" - приложение покажет источники само.'
+    : '';
   const messages: LlmMessage[] = [
-    { role: 'system', content: runtime.systemPrompt },
+    { role: 'system', content: responseSettings.systemPrompt },
     ...(contextText ? [{ role: 'system', content: `Documents for answer:\n${contextText}` }] : []),
+    ...(citationInstruction ? [{ role: 'system', content: citationInstruction }] : []),
     ...(conflict ? [{ role: 'system', content: buildConflictInstruction(conflict) }] : []),
     ...promptHistory,
     { role: 'user', content: message },
@@ -558,12 +742,20 @@ export async function prepareRuntimeChat(input: RuntimeChatInput): Promise<Prepa
       rawChunks: sourceSearch.rawChunks.length,
       readableChunks: sourceSearch.readableChunks.length,
       trustedChunks: sourceSearch.trustedChunks.length,
+      retrievedSources: verifiedChunks.length,
       finalSources: sources.length,
-      contextSources: contextChunks.length,
+      contextSources: sourceGroups.length,
+      contextSourceGroups: sourceGroups.length,
+      displaySources: sources.length,
+      citedSources: null,
+      duplicateContextChunksCollapsed: contextChunks.length - sourceGroups.length,
+      sourceDisplayMode: 'pending',
       llmModel: responseSettings.litellmModel,
       llmTemperature: responseSettings.temperature,
       llmMaxTokens: responseSettings.maxTokens,
       llmTimeoutMs: responseSettings.timeoutMs,
+      answerSystemPromptSource: promptSources.answerSystemPrompt,
+      conflictSystemPromptSource: promptSources.conflictSystemPrompt,
       showSources: responseSettings.showSources,
       assistantUiMode: responseSettings.assistantUiMode,
     },
@@ -585,14 +777,16 @@ export async function prepareRuntimeChat(input: RuntimeChatInput): Promise<Prepa
       },
       sourceFanout: sourceSearch.sourceFanout,
       knowledgeSourceWarnings: sourceSearch.sourceWarnings,
+      sourceGroups,
       chunks: {
         raw: sourceSearch.rawChunks,
         readable: sourceSearch.readableChunks,
         trusted: sourceSearch.trustedChunks,
         reranked: verifiedChunks,
-        context: contextChunks,
+        context: groupedContextChunks,
       },
       contextText,
+      promptSources,
       ...(conflictTrace ? { conflictTrace } : {}),
     } : undefined,
   };
@@ -609,7 +803,9 @@ export async function completeRuntimeChat(prepared: PreparedRuntimeChat): Promis
         maxTokens: prepared.responseSettings.maxTokens,
       }
     );
-    const content = response.choices[0]?.message?.content ?? '';
+    const rawContent = response.choices[0]?.message?.content ?? '';
+    const displaySelection = selectDisplaySources(prepared.sources, rawContent);
+    const content = displaySelection.content;
     if (content) {
       await appendChatMessage(
         prepared.sessionHash,
@@ -624,7 +820,7 @@ export async function completeRuntimeChat(prepared: PreparedRuntimeChat): Promis
         username: prepared.principal.username,
         role: 'assistant',
         content,
-        sources: prepared.sources,
+        sources: displaySelection.sources,
       }, prepared.retention).catch((err: unknown) => {
         logOperationalError('chat.sql_assistant_history_write_error', err);
       });
@@ -632,9 +828,12 @@ export async function completeRuntimeChat(prepared: PreparedRuntimeChat): Promis
     return {
       conversationId: prepared.conversationId,
       message: content,
-      sources: prepared.responseSettings.showSources ? prepared.sources : undefined,
+      sources: prepared.responseSettings.showSources ? displaySelection.sources : undefined,
       conflict: prepared.conflict ?? undefined,
-      diagnostics: prepared.retrievalDiagnostics,
+      diagnostics: {
+        ...prepared.retrievalDiagnostics,
+        ...displaySelection.diagnostics,
+      },
       assistantUiMode: prepared.responseSettings.assistantUiMode,
     };
   } catch (err) {
@@ -686,8 +885,16 @@ export async function streamRuntimeChat(
       }
     }
 
+    const displaySelection = selectDisplaySources(prepared.sources, fullResponse);
     if (prepared.responseSettings.showSources) {
-      writeEvent({ type: 'sources', sources: prepared.sources });
+      writeEvent({
+        type: 'diagnostics',
+        diagnostics: {
+          ...prepared.retrievalDiagnostics,
+          ...displaySelection.diagnostics,
+        },
+      });
+      writeEvent({ type: 'sources', sources: displaySelection.sources });
     }
     writeEvent('[DONE]');
   } catch (err) {
@@ -701,7 +908,7 @@ export async function streamRuntimeChat(
       writeEvent({ type: 'token', content: '\n\n' });
 
       for (const source of prepared.sources) {
-        writeEvent({ type: 'token', content: `• ${source.title}\n` });
+        writeEvent({ type: 'token', content: `• ${source.displayTitle}\n` });
       }
     }
 
@@ -711,10 +918,11 @@ export async function streamRuntimeChat(
     writeEvent('[DONE]');
   } finally {
     if (fullResponse) {
+      const displaySelection = selectDisplaySources(prepared.sources, fullResponse);
       await appendChatMessage(
         prepared.sessionHash,
         prepared.conversationId,
-        { role: 'assistant', content: fullResponse },
+        { role: 'assistant', content: displaySelection.content },
         prepared.chatTtlSeconds
       );
       await recordChatMessage({
@@ -723,8 +931,8 @@ export async function streamRuntimeChat(
         userId: prepared.principal.userId,
         username: prepared.principal.username,
         role: 'assistant',
-        content: fullResponse,
-        sources: prepared.sources,
+        content: displaySelection.content,
+        sources: displaySelection.sources,
       }, prepared.retention).catch((err: unknown) => {
         logOperationalError('chat.sql_stream_history_write_error', err);
       });

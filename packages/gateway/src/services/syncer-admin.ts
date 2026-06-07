@@ -1,6 +1,7 @@
 import { config } from '../config.js';
 import { measureDependency } from './metrics.js';
 import { currentTraceHeaders } from './tracing.js';
+import type { ChunkingPolicy } from './admin-platform-config.js';
 
 export interface StartReindexRequest {
   profileId?: string;
@@ -26,6 +27,7 @@ export interface StartReindexRequest {
   chunkSize?: number;
   chunkOverlap?: number;
   chunkSeparators?: string[];
+  chunkingPolicy?: ChunkingPolicy;
   dryRun?: boolean;
   llmEnrichmentEnabled?: boolean;
   llmEnrichmentModel?: string;

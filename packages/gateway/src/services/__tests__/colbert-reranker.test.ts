@@ -12,6 +12,16 @@ const baseConfig: RagAdminConfig = {
   chunkSize: 512,
   chunkOverlap: 50,
   chunkSeparators: ['\n\n'],
+  chunkingPolicy: {
+    defaults: { chunkSize: 512, chunkOverlap: 50, chunkSeparators: ['\n\n'] },
+    sources: {
+      wiki_page: { chunkSize: 800, chunkOverlap: 120, chunkSeparators: ['\n\n'] },
+      attachment_text: { chunkSize: 1200, chunkOverlap: 180, chunkSeparators: ['\n\n'] },
+      attachment_metadata: { chunkSize: 512, chunkOverlap: 0, chunkSeparators: ['\n\n'] },
+      cmdb_dynamic_snapshot: { chunkSize: 900, chunkOverlap: 120, chunkSeparators: ['\n\n'] },
+    },
+    namespaceOverrides: {},
+  },
   minChunkLength: 40,
   maxChunksPerPage: 500,
   retrievalTopK: 4,

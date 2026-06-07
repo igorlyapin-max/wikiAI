@@ -15,6 +15,7 @@ const store = vi.hoisted(() => new Map<string, string>());
 const qdrantGetCollection = vi.hoisted(() => vi.fn());
 const qdrantScroll = vi.hoisted(() => vi.fn());
 const qdrantSetPayload = vi.hoisted(() => vi.fn());
+const getQdrantAttachmentDiagnostics = vi.hoisted(() => vi.fn());
 const userCanRead = vi.hoisted(() => vi.fn(async () => true));
 const fetchWikiCategories = vi.hoisted(() => vi.fn());
 const fetchWikiNamespaces = vi.hoisted(() => vi.fn());
@@ -104,6 +105,7 @@ vi.mock('../../services/redis.js', () => ({
 
 vi.mock('../../services/qdrant.js', () => ({
   QDRANT_VECTOR_SIZE: 768,
+  getQdrantAttachmentDiagnostics,
   qdrant: {
     getCollections: vi.fn(async () => ({ collections: [] })),
     getCollection: qdrantGetCollection,
@@ -138,6 +140,16 @@ describe('admin routes', () => {
     qdrantGetCollection.mockReset();
     qdrantScroll.mockReset();
     qdrantSetPayload.mockReset();
+    getQdrantAttachmentDiagnostics.mockReset();
+    getQdrantAttachmentDiagnostics.mockResolvedValue({
+      status: 'ok',
+      ready: true,
+      collection: 'wiki_chunks',
+      filename: 'Wikiai-architecture.pptx',
+      chunks: 0,
+      found: false,
+      samples: [],
+    });
     fetchWikiCategories.mockReset();
     fetchWikiCategories.mockResolvedValue([
       { name: 'ИТ', title: 'Category:ИТ' },
@@ -530,6 +542,10 @@ describe('admin routes', () => {
       },
       opensearch: {
         status: 'disabled',
+        found: false,
+      },
+      qdrant: {
+        status: 'ok',
         found: false,
       },
     });
@@ -1161,6 +1177,13 @@ describe('admin routes', () => {
       topK: 7,
       chunkSize: 640,
       chunkOverlap: 80,
+      chunkingPolicy: expect.objectContaining({
+        sources: expect.objectContaining({
+          wiki_page: expect.objectContaining({ chunkSize: 800, chunkOverlap: 120 }),
+          attachment_text: expect.objectContaining({ chunkSize: 1200, chunkOverlap: 180 }),
+        }),
+        namespaceOverrides: {},
+      }),
       maxContextChunks: 7,
       searchMode: 'hybrid',
       rerankMode: 'colbert_v2',
@@ -1271,6 +1294,8 @@ describe('admin routes', () => {
           topK: 8,
           maxContextChunks: 3,
           maxContextChars: 9000,
+          systemPrompt: 'Profile answer prompt. Use only selected sources.',
+          conflictSystemPrompt: 'Profile conflict detector prompt. Return JSON only.',
         },
       },
     });
@@ -1285,6 +1310,8 @@ describe('admin routes', () => {
       topK: 8,
       maxContextChunks: 3,
       maxContextChars: 9000,
+      systemPrompt: 'Profile answer prompt. Use only selected sources.',
+      conflictSystemPrompt: 'Profile conflict detector prompt. Return JSON only.',
     });
 
     const invalidMode = await app.inject({
@@ -1446,7 +1473,7 @@ describe('admin routes', () => {
     const openSearchColbert = read.json().retrievalProfiles.find((profile: { id: string }) =>
       profile.id === 'opensearch_hybrid_colbert'
     );
-    expect(openSearchColbert?.config).toMatchObject({ colbertMinScore: 0.58 });
+    expect(openSearchColbert?.config).toMatchObject({ colbertTimeoutMs: 12000, colbertMinScore: 0.58 });
 
     const storedAfterRead = await getAdminStore().getJson<Array<{ id: string }>>('retrieval-profiles', 'default');
     expect(storedAfterRead?.map((profile) => profile.id)).toEqual(['semantic_broad']);
@@ -1862,6 +1889,29 @@ describe('admin routes', () => {
     await app.close();
   });
 
+  it('rejects invalid source-aware chunking policy boundaries', async () => {
+    const app = await makeApp();
+    const separators = ['\n\n', '\n', ' '];
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/rag/config',
+      headers: { cookie: 'mw=1' },
+      payload: {
+        chunkingPolicy: {
+          defaults: { chunkSize: 512, chunkOverlap: 50, chunkSeparators: separators },
+          sources: {
+            wiki_page: { chunkSize: 256, chunkOverlap: 256, chunkSeparators: separators },
+          },
+          namespaceOverrides: {},
+        },
+      },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe('Invalid RAG config');
+    await app.close();
+  });
+
   it('creates indexing profiles and starts profile-driven reindex', async () => {
     startSyncerReindex.mockResolvedValueOnce({
       status: {
@@ -1980,6 +2030,11 @@ describe('admin routes', () => {
       chunkSize: 640,
       chunkOverlap: 80,
       chunkSeparators: ['\n\n', '. ', ' '],
+      chunkingPolicy: expect.objectContaining({
+        sources: expect.objectContaining({
+          wiki_page: expect.objectContaining({ chunkSize: 800, chunkOverlap: 120 }),
+        }),
+      }),
       dryRun: false,
       llmEnrichmentEnabled: undefined,
       llmEnrichmentModel: undefined,
@@ -3454,12 +3509,17 @@ describe('admin routes', () => {
     });
 
     expect(res.statusCode).toBe(202);
-    expect(startSyncerReindex).toHaveBeenCalledWith({
+    expect(startSyncerReindex).toHaveBeenCalledWith(expect.objectContaining({
       attachmentsEnabled: true,
       semanticFactsEnabled: undefined,
       maxPages: 3,
       namespaces: [3000],
-    });
+      chunkingPolicy: expect.objectContaining({
+        sources: expect.objectContaining({
+          wiki_page: expect.objectContaining({ chunkSize: 800 }),
+        }),
+      }),
+    }));
     expect(res.json().status.state).toBe('running');
     await app.close();
   });
@@ -3487,7 +3547,7 @@ describe('admin routes', () => {
     });
 
     expect(res.statusCode).toBe(202);
-    expect(startSyncerReindex).toHaveBeenCalledWith({
+    expect(startSyncerReindex).toHaveBeenCalledWith(expect.objectContaining({
       attachmentsEnabled: false,
       semanticFactsEnabled: undefined,
       maxPages: 2,
@@ -3496,7 +3556,12 @@ describe('admin routes', () => {
       llmEnrichmentEnabled: true,
       llmEnrichmentModel: 'gpt-4.1-mini',
       llmEnrichmentMaxChars: 1500,
-    });
+      chunkingPolicy: expect.objectContaining({
+        sources: expect.objectContaining({
+          attachment_text: expect.objectContaining({ chunkSize: 1200 }),
+        }),
+      }),
+    }));
     await app.close();
   });
 
@@ -3700,6 +3765,7 @@ describe('admin routes', () => {
       await app.inject({ method: 'GET', url: '/api/internal/embedding/config', headers: invalidHeaders }),
       await app.inject({ method: 'GET', url: '/api/internal/indexing-profiles', headers: invalidHeaders }),
       await app.inject({ method: 'GET', url: '/api/internal/indexing-automation', headers: invalidHeaders }),
+      await app.inject({ method: 'GET', url: '/api/internal/rag/chunking-policy', headers: invalidHeaders }),
       await app.inject({ method: 'POST', url: '/api/internal/embedding/vector', headers: invalidHeaders, payload: { text: 'x' } }),
       await app.inject({ method: 'POST', url: '/api/internal/reindex/llm-enrich', headers: invalidHeaders, payload: { title: 'T', text: 'x' } }),
       await app.inject({ method: 'POST', url: '/api/internal/trust/recalculate-page', headers: invalidHeaders, payload: { pageId: 1 } }),
@@ -3740,6 +3806,19 @@ describe('admin routes', () => {
       scheduleEnabled: false,
       scheduleIntervalMinutes: 1440,
     });
+
+    const chunkingPolicy = await app.inject({
+      method: 'GET',
+      url: '/api/internal/rag/chunking-policy',
+      headers: validHeaders,
+    });
+    expect(chunkingPolicy.statusCode).toBe(200);
+    expect(chunkingPolicy.json().values).toMatchObject({
+      sources: expect.objectContaining({
+        wiki_page: expect.objectContaining({ chunkSize: 800 }),
+      }),
+    });
+    expect(chunkingPolicy.json().metadata.secretsRedacted).toBe(true);
 
     const invalidPayloads = [
       await app.inject({ method: 'POST', url: '/api/internal/embedding/vector', headers: validHeaders, payload: {} }),

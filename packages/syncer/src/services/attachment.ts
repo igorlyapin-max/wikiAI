@@ -7,12 +7,51 @@ export interface AttachmentResult {
   metadata: Record<string, unknown>;
 }
 
-export function getMetadataText(filename: string, mimeType: string, metadata: Record<string, unknown>): string {
+export interface AttachmentSearchableChunkInput {
+  filename: string;
+  mimeType: string;
+  pageTitle?: string;
+  text: string;
+}
+
+function attachmentContextLines(input: Pick<AttachmentSearchableChunkInput, 'filename' | 'mimeType' | 'pageTitle'>): string[] {
+  return [
+    `Файл: ${input.filename}`,
+    `MIME: ${input.mimeType}`,
+    ...(input.pageTitle && input.pageTitle.trim().length > 0 ? [`Родительская страница: ${input.pageTitle.trim()}`] : []),
+  ];
+}
+
+export function buildAttachmentSearchableChunkText(input: AttachmentSearchableChunkInput): string {
+  return [
+    ...attachmentContextLines(input),
+    input.text.trim(),
+  ].filter((line) => line.length > 0).join('\n');
+}
+
+export function buildAttachmentSearchableChunks(input: {
+  filename: string;
+  mimeType: string;
+  pageTitle?: string;
+  chunks: string[];
+}): string[] {
+  return input.chunks
+    .map((text) => buildAttachmentSearchableChunkText({
+      filename: input.filename,
+      mimeType: input.mimeType,
+      pageTitle: input.pageTitle,
+      text,
+    }))
+    .filter((text) => text.trim().length > 0);
+}
+
+export function getMetadataText(filename: string, mimeType: string, metadata: Record<string, unknown>, pageTitle?: string): string {
   const size = typeof metadata.size === 'number' ? `${metadata.size} bytes` : 'unknown size';
   const mode = typeof metadata.mode === 'string' ? metadata.mode : 'metadata';
   const format = typeof metadata.format === 'string' ? `, format: ${metadata.format}` : '';
   const error = typeof metadata.error === 'string' ? `, processing error: ${metadata.error}` : '';
-  return `Attachment metadata: ${filename}; MIME: ${mimeType}; size: ${size}; processing mode: ${mode}${format}${error}`;
+  const page = pageTitle && pageTitle.trim().length > 0 ? `; parent page: ${pageTitle.trim()}` : '';
+  return `Attachment metadata: ${filename}; MIME: ${mimeType}${page}; size: ${size}; processing mode: ${mode}${format}${error}`;
 }
 
 export async function processAttachment(

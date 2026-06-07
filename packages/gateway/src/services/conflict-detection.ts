@@ -359,13 +359,14 @@ export async function detectConflicts(
 
 export async function detectConflictsForChat(
   query: string,
-  chunks: SearchChunk[]
+  chunks: SearchChunk[],
+  options: DetectConflictsOptions = {}
 ): Promise<ConflictDetectionResult | null> {
-  const config = await getConflictDetectionConfig();
+  const config = options.config ?? await getConflictDetectionConfig();
   if (!config.showConflictBlock) return null;
 
   try {
-    const result = await detectConflicts(query, chunks, { config });
+    const result = await detectConflicts(query, chunks, { ...options, config });
     if (!result.checked || (!result.hasConflict && !result.lowTrust)) return null;
     return result;
   } catch (err) {

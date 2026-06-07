@@ -1,4 +1,5 @@
-import { fetchIndexingAutomationConfig, fetchIndexingProfiles } from './gateway.js';
+import { fetchChunkingPolicy, fetchIndexingAutomationConfig, fetchIndexingProfiles } from './gateway.js';
+import type { ChunkingPolicy } from './chunking-policy.js';
 import type { ReindexOptions, ReindexTextFilters } from './reindex.js';
 
 export interface StoredIndexingProfile {
@@ -16,6 +17,7 @@ export interface StoredIndexingProfile {
   chunkSize?: number;
   chunkOverlap?: number;
   chunkSeparators?: string[];
+  chunkingPolicy?: ChunkingPolicy;
   dryRunDefault?: boolean;
   maxPagesDefault?: number;
 }
@@ -27,9 +29,12 @@ function isStoredProfile(value: unknown): value is StoredIndexingProfile {
 
 export async function getIndexingProfileFromAdminStorage(profileId: string): Promise<StoredIndexingProfile | undefined> {
   try {
-    const profiles = await fetchIndexingProfiles();
+    const [profiles, chunkingPolicy] = await Promise.all([
+      fetchIndexingProfiles(),
+      fetchChunkingPolicy().catch(() => undefined),
+    ]);
     const profile = profiles.find((item) => isStoredProfile(item) && item.id === profileId);
-    return isStoredProfile(profile) ? profile : undefined;
+    return isStoredProfile(profile) ? { ...profile, chunkingPolicy } : undefined;
   } catch {
     return undefined;
   }
@@ -79,6 +84,7 @@ export function applyIndexingProfileDefaults(
     chunkSize: options.chunkSize ?? profile.chunkSize,
     chunkOverlap: options.chunkOverlap ?? profile.chunkOverlap,
     chunkSeparators: options.chunkSeparators ?? profile.chunkSeparators,
+    chunkingPolicy: options.chunkingPolicy ?? profile.chunkingPolicy,
     dryRun: options.dryRun ?? profile.dryRunDefault,
     llmEnrichmentEnabled: options.llmEnrichmentEnabled,
     llmEnrichmentModel: options.llmEnrichmentModel,

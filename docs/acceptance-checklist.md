@@ -57,8 +57,10 @@
 
 - [ ] `GET /api/admin/rag/config` показывает текущие параметры.
 - [ ] `POST /api/admin/rag/config` валидирует границы.
-- [ ] Профиль поиска разделяет `retrievalTopK` для финальных ссылок/results и `contextTopK`/`contextMaxChars` для LLM prompt.
-- [ ] Chunking параметры передаются в reindex profile.
+- [ ] `RAG / Chunking` показывает source-aware matrix для `wiki_page`, `attachment_text`, `attachment_metadata`, `cmdb_dynamic_snapshot` и namespace overrides для wiki pages.
+- [ ] Профиль поиска разделяет `retrievalTopK` для search/API results и `contextTopK`/`contextMaxChars` для LLM prompt; встроенный чат показывает источники только из prompt context.
+- [ ] Встроенный чат схлопывает несколько chunks одной страницы/attachment в один source group и показывает только источники, реально процитированные через `[Источник N]`, сохраняя исходный `citationIndex`.
+- [ ] Chunking параметры и `chunkingPolicy` передаются в reindex; статус reindex показывает chunk counts by source type.
 - [ ] `searchMode=hybrid` смешивает Qdrant vector candidates и SQLite FTS5/BM25 candidates.
 - [ ] `vectorWeight`, `lexicalWeight`, `vectorCandidateLimit`, `lexicalCandidateLimit`, `minFinalScore` меняются из Admin UI.
 - [ ] Вкладка `BM25` содержит experimental features: `lexicalNormalizationMode`, синонимы, латиница/кириллица, typo tolerance и `trigramIndexEnabled`; Soundex/rsoundex отсутствуют.
@@ -98,6 +100,7 @@
 - [ ] `dryRun=true` не пишет chunks в Qdrant.
 - [ ] Profile chunk size/overlap передаются в Syncer.
 - [ ] Profile содержит `indexTargets` и reindex умеет `dense`, `bm25`, `colbert`, `attachments`, `semanticFacts`, `ontologyVectors`.
+- [ ] Распознанные attachment chunks содержат filename/MIME/parent page context и после reindex видны в search-index, OpenSearch и Qdrant diagnostics.
 - [ ] `source=qdrant_payload` для `indexTargets=["colbert"]` не вызывает MediaWiki, dense embeddings или LLM enrichment.
 - [ ] Search/chat проверяют MediaWiki `readable` для каждого chunk.
 - [ ] Закрытая page-level страница в публичном namespace не попадает в AI-ответ.
