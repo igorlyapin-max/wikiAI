@@ -28,6 +28,8 @@ export interface RetrievalDiagnostics {
   contextSourceGroups?: number;
   citedSources?: number | null;
   displaySources?: number;
+  suppressedSources?: number;
+  suppressedCitationIndexes?: string;
   duplicateContextChunksCollapsed?: number;
   sourceDisplayMode?: string;
   tailSourcesBelowThreshold?: number;
@@ -71,6 +73,14 @@ function readColbertScores(value: unknown): string | undefined {
   return values.length > 8 ? `${visible}, ...` : visible;
 }
 
+function readNumberList(value: unknown): string | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const values = value
+    .map(readNumber)
+    .filter((item): item is number => item !== undefined);
+  return values.length > 0 ? values.join(', ') : undefined;
+}
+
 export function normalizeRetrievalDiagnostics(value: unknown): RetrievalDiagnostics | undefined {
   if (!isRecord(value)) return undefined;
 
@@ -104,6 +114,8 @@ export function normalizeRetrievalDiagnostics(value: unknown): RetrievalDiagnost
     contextSourceGroups: readNumber(value.contextSourceGroups),
     citedSources: readOptionalNumber(value.citedSources),
     displaySources: readNumber(value.displaySources),
+    suppressedSources: readNumber(value.suppressedSources),
+    suppressedCitationIndexes: readNumberList(value.suppressedCitationIndexes),
     duplicateContextChunksCollapsed: readNumber(value.duplicateContextChunksCollapsed),
     sourceDisplayMode: readString(value.sourceDisplayMode),
     tailSourcesBelowThreshold: readNumber(value.tailSourcesBelowThreshold),
@@ -150,6 +162,8 @@ function DiagnosticsGrid({ diagnostics }: { diagnostics: RetrievalDiagnostics })
     ['contextSourceGroups', diagnostics.contextSourceGroups],
     ['citedSources', diagnostics.citedSources],
     ['displaySources', diagnostics.displaySources],
+    ['suppressedSources', diagnostics.suppressedSources],
+    ['suppressedCitationIndexes', diagnostics.suppressedCitationIndexes],
     ['duplicateContextChunksCollapsed', diagnostics.duplicateContextChunksCollapsed],
     ['sourceDisplayMode', diagnostics.sourceDisplayMode],
     ['tailSourcesBelowThreshold', diagnostics.tailSourcesBelowThreshold],

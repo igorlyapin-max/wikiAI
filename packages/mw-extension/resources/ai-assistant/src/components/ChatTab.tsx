@@ -525,6 +525,14 @@ export default function ChatTab({ gatewayUrl }: ChatTabProps) {
                 if (last && last.role === 'assistant') last.content = assistantText;
                 return copy;
               });
+            } else if (data.type === 'message' && typeof data.content === 'string') {
+              assistantText = data.content;
+              setMessages((prev) => {
+                const copy = [...prev];
+                const last = copy[copy.length - 1];
+                if (last && last.role === 'assistant') last.content = assistantText;
+                return copy;
+              });
             } else if (data.type === 'conflict') {
               conflict = data.conflict;
               setMessages((prev) => {

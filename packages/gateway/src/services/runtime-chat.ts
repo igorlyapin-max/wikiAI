@@ -468,6 +468,14 @@ function stripTrailingGeneratedSourceList(content: string): string {
   return content.slice(0, match.index).trimEnd();
 }
 
+function stripInlineCitationMarkers(content: string): string {
+  return content
+    .replace(/\s*\[(?:источник\s+)?\d+\]/giu, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\s+([.,!?;:])/g, '$1')
+    .trim();
+}
+
 function citationIndexesFromContent(content: string): Set<number> {
   const indexes = new Set<number>();
   for (const match of content.matchAll(/\[(?:источник\s+)?(\d+)\]/giu)) {
@@ -477,6 +485,22 @@ function citationIndexesFromContent(content: string): Set<number> {
   return indexes;
 }
 
+function isNoAnswerContent(content: string): boolean {
+  const compact = compactText(content).toLowerCase();
+  if (!compact) return false;
+  if (/(?:нет|не\s+найден[аоы]?|отсутствует)[^.?!]{0,180}(?:^|[\s,;:])(?:но|однако|при\s+этом)(?:[\s,.;:]|$)/iu.test(compact)) {
+    return false;
+  }
+
+  return [
+    /(?:^|[\s"'])в\s+(?:предоставленных|найденных|доступных)\s+документах\s+(?:нет|не\s+найден[аоы]?|отсутствует|не\s+содержится)\s+(?:информац|сведен)/iu,
+    /(?:^|[\s"'])в\s+документах\s+(?:нет|не\s+найден[аоы]?|отсутствует|не\s+содержится)\s+(?:информац|сведен)/iu,
+    /(?:^|[\s"'])(?:не\s+удалось\s+найти|я\s+не\s+наш[её]л|не\s+найден[аоы]?)\s+(?:информац|сведен)/iu,
+    /\b(?:provided|available|retrieved)\s+documents\s+(?:do\s+not|don't)\s+(?:contain|include)\s+(?:information|details)/iu,
+    /\b(?:no|could\s+not\s+find)\s+(?:information|details)\s+(?:in|within)\s+(?:the\s+)?(?:provided|available|retrieved)\s+documents/iu,
+  ].some((pattern) => pattern.test(compact));
+}
+
 function selectDisplaySources(sources: RuntimeChatSource[], content: string): {
   content: string;
   sources: RuntimeChatSource[];
@@ -484,6 +508,22 @@ function selectDisplaySources(sources: RuntimeChatSource[], content: string): {
 } {
   const cleanContent = stripTrailingGeneratedSourceList(content);
   const citedIndexes = citationIndexesFromContent(cleanContent);
+  if (isNoAnswerContent(cleanContent)) {
+    return {
+      content: stripInlineCitationMarkers(cleanContent),
+      sources: [],
+      diagnostics: {
+        citedSources: 0,
+        requestedCitationIndexes: Array.from(citedIndexes),
+        suppressedCitationIndexes: Array.from(citedIndexes),
+        suppressedSources: sources.length,
+        displaySources: 0,
+        finalSources: 0,
+        sourceDisplayMode: 'no_answer_suppressed',
+      },
+    };
+  }
+
   if (citedIndexes.size === 0) {
     return {
       content: cleanContent,
@@ -689,7 +729,7 @@ export async function prepareRuntimeChat(input: RuntimeChatInput): Promise<Prepa
 
   const contextText = formatSourceGroupsForPrompt(sourceGroupsToPromptGroups(sourceGroups), { maxChars: contextMaxChars });
   const citationInstruction = contextText
-    ? 'Правила цитирования: ссылайся только на предоставленные маркеры вида [Источник N]. Не добавляй отдельный текстовый список "Источники:" - приложение покажет источники само.'
+    ? 'Правила цитирования: ссылайся только на предоставленные маркеры вида [Источник N]. Не добавляй отдельный текстовый список "Источники:" - приложение покажет источники само. Если документы не содержат ответа на вопрос, прямо скажи, что информации нет, и не добавляй маркеры [Источник N].'
     : '';
   const messages: LlmMessage[] = [
     { role: 'system', content: responseSettings.systemPrompt },
@@ -895,6 +935,9 @@ export async function streamRuntimeChat(
     }
 
     const displaySelection = selectDisplaySources(prepared.sources, fullResponse);
+    if (displaySelection.content !== fullResponse) {
+      writeEvent({ type: 'message', content: displaySelection.content });
+    }
     if (prepared.responseSettings.showSources) {
       writeEvent({
         type: 'diagnostics',

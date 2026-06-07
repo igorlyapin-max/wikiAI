@@ -22,6 +22,7 @@ const getEmbedding = vi.hoisted(() => vi.fn());
 const searchRagChunks = vi.hoisted(() => vi.fn());
 const filterReadableChunks = vi.hoisted(() => vi.fn());
 const callLiteLLM = vi.hoisted(() => vi.fn());
+const streamChatCompletion = vi.hoisted(() => vi.fn());
 const detectConflictsForChat = vi.hoisted(() => vi.fn());
 const buildConflictInstruction = vi.hoisted(() => vi.fn());
 const fetchUserInfo = vi.hoisted(() => vi.fn(async () => ({
@@ -86,17 +87,7 @@ vi.mock('../../services/acl.js', () => ({
 
 vi.mock('../../services/litellm.js', () => ({
   callLiteLLM,
-  streamChatCompletion: vi.fn(async function* streamChatCompletion() {
-    yield {
-      choices: [
-        {
-          delta: { content: 'stream answer' },
-          index: 0,
-          finish_reason: null,
-        },
-      ],
-    };
-  }),
+  streamChatCompletion,
 }));
 
 vi.mock('../../services/conflict-detection.js', () => ({
@@ -126,6 +117,7 @@ describe('chat routes', () => {
     searchRagChunks.mockReset();
     filterReadableChunks.mockReset();
     callLiteLLM.mockReset();
+    streamChatCompletion.mockReset();
     detectConflictsForChat.mockReset();
     buildConflictInstruction.mockReset();
     fetchUserInfo.mockReset();
@@ -153,6 +145,17 @@ describe('chat routes', () => {
           index: 0,
         },
       ],
+    });
+    streamChatCompletion.mockImplementation(async function* streamChatCompletionDefault() {
+      yield {
+        choices: [
+          {
+            delta: { content: 'stream answer' },
+            index: 0,
+            finish_reason: null,
+          },
+        ],
+      };
     });
     const template = (await getDefaultRetrievalProfiles()).find((profile) => profile.id === 'semantic_broad');
     if (!template) throw new Error('semantic_broad retrieval profile template is missing');
@@ -524,6 +527,132 @@ describe('chat routes', () => {
       retrievedSources: 3,
       contextSources: 3,
       contextSourceGroups: 3,
+      citedSources: 1,
+      displaySources: 1,
+      finalSources: 1,
+      sourceDisplayMode: 'cited_only',
+    });
+
+    await app.close();
+  });
+
+  it('suppresses chat sources and citation markers when the answer says nothing was found', async () => {
+    const noAnswerChunks: SearchChunk[] = [
+      {
+        id: 31,
+        pageId: 301,
+        title: '3D биопечать',
+        text: '3D bioprinting overview.',
+        namespace: 0,
+        allowedGroups: ['ai-it'],
+        score: 0.81,
+      },
+      {
+        id: 32,
+        pageId: 302,
+        title: 'WikiAIAdmin:Администрирование/FAQ и диагностика',
+        text: 'Admin diagnostics FAQ.',
+        namespace: 0,
+        allowedGroups: ['ai-it'],
+        score: 0.74,
+      },
+      {
+        id: 33,
+        pageId: 303,
+        title: 'Заглавная страница',
+        text: 'Main page.',
+        namespace: 0,
+        allowedGroups: ['ai-it'],
+        score: 0.7,
+      },
+    ];
+    searchRagChunks.mockResolvedValueOnce({
+      chunks: noAnswerChunks,
+      limit: 5,
+      aclCandidateLimit: 20,
+      showRawScores: false,
+      mode: 'hybrid',
+    });
+    filterReadableChunks.mockResolvedValueOnce(noAnswerChunks);
+    callLiteLLM.mockResolvedValueOnce({
+      choices: [
+        {
+          message: {
+            role: 'assistant',
+            content: 'В предоставленных документах нет информации о новинках или изменениях в области тестирования. Если у вас есть более конкретный запрос или контекст, пожалуйста, уточните. [Источник 1][Источник 2][Источник 3]',
+          },
+          finish_reason: 'stop',
+          index: 0,
+        },
+      ],
+    });
+
+    const app = await makeApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/chat',
+      headers: { cookie: 'mw=1', origin: 'http://127.0.0.1:8082' },
+      payload: {
+        message: 'Что нового в тестировании?',
+        conversationId: 'conv-no-answer',
+        stream: false,
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().message).toBe(
+      'В предоставленных документах нет информации о новинках или изменениях в области тестирования. Если у вас есть более конкретный запрос или контекст, пожалуйста, уточните.'
+    );
+    expect(res.json().sources).toEqual([]);
+    expect(res.json().diagnostics).toMatchObject({
+      retrievedSources: 3,
+      contextSources: 3,
+      citedSources: 0,
+      displaySources: 0,
+      finalSources: 0,
+      suppressedSources: 3,
+      suppressedCitationIndexes: [1, 2, 3],
+      sourceDisplayMode: 'no_answer_suppressed',
+    });
+
+    await app.close();
+  });
+
+  it('keeps sources when a negative clause is followed by a sourced positive answer', async () => {
+    callLiteLLM.mockResolvedValueOnce({
+      choices: [
+        {
+          message: {
+            role: 'assistant',
+            content: 'В документах нет информации о тестировании, но описано подключение VPN [Источник 1].',
+          },
+          finish_reason: 'stop',
+          index: 0,
+        },
+      ],
+    });
+
+    const app = await makeApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/chat',
+      headers: { cookie: 'mw=1', origin: 'http://127.0.0.1:8082' },
+      payload: {
+        message: 'Что есть про тестирование и VPN?',
+        conversationId: 'conv-no-answer-but-positive',
+        stream: false,
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().message).toBe('В документах нет информации о тестировании, но описано подключение VPN [Источник 1].');
+    expect(res.json().sources).toEqual([
+      expect.objectContaining({
+        citationIndex: 1,
+        title: 'CorpIT:FAQ VPN',
+      }),
+    ]);
+    expect(res.json().diagnostics).toMatchObject({
       citedSources: 1,
       displaySources: 1,
       finalSources: 1,
@@ -1089,6 +1218,48 @@ describe('chat routes', () => {
     expect(res.payload.indexOf('"type":"ui"')).toBeLessThan(res.payload.indexOf('"type":"diagnostics"'));
     expect(res.payload.indexOf('"type":"conflict"')).toBeLessThan(res.payload.indexOf('"type":"diagnostics"'));
     expect(res.payload.indexOf('"type":"diagnostics"')).toBeLessThan(res.payload.indexOf('"type":"sources"'));
+    await app.close();
+  });
+
+  it('emits a final streaming message without citations for no-answer responses', async () => {
+    streamChatCompletion.mockImplementationOnce(async function* streamNoAnswer() {
+      yield {
+        choices: [
+          {
+            delta: {
+              content: 'В предоставленных документах нет информации о новинках. [Источник 1]',
+            },
+            index: 0,
+            finish_reason: null,
+          },
+        ],
+      };
+    });
+
+    const app = await makeApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/chat',
+      headers: { cookie: 'mw=1', origin: 'http://127.0.0.1:8082' },
+      payload: {
+        message: 'Что нового?',
+        conversationId: 'conv-stream-no-answer',
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.payload).toContain('"type":"token"');
+    expect(res.payload).toContain('"type":"message","content":"В предоставленных документах нет информации о новинках."');
+    expect(res.payload).toContain('"sourceDisplayMode":"no_answer_suppressed"');
+    expect(res.payload).toContain('"suppressedSources":1');
+    expect(res.payload).toContain('"suppressedCitationIndexes":[1]');
+    expect(res.payload).toContain('"type":"sources","sources":[]');
+    expect(res.payload.indexOf('"type":"message"')).toBeLessThan(res.payload.indexOf('"type":"sources"'));
+    const lastAppend = appendCalls[appendCalls.length - 1];
+    expect(lastAppend.message).toEqual({
+      role: 'assistant',
+      content: 'В предоставленных документах нет информации о новинках.',
+    });
     await app.close();
   });
 

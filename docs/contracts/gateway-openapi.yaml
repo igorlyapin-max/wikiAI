@@ -714,7 +714,7 @@ components:
           type: string
         sources:
           type: array
-          description: Present only when the selected retrieval profile effective showSources is true. Built-in chat returns only sources that were included in the final LLM context.
+          description: Present only when the selected retrieval profile effective showSources is true. Built-in chat returns only sources that were included in the final LLM context and cited by the final answer. If the final answer says the provided documents do not contain the requested information, sources can be suppressed while diagnostics keeps the retrieved/context counts.
           items:
             $ref: "#/components/schemas/ChatSource"
         conflict:

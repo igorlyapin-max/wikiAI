@@ -270,6 +270,58 @@ describe('ChatTab', () => {
     });
   });
 
+  it('заменяет streaming текст финальным message event и скрывает sources для no-answer', async () => {
+    let activeSessionRequests = 0;
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/ui/config')) {
+        return Promise.resolve(jsonResponse({ assistantUiMode: 'standard' }));
+      }
+      if (url.endsWith('/api/chat')) {
+        return Promise.resolve(streamResponse([
+          'data: {"type":"conversation","conversationId":"c-no-answer"}\n',
+          'data: {"type":"diagnostics","diagnostics":{"retrievalQuery":"Что нового?","searchMode":"hybrid","effectiveTopK":5,"contextSources":1,"sourceDisplayMode":"no_answer_suppressed","suppressedSources":1,"suppressedCitationIndexes":[1]}}\n',
+          'data: {"type":"token","content":"В предоставленных документах нет информации о новинках. [Источник 1]"}\n',
+          'data: {"type":"message","content":"В предоставленных документах нет информации о новинках."}\n',
+          'data: {"type":"sources","sources":[]}\n',
+          'data: [DONE]\n',
+        ]));
+      }
+      if (url.includes('/api/chat/sessions?status=active')) {
+        activeSessionRequests += 1;
+        if (activeSessionRequests === 1) {
+          return Promise.resolve(jsonResponse({ values: [] }));
+        }
+        return Promise.resolve(jsonResponse({
+          values: [
+            {
+              id: 's-no-answer',
+              conversationId: 'c-no-answer',
+              title: 'Новый чат',
+              status: 'active',
+              messageCount: 2,
+              createdAt: '2026-06-03T10:00:00Z',
+              updatedAt: '2026-06-03T10:01:00Z',
+            },
+          ],
+        }));
+      }
+      return Promise.resolve(jsonResponse({ values: [] }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<ChatTab gatewayUrl="https://gateway.example" />);
+    await screen.findByText('Чатов нет');
+
+    await userEvent.type(screen.getByPlaceholderText('Введите сообщение...'), 'Что нового?');
+    await userEvent.click(screen.getByRole('button', { name: 'Отправить' }));
+
+    expect(await screen.findByText('В предоставленных документах нет информации о новинках.')).toBeInTheDocument();
+    expect(screen.queryByText(/\[Источник 1\]/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Источники:')).not.toBeInTheDocument();
+    expect(screen.getByText('Retrieval: режим hybrid, выдача 5, контекст 1')).toBeInTheDocument();
+  });
+
   it('делает inline citation ссылкой на источник с тем же номером', async () => {
     let activeSessionRequests = 0;
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
