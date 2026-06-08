@@ -1,13 +1,15 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   ChatRetrievalDiagnostics,
   normalizeRetrievalDiagnostics,
   type RetrievalDiagnostics,
 } from './RetrievalDiagnostics';
+import { createAssistantEndpoint, type AssistantEndpoint } from '../assistantEndpoint';
 
 interface ChatTabProps {
-  gatewayUrl: string;
+  gatewayUrl?: string;
+  endpoint?: AssistantEndpoint;
 }
 
 interface ConflictSource {
@@ -317,7 +319,7 @@ function renderAssistantContent(content: string, sources: MessageSource[] | unde
   return parts.length > 0 ? parts : visibleContent;
 }
 
-export default function ChatTab({ gatewayUrl }: ChatTabProps) {
+export default function ChatTab({ gatewayUrl = '', endpoint }: ChatTabProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -332,6 +334,10 @@ export default function ChatTab({ gatewayUrl }: ChatTabProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const sessionLoadRequestRef = useRef(0);
   const archiveReadOnly = activeSessionStatus === 'archived';
+  const apiEndpoint = useMemo(
+    () => endpoint ?? createAssistantEndpoint({ gatewayUrl }),
+    [endpoint, gatewayUrl]
+  );
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -342,7 +348,7 @@ export default function ChatTab({ gatewayUrl }: ChatTabProps) {
 
     const loadUiConfig = async (): Promise<void> => {
       try {
-        const res = await fetch(`${gatewayUrl}/api/ui/config`, { credentials: 'include' });
+        const res = await fetch(apiEndpoint('/api/ui/config'), { credentials: 'include' });
         if (!res.ok) return;
         const data = await res.json();
         if (!cancelled) {
@@ -358,7 +364,7 @@ export default function ChatTab({ gatewayUrl }: ChatTabProps) {
     return () => {
       cancelled = true;
     };
-  }, [gatewayUrl]);
+  }, [apiEndpoint]);
 
   const loadSessions = async (filter = sessionFilter): Promise<ChatSessionSummary[]> => {
     const requestId = sessionLoadRequestRef.current + 1;
@@ -366,7 +372,7 @@ export default function ChatTab({ gatewayUrl }: ChatTabProps) {
     setSessionsLoading(true);
     setHistoryError(undefined);
     try {
-      const res = await fetch(`${gatewayUrl}/api/chat/sessions?status=${encodeURIComponent(filter)}&limit=20`, {
+      const res = await fetch(apiEndpoint(`/api/chat/sessions?status=${encodeURIComponent(filter)}&limit=20`), {
         credentials: 'include',
       });
       if (!res.ok) throw new Error(await readGatewayError(res));
@@ -392,7 +398,7 @@ export default function ChatTab({ gatewayUrl }: ChatTabProps) {
 
   useEffect(() => {
     void loadSessions(sessionFilter);
-  }, [gatewayUrl, sessionFilter]);
+  }, [apiEndpoint, sessionFilter]);
 
   const handleNewChat = () => {
     if (sessionFilter !== 'active') {
@@ -420,7 +426,7 @@ export default function ChatTab({ gatewayUrl }: ChatTabProps) {
     setConversationId(session.status === 'active' ? session.conversationId : undefined);
     setHistoryError(undefined);
     try {
-      const res = await fetch(`${gatewayUrl}/api/chat/sessions/${encodeURIComponent(session.id)}/messages`, {
+      const res = await fetch(apiEndpoint(`/api/chat/sessions/${encodeURIComponent(session.id)}/messages`), {
         credentials: 'include',
       });
       if (!res.ok) throw new Error(await readGatewayError(res));
@@ -439,7 +445,7 @@ export default function ChatTab({ gatewayUrl }: ChatTabProps) {
 
   const handleExportArchive = async () => {
     try {
-      const res = await fetch(`${gatewayUrl}/api/chat/archive/export`, {
+      const res = await fetch(apiEndpoint('/api/chat/archive/export'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -472,7 +478,7 @@ export default function ChatTab({ gatewayUrl }: ChatTabProps) {
     setHistoryError(undefined);
 
     try {
-      const res = await fetch(`${gatewayUrl}/api/chat`, {
+      const res = await fetch(apiEndpoint('/api/chat'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',

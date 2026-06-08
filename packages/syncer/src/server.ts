@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import { config } from './config.js';
 import {
+  fetchAllPages,
   fetchPageContent,
   fetchPageCategories,
   fetchSemanticFacts,
@@ -10,7 +11,7 @@ import {
   testMediaWikiServiceLogin,
 } from './services/mediawiki.js';
 import { splitText } from './services/chunker.js';
-import { upsertChunks, upsertCmdbDynamicSnapshotChunks } from './services/qdrant.js';
+import { getQdrantPayloadDiagnostics, upsertChunks, upsertCmdbDynamicSnapshotChunks } from './services/qdrant.js';
 import { getAllowedGroups } from './services/acl.js';
 import {
   deleteSearchIndexPage,
@@ -111,6 +112,15 @@ function parseNamespaceList(value: unknown): number[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const namespaces = value.filter((item): item is number => Number.isInteger(item) && item >= 0);
   return namespaces.length > 0 ? namespaces : undefined;
+}
+
+function parseNamespaceQuery(value: unknown): number[] {
+  if (!isRecord(value) || typeof value.namespaces !== 'string') return [0];
+  const namespaces = value.namespaces
+    .split(',')
+    .map((item) => Number(item.trim()))
+    .filter((item) => Number.isInteger(item) && item >= 0);
+  return namespaces.length > 0 ? Array.from(new Set(namespaces)).sort((a, b) => a - b) : [0];
 }
 
 function parseStringList(value: unknown): string[] | undefined {
@@ -548,7 +558,11 @@ app.post('/webhook/page', async (request, reply) => {
 
         semanticAutofill = evaluation;
         if (!serviceEdit && evaluation.mode === 'apply_empty' && evaluation.patch.length > 0) {
-          const patch = applySemanticAutofillPatch(rawContent, evaluation.patch, evaluation.templates);
+          const patch = applySemanticAutofillPatch(rawContent, evaluation.patch, {
+            writeTarget: evaluation.writeTarget,
+            templates: evaluation.templates,
+            managedBlock: evaluation.managedBlock,
+          });
           semanticAutofill = { ...evaluation, applied: patch.applied, skippedPatch: patch.skipped };
 
           if (patch.changed) {
@@ -627,6 +641,34 @@ app.get('/admin/reindex/status', async (request, reply) => {
   }
 
   reply.send({ status: await getSharedReindexJobStatus() });
+});
+
+app.get('/admin/reindex/source-diagnostics', async (request, reply) => {
+  if (!hasAdminAccess(request.headers)) {
+    reply.status(401).send({ error: 'Invalid syncer admin token' });
+    return;
+  }
+
+  const mediaWikiNamespaces = parseNamespaceQuery(request.query);
+  const [qdrantPayload, mediaWikiPagesByNamespace] = await Promise.all([
+    getQdrantPayloadDiagnostics(),
+    Promise.all(mediaWikiNamespaces.map((namespace) => fetchAllPages(namespace))),
+  ]);
+  const mediaWikiPageKeys = new Set(
+    mediaWikiPagesByNamespace
+      .flat()
+      .map((page) => `${page.ns}:${page.pageid}`)
+  );
+
+  reply.send({
+    values: {
+      source: 'qdrant_payload',
+      mediaWikiNamespaces,
+      mediaWikiPages: mediaWikiPageKeys.size,
+      ...qdrantPayload,
+      densePagesBehindMediaWiki: qdrantPayload.qdrantPayloadPages < mediaWikiPageKeys.size,
+    },
+  });
 });
 
 app.get('/admin/mediawiki-service-auth/status', async (request, reply) => {

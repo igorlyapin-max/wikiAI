@@ -279,7 +279,13 @@ async function fetchCsrfToken(): Promise<string> {
     throw new Error('MediaWiki CSRF token response is empty');
   }
   const token = readString(data.query.tokens.csrftoken);
-  if (!token || token === '+\\') throw new Error('MediaWiki CSRF token was not returned');
+  if (!token) throw new Error('MediaWiki CSRF token was not returned');
+  if (token === '+\\' && !config.mwAllowAnonymousEdit) {
+    throw new Error(
+      'MediaWiki CSRF token is anonymous; configure MW_SERVICE_USERNAME with a password/secret '
+      + 'or set MW_ALLOW_ANON_EDIT=true for a trusted LAN demo wiki'
+    );
+  }
   return token;
 }
 
@@ -311,10 +317,14 @@ export async function editPageContent(title: string, text: string, summary: stri
   };
 }
 
-export async function fetchPageContent(title: string): Promise<MWPage | null> {
+export async function fetchPageContent(title: string, pageId?: number): Promise<MWPage | null> {
   const url = getApiUrl();
   url.searchParams.set('action', 'query');
-  url.searchParams.set('titles', title);
+  if (Number.isInteger(pageId) && Number(pageId) > 0) {
+    url.searchParams.set('pageids', String(pageId));
+  } else {
+    url.searchParams.set('titles', title);
+  }
   url.searchParams.set('prop', 'revisions');
   url.searchParams.set('rvprop', 'content|timestamp');
   url.searchParams.set('rvslots', 'main');

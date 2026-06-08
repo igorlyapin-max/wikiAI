@@ -19,6 +19,7 @@ describe('SpecialAIAdmin UI contract', () => {
       'embeddings',
       'rag',
       'debug-chain',
+      'index-status',
       'bm25',
       'opensearch',
       'colbert',
@@ -28,7 +29,6 @@ describe('SpecialAIAdmin UI contract', () => {
       'trust',
       'webhook',
       'ontology',
-      'autofill',
       'sensitive',
       'indexing',
       'audit',
@@ -62,6 +62,21 @@ describe('SpecialAIAdmin UI contract', () => {
     expect(specialPageSource).toContain('id="aiadmin-opensearch-config"');
     expect(specialPageSource).toContain('id="aiadmin-save-opensearch-config"');
     expect(specialPageSource).toContain("'aiadmin-tab-opensearch'");
+  });
+
+  it('renders unified index status as an operational admin panel', () => {
+    expect(specialPageSource).toContain('data-ai-tab="index-status"');
+    expect(specialPageSource).toContain('data-ai-panel="index-status"');
+    expect(specialPageSource).toContain('id="aiadmin-index-status-summary"');
+    expect(specialPageSource).toContain('id="aiadmin-reindex-all-indexes"');
+    expect(specialPageSource).toContain('id="aiadmin-reindex-dense-colbert"');
+    expect(specialPageSource).toContain('id="aiadmin-reindex-lexical-indexes"');
+    expect(specialPageSource).toContain('id="aiadmin-index-status-backfill-trigram"');
+    expect(specialPageSource).toContain('id="aiadmin-index-status-operation"');
+    expect(specialPageSource).toContain("'aiadmin-tab-index-status'");
+    expect(specialPageSource).toContain("'aiadmin-section-index-status'");
+    expect(specialPageSource).toContain("'aiadmin-label-index-current-operation'");
+    expect(specialPageSource).toContain("'aiadmin-index-operation-target-writes'");
   });
 
   it('renders the MediaWiki profile selector panel instead of the legacy composition form', () => {

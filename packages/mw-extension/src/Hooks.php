@@ -21,6 +21,8 @@ class Hooks implements
   ArticleProtectCompleteHook,
   GetUserPermissionsErrorsHook
 {
+  private const WEBHOOK_JSON_FLAGS = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES;
+
   private static function getHttpFactory()
   {
     return MediaWikiServices::getInstance()->getHttpRequestFactory();
@@ -32,38 +34,49 @@ class Hooks implements
     $syncerUrl = $config->get('AIAssistantSyncerUrl');
     $url = rtrim($syncerUrl, '/') . '/webhook/page';
     $payload = self::withoutNullValues(array_merge(['event' => $event], $data));
-    $payloadJson = json_encode($payload);
+    $payloadJson = json_encode($payload, self::WEBHOOK_JSON_FLAGS);
     if ($payloadJson === false) {
       wfDebugLog('aiassistant', 'Webhook payload JSON encoding failed for event: ' . $event);
       return;
     }
-    $headers = ['Content-Type: application/json'];
+    $headers = [
+      'Content-Type' => 'application/json',
+    ];
     $secret = trim((string)$config->get('AIAssistantWebhookSecret'));
     if ($secret !== '') {
       $signatureTimestamp = (string)time();
-      $headers[] = 'X-WikiAI-Webhook-Timestamp: ' . $signatureTimestamp;
-      $headers[] = 'X-WikiAI-Webhook-Signature: ' . self::signWebhookPayload(
+      $headers['X-WikiAI-Webhook-Timestamp'] = $signatureTimestamp;
+      $headers['X-WikiAI-Webhook-Signature'] = self::signWebhookPayload(
         $secret,
         $signatureTimestamp,
         $payload
       );
-      $headers[] = 'X-WikiAI-Webhook-Idempotency-Key: ' . self::webhookIdempotencyKey($payload);
+      $headers['X-WikiAI-Webhook-Idempotency-Key'] = self::webhookIdempotencyKey($payload);
     }
 
     try {
-      $response = self::getHttpFactory()->post(
+      $httpRequest = self::getHttpFactory()->create(
         $url,
         [
           'postData' => $payloadJson,
-          'headers' => $headers,
+          'method' => 'POST',
           'timeout' => 3,
+          'followRedirects' => false,
         ],
         __METHOD__
       );
-      if ($response === false) {
-        wfDebugLog('aiassistant', 'Webhook returned false for event: ' . $event);
+      foreach ($headers as $name => $value) {
+        $httpRequest->setHeader($name, $value);
       }
-    } catch (\Exception $e) {
+
+      $status = $httpRequest->execute();
+      if (!$status->isOK()) {
+        wfDebugLog(
+          'aiassistant',
+          'Webhook failed with HTTP ' . $httpRequest->getStatus() . ' for event: ' . $event
+        );
+      }
+    } catch (\Throwable $e) {
       wfDebugLog('aiassistant', 'Webhook failed: ' . $e->getMessage());
     }
   }
@@ -101,7 +114,7 @@ class Hooks implements
 
   private static function canonicalWebhookJson(array $payload): string
   {
-    return json_encode(self::canonicalizeWebhookValue($payload));
+    return json_encode(self::canonicalizeWebhookValue($payload), self::WEBHOOK_JSON_FLAGS);
   }
 
   private static function signWebhookPayload(string $secret, string $timestamp, array $payload): string

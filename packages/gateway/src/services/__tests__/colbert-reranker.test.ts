@@ -4,6 +4,7 @@ import {
   rerankChunksWithColbert,
   searchColbertIndex,
   syncColbertIndexPage,
+  testColbertReranker,
 } from '../colbert-reranker.js';
 import { RagAdminConfig } from '../admin-platform-config.js';
 import { SearchChunk } from '../../types/index.js';
@@ -60,6 +61,10 @@ const baseConfig: RagAdminConfig = {
   colbertCandidateLimit: 50,
   colbertTimeoutMs: 5000,
   colbertMinScore: 0,
+  colbertTailDropEnabled: false,
+  colbertTailMaxGap: 0.2,
+  colbertTailMinScore: 0.7,
+  colbertTailMinKeep: 1,
   colbertFailMode: 'fallback_current',
   semanticFactsInContext: true,
   includeAttachments: false,
@@ -84,6 +89,19 @@ const chunks: SearchChunk[] = [
     namespace: 0,
     allowedGroups: ['*'],
     score: 0.79,
+  },
+];
+
+const tailChunks: SearchChunk[] = [
+  ...chunks,
+  {
+    id: 3,
+    pageId: 13,
+    title: 'Тестовая страница ИИ',
+    text: 'Общая тестовая страница без прямого отношения к запросу.',
+    namespace: 0,
+    allowedGroups: ['*'],
+    score: 0.78,
   },
 ];
 
@@ -189,6 +207,121 @@ describe('ColBERT reranker', () => {
       ],
       tailSourcesBelowThreshold: 1,
       colbertFallbackUsed: false,
+    });
+  });
+
+  it('drops weak post-rerank ColBERT tail by score gap and tail minimum', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: async () => ({
+        results: [
+          { id: 2, score: 0.91 },
+          { id: 1, score: 0.69 },
+          { id: 3, score: 0.58 },
+        ],
+      }),
+    })));
+
+    const result = await rerankChunksWithColbert({
+      query: 'технологии 5g',
+      chunks: tailChunks,
+      topK: 3,
+      config: enabledConfig({
+        colbertMinScore: 0.58,
+        colbertTailDropEnabled: true,
+        colbertTailMaxGap: 0.2,
+        colbertTailMinScore: 0.6,
+        colbertTailMinKeep: 1,
+      }),
+    });
+
+    expect(result.chunks.map((chunk) => chunk.id)).toEqual([2]);
+    expect(result.diagnostics).toMatchObject({
+      colbertTailDropEnabled: true,
+      colbertTailDropped: 2,
+      colbertTailDropReasons: {
+        belowTailMinScore: 1,
+        scoreGap: 1,
+      },
+      colbertTailBestScore: 0.91,
+      colbertTailMinAcceptedScore: 0.91,
+      colbertTailThresholds: {
+        minScore: 0.6,
+        maxGap: 0.2,
+        minKeep: 1,
+      },
+    });
+  });
+
+  it('keeps the configured minimum number of ColBERT tail results', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: async () => ({
+        results: [
+          { id: 2, score: 0.91 },
+          { id: 1, score: 0.7 },
+          { id: 3, score: 0.69 },
+        ],
+      }),
+    })));
+
+    const result = await rerankChunksWithColbert({
+      query: 'технологии 5g',
+      chunks: tailChunks,
+      topK: 3,
+      config: enabledConfig({
+        colbertTailDropEnabled: true,
+        colbertTailMaxGap: 0.01,
+        colbertTailMinScore: 0.9,
+        colbertTailMinKeep: 2,
+      }),
+    });
+
+    expect(result.chunks.map((chunk) => chunk.id)).toEqual([2, 1]);
+    expect(result.diagnostics).toMatchObject({
+      colbertTailDropped: 1,
+      colbertTailThresholds: {
+        minScore: 0.9,
+        maxGap: 0.01,
+        minKeep: 2,
+      },
+    });
+  });
+
+  it('preserves ColBERT tail results when tail drop is disabled', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: async () => ({
+        results: [
+          { id: 2, score: 0.91 },
+          { id: 1, score: 0.69 },
+          { id: 3, score: 0.58 },
+        ],
+      }),
+    })));
+
+    const result = await rerankChunksWithColbert({
+      query: 'технологии 5g',
+      chunks: tailChunks,
+      topK: 3,
+      config: enabledConfig({
+        colbertMinScore: 0.58,
+        colbertTailDropEnabled: false,
+        colbertTailMaxGap: 0.2,
+        colbertTailMinScore: 0.6,
+      }),
+    });
+
+    expect(result.chunks.map((chunk) => chunk.id)).toEqual([2, 1, 3]);
+    expect(result.diagnostics).toMatchObject({
+      colbertTailDropEnabled: false,
+      colbertTailDropped: 0,
     });
   });
 
@@ -353,6 +486,35 @@ describe('ColBERT reranker', () => {
           processingMode: 'text',
         }),
       ],
+    });
+  });
+
+  it('reads ColBERT health collection counters', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: async () => ({
+        status: 'ok',
+        model: 'antoinelouis/colbert-xm',
+        collection: 'wiki_colbert_chunks',
+        collectionStatus: {
+          exists: true,
+          points: 105,
+          vectors: 105,
+        },
+      }),
+    })));
+
+    await expect(testColbertReranker(enabledConfig())).resolves.toMatchObject({
+      status: 'ok',
+      url: 'http://colbert.internal:8080/health',
+      collection: 'wiki_colbert_chunks',
+      collectionStatus: {
+        exists: true,
+        points: 105,
+        vectors: 105,
+      },
     });
   });
 });

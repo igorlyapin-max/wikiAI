@@ -1,12 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   SearchRetrievalDiagnostics,
   normalizeRetrievalDiagnostics,
   type RetrievalDiagnostics,
 } from './RetrievalDiagnostics';
+import { createAssistantEndpoint, type AssistantEndpoint } from '../assistantEndpoint';
 
 interface SearchTabProps {
-  gatewayUrl: string;
+  gatewayUrl?: string;
+  endpoint?: AssistantEndpoint;
 }
 
 interface SearchResult {
@@ -164,7 +166,7 @@ function ProcessingIndicator({ label }: { label: string }) {
   );
 }
 
-export default function SearchTab({ gatewayUrl }: SearchTabProps) {
+export default function SearchTab({ gatewayUrl = '', endpoint }: SearchTabProps) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
@@ -173,13 +175,17 @@ export default function SearchTab({ gatewayUrl }: SearchTabProps) {
   const [uiConfig, setUiConfig] = useState<AssistantUiConfig>(DEFAULT_UI_CONFIG);
   const [history, setHistory] = useState<string[]>(() => readStoredHistory(DEFAULT_UI_CONFIG.searchHistoryLimit));
   const [diagnostics, setDiagnostics] = useState<RetrievalDiagnostics | undefined>();
+  const apiEndpoint = useMemo(
+    () => endpoint ?? createAssistantEndpoint({ gatewayUrl }),
+    [endpoint, gatewayUrl]
+  );
 
   useEffect(() => {
     let cancelled = false;
 
     const loadConfig = async (): Promise<void> => {
       try {
-        const res = await fetch(`${gatewayUrl}/api/ui/config`, { credentials: 'include' });
+        const res = await fetch(apiEndpoint('/api/ui/config'), { credentials: 'include' });
         if (!res.ok) throw new Error(await readGatewayError(res));
         const nextConfig = normalizeUiConfig(await res.json());
         if (cancelled) return;
@@ -203,7 +209,7 @@ export default function SearchTab({ gatewayUrl }: SearchTabProps) {
     return () => {
       cancelled = true;
     };
-  }, [gatewayUrl]);
+  }, [apiEndpoint]);
 
   const rememberQuery = (value: string): void => {
     if (!uiConfig.searchHistoryEnabled) {
@@ -229,7 +235,7 @@ export default function SearchTab({ gatewayUrl }: SearchTabProps) {
     setError(null);
     setSearched(true);
     try {
-      const res = await fetch(`${gatewayUrl}/api/search`, {
+      const res = await fetch(apiEndpoint('/api/search'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',

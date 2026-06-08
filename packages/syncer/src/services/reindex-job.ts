@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { ReindexOptions, ReindexProgress, ReindexSummary, runReindex, validateReindexPreflight } from './reindex.js';
 import { config } from '../config.js';
 import { setSchedulerLockStatus } from './metrics.js';
@@ -7,6 +8,7 @@ export type ReindexJobState = 'idle' | 'running' | 'completed' | 'failed';
 
 export interface ReindexJobStatus {
   state: ReindexJobState;
+  runId?: string;
   startedAt?: string;
   finishedAt?: string;
   progress?: ReindexProgress;
@@ -42,13 +44,19 @@ export async function startReindexJob(options: ReindexOptions = {}): Promise<Rei
   }
   setSchedulerLockStatus('syncer_reindex', true);
 
+  const runId = randomUUID();
   const startedAt = new Date().toISOString();
   await setReindexJobStatus({
     state: 'running',
+    runId,
     startedAt,
     progress: {
       phase: 'started',
+      runId,
       profileId: options.profileId,
+      source: options.source ?? 'mediawiki',
+      startedAt,
+      elapsedMs: 0,
       dryRun: options.dryRun,
       namespaces: options.namespaces,
       limitApplied: options.maxPages,
@@ -62,6 +70,13 @@ export async function startReindexJob(options: ReindexOptions = {}): Promise<Rei
       embeddingCalls: 0,
       llmEnrichmentCalls: 0,
       estimatedPaidCalls: 0,
+      targetWrites: {},
+      colbertPagesIndexed: 0,
+      colbertChunksIndexed: 0,
+      colbertFailures: 0,
+      colbertModel: options.colbertModel,
+      colbertCollection: options.colbertCollection,
+      denseCollection: config.qdrantCollection,
       attachmentsRequested: Boolean(options.attachmentsEnabled),
       attachmentsActive: false,
       documentPolicyEnabled: false,
@@ -76,16 +91,22 @@ export async function startReindexJob(options: ReindexOptions = {}): Promise<Rei
     },
   });
 
-  void runReindex(options, (progress) => {
-    void setReindexJobStatus({ ...currentJob, progress });
+  void runReindex({ ...options, runId }, (progress) => {
+    void setReindexJobStatus({ ...currentJob, runId, startedAt, progress });
   }).then((summary) => {
     return setReindexJobStatus({
       state: 'completed',
+      runId,
       startedAt,
       finishedAt: summary.finishedAt,
       progress: {
         phase: 'complete',
+        runId: summary.runId,
         profileId: summary.profileId,
+        source: summary.source,
+        startedAt: summary.startedAt,
+        finishedAt: summary.finishedAt,
+        elapsedMs: summary.elapsedMs,
         dryRun: summary.dryRun,
         namespaces: summary.namespaces,
         matchedPages: summary.matchedPages,
@@ -99,6 +120,16 @@ export async function startReindexJob(options: ReindexOptions = {}): Promise<Rei
         embeddingCalls: summary.embeddingCalls,
         llmEnrichmentCalls: summary.llmEnrichmentCalls,
         estimatedPaidCalls: summary.estimatedPaidCalls,
+        targetWrites: summary.targetWrites,
+        colbertPagesIndexed: summary.colbertPagesIndexed,
+        colbertChunksIndexed: summary.colbertChunksIndexed,
+        colbertFailures: summary.colbertFailures,
+        colbertModel: summary.colbertModel,
+        colbertCollection: summary.colbertCollection,
+        denseCollection: summary.denseCollection,
+        qdrantPayloadPoints: summary.qdrantPayloadPoints,
+        qdrantPayloadPages: summary.qdrantPayloadPages,
+        qdrantPayloadChunks: summary.qdrantPayloadChunks,
         attachmentsRequested: summary.attachmentsRequested,
         attachmentsActive: summary.attachmentsActive,
         documentPolicyEnabled: summary.documentPolicyEnabled,
@@ -116,6 +147,7 @@ export async function startReindexJob(options: ReindexOptions = {}): Promise<Rei
   }).catch((err) => {
     return setReindexJobStatus({
       state: 'failed',
+      runId,
       startedAt,
       finishedAt: new Date().toISOString(),
       progress: currentJob.progress,

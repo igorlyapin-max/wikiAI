@@ -5,6 +5,7 @@ import {
   editPageContent,
   fetchAllPages,
   fetchFileInfo,
+  fetchPageContent,
   fetchPageCategories,
   fetchPageFiles,
   fetchSemanticFacts,
@@ -59,6 +60,44 @@ describe('MediaWiki data access helpers', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ query: { tokens: {} } }), { status: 200 })));
     await expect(editPageContent('Target Page', 'new body', 'test edit'))
       .rejects.toThrow('MediaWiki CSRF token was not returned');
+
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      query: { tokens: { csrftoken: '+\\' } },
+    }), { status: 200 })));
+    await expect(editPageContent('Target Page', 'new body', 'test edit'))
+      .rejects.toThrow('MediaWiki CSRF token is anonymous');
+  });
+
+  it('allows anonymous edits only when explicitly enabled for trusted demos', async () => {
+    config.mwAllowAnonymousEdit = true;
+
+    const fetchMock = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      if (init?.method === 'POST') {
+        expect(String(init.body)).toContain('action=edit');
+        expect(String(init.body)).toContain('token=%2B%5C');
+        return new Response(JSON.stringify({
+          edit: {
+            result: 'Success',
+            pageid: 12,
+            title: 'Target Page',
+            oldrevid: 100,
+            newrevid: 101,
+          },
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({
+        query: { tokens: { csrftoken: '+\\' } },
+      }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(editPageContent('Target Page', 'new body', 'demo edit')).resolves.toEqual({
+      result: 'Success',
+      pageId: 12,
+      title: 'Target Page',
+      oldRevisionId: 100,
+      newRevisionId: 101,
+    });
   });
 
   it('paginates allpages requests and forwards namespace filters', async () => {
@@ -89,6 +128,38 @@ describe('MediaWiki data access helpers', () => {
       { pageid: 1, ns: 3030, title: 'CorpIT:A' },
       { pageid: 2, ns: 3030, title: 'CorpIT:B' },
     ]);
+  });
+
+  it('prefers pageids when reading page content for reindex pages', async () => {
+    const fetchMock = vi.fn(async (input: unknown) => {
+      const url = new URL(String(input));
+      expect(url.searchParams.get('pageids')).toBe('124');
+      expect(url.searchParams.has('titles')).toBe(false);
+      return new Response(JSON.stringify({
+        query: {
+          pages: {
+            124: {
+              pageid: 124,
+              ns: 3020,
+              title: 'CorpFinance:Policy',
+              revisions: [{
+                timestamp: '2026-06-08T12:00:00Z',
+                slots: { main: { '*': 'Protected policy text' } },
+              }],
+            },
+          },
+        },
+      }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(fetchPageContent('CorpFinance:Policy', 124)).resolves.toEqual({
+      pageid: 124,
+      ns: 3020,
+      title: 'CorpFinance:Policy',
+      content: 'Protected policy text',
+      lastModified: '2026-06-08T12:00:00Z',
+    });
   });
 
   it('normalizes semantic facts and renders them as text', async () => {

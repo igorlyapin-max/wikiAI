@@ -100,6 +100,23 @@ export interface SearchIndexStatus {
   trigramBackfillRecommended: boolean;
 }
 
+export interface SearchIndexPageSetEntry {
+  pageId: number;
+  title: string;
+  chunks: number;
+  attachmentChunks: number;
+}
+
+export interface SearchIndexPageSet {
+  pages: SearchIndexPageSetEntry[];
+  limit: number;
+  truncated: boolean;
+}
+
+export interface SearchIndexPageSetOptions {
+  namespaces?: number[];
+}
+
 export interface SearchIndexAttachmentDiagnostics {
   filename: string;
   chunks: number;
@@ -168,6 +185,13 @@ interface SearchChunkRow {
   lexical_rank: number;
 }
 
+function normalizeNamespaceFilter(namespaces: number[] | undefined): number[] {
+  if (!Array.isArray(namespaces)) return [];
+  return Array.from(new Set(
+    namespaces.filter((namespace) => Number.isInteger(namespace) && namespace >= 0)
+  )).sort((left, right) => left - right);
+}
+
 interface SearchIndexStatusRow {
   chunks: number;
   pages: number;
@@ -184,6 +208,13 @@ interface AttachmentFilenameRow {
 
 interface CountRow {
   count: number;
+}
+
+interface SearchIndexPageSetRow {
+  page_id: number;
+  title: string;
+  chunks: number;
+  attachment_chunks: number;
 }
 
 const REQUIRED_ATTACHMENT_COLUMNS = ['attachment_mime', 'attachment_processing_mode', 'content_type'];
@@ -285,6 +316,24 @@ function attachmentFilenameRows(rows: AttachmentFilenameRow[]): SearchIndexStatu
       chunks: Number(row.chunks ?? 0),
       pages: Number(row.pages ?? 0),
     }));
+}
+
+function normalizePageSetLimit(limit = 500): number {
+  if (!Number.isFinite(limit)) return 500;
+  return Math.min(Math.max(Math.trunc(limit), 1), 1000);
+}
+
+function searchIndexPageSetRows(rows: SearchIndexPageSetRow[], limit: number): SearchIndexPageSet {
+  return {
+    pages: rows.slice(0, limit).map((row) => ({
+      pageId: Number(row.page_id),
+      title: String(row.title ?? ''),
+      chunks: Number(row.chunks ?? 0),
+      attachmentChunks: Number(row.attachment_chunks ?? 0),
+    })),
+    limit,
+    truncated: rows.length > limit,
+  };
 }
 
 function tokenizeForFts(input: string): string[] {
@@ -1014,6 +1063,56 @@ export async function getSearchIndexStatus(): Promise<SearchIndexStatus> {
     trigramPopulated: chunks > 0 && trigramChunks >= chunks && trigramFtsChunks >= chunks,
     trigramBackfillRecommended: chunks > 0 && (trigramChunks < chunks || trigramFtsChunks < chunks),
   };
+}
+
+export async function getSearchIndexPageSet(
+  limit = 500,
+  options: SearchIndexPageSetOptions = {}
+): Promise<SearchIndexPageSet> {
+  const normalizedLimit = normalizePageSetLimit(limit);
+  const namespaces = normalizeNamespaceFilter(options.namespaces);
+  if (isPostgresDatabase()) {
+    const pg = await getAdminPostgresStore();
+    const namespaceFilter = namespaces.length > 0 ? 'WHERE namespace = ANY($1::int[])' : '';
+    const params = namespaces.length > 0
+      ? [namespaces, normalizedLimit + 1]
+      : [normalizedLimit + 1];
+    const limitParam = namespaces.length > 0 ? '$2' : '$1';
+    const rows = (await pg.query<SearchIndexPageSetRow>(
+      `SELECT
+         page_id,
+         MIN(title) AS title,
+         COUNT(*)::int AS chunks,
+         COUNT(*) FILTER (WHERE source_type = 'attachment' OR attachment_filename IS NOT NULL)::int AS attachment_chunks
+       FROM ai_search_chunks
+       ${namespaceFilter}
+       GROUP BY page_id
+       ORDER BY page_id ASC
+       LIMIT ${limitParam}`,
+      params
+    )).rows;
+    return searchIndexPageSetRows(rows, normalizedLimit);
+  }
+
+  const db = getAdminSqliteDatabase();
+  const namespaceFilter = namespaces.length > 0
+    ? `WHERE namespace IN (${namespaces.map(() => '?').join(', ')})`
+    : '';
+  const rows = db
+    .prepare(
+      `SELECT
+         page_id,
+         MIN(title) AS title,
+         COUNT(*) AS chunks,
+         COUNT(CASE WHEN source_type = 'attachment' OR attachment_filename IS NOT NULL THEN 1 END) AS attachment_chunks
+       FROM ai_search_chunks
+       ${namespaceFilter}
+       GROUP BY page_id
+       ORDER BY page_id ASC
+       LIMIT ?`
+    )
+    .all(...namespaces, normalizedLimit + 1) as SearchIndexPageSetRow[];
+  return searchIndexPageSetRows(rows, normalizedLimit);
 }
 
 export async function getSearchIndexAttachmentDiagnostics(

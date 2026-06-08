@@ -2,6 +2,7 @@ import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ChatTab from './ChatTab';
+import { createAssistantEndpoint } from '../assistantEndpoint';
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -64,6 +65,71 @@ describe('ChatTab', () => {
       'https://gateway.example/api/chat/sessions?status=active&limit=20',
       { credentials: 'include' }
     );
+  });
+
+  it('ходит в историю и отправку чата через same-origin assistant proxy, если он передан', async () => {
+    const endpoint = createAssistantEndpoint({
+      gatewayUrl: 'http://gateway:3000',
+      proxyEnabled: true,
+      proxyBase: 'http://wiki.example/index.php/Special:AIAssistant',
+      locationHref: 'http://wiki.example/index.php/Special:AIAssistant',
+    });
+    let activeSessionRequests = 0;
+    const fetchMock = vi.fn((input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = new URL(String(input));
+      const path = url.searchParams.get('path');
+      if (path === '/api/ui/config') {
+        return Promise.resolve(jsonResponse({ values: { assistantUiMode: 'standard' } }));
+      }
+      if (path === '/api/chat') {
+        return Promise.resolve(streamResponse([
+          'data: {"type":"conversation","conversationId":"c-proxy"}\n',
+          'data: {"type":"token","content":"Ответ"}\n',
+          'data: [DONE]\n',
+        ]));
+      }
+      if (path === '/api/chat/sessions?status=active&limit=20') {
+        activeSessionRequests += 1;
+        if (activeSessionRequests === 1) {
+          return Promise.resolve(jsonResponse({ values: [] }));
+        }
+        return Promise.resolve(jsonResponse({
+          values: [
+            {
+              id: 's-proxy',
+              conversationId: 'c-proxy',
+              title: 'Proxy чат',
+              status: 'active',
+              messageCount: 2,
+              createdAt: '2026-06-03T10:00:00Z',
+              updatedAt: '2026-06-03T10:01:00Z',
+            },
+          ],
+        }));
+      }
+      return Promise.resolve(jsonResponse({ values: [] }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<ChatTab endpoint={endpoint} />);
+    await screen.findByText('Чатов нет');
+
+    await userEvent.type(screen.getByPlaceholderText('Введите сообщение...'), 'Проверка');
+    await userEvent.click(screen.getByRole('button', { name: 'Отправить' }));
+
+    expect(await screen.findByText('Ответ')).toBeInTheDocument();
+    const chatCall = fetchMock.mock.calls.find(([input, init]) => {
+      return new URL(String(input)).searchParams.get('path') === '/api/chat' && init?.method === 'POST';
+    });
+    expect(chatCall).toBeDefined();
+    const chatUrl = new URL(String(chatCall?.[0]));
+    expect(chatUrl.origin).toBe('http://wiki.example');
+    expect(chatUrl.pathname).toBe('/index.php/Special:AIAssistant');
+    expect(chatUrl.searchParams.get('aiassistant-proxy')).toBe('1');
+    expect(chatUrl.searchParams.get('path')).toBe('/api/chat');
+    expect(fetchMock.mock.calls.some(([input]) => {
+      return new URL(String(input)).searchParams.get('path') === '/api/chat/sessions?status=active&limit=20';
+    })).toBe(true);
   });
 
   it('применяет режим интерфейса ассистента из UI config', async () => {

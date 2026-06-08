@@ -15,6 +15,19 @@ export interface ColbertRerankDiagnostics {
   colbertCandidates: number;
   colbertScores?: Array<{ id: number; score: number }>;
   tailSourcesBelowThreshold?: number;
+  colbertTailDropEnabled?: boolean;
+  colbertTailDropped?: number;
+  colbertTailDropReasons?: {
+    belowTailMinScore: number;
+    scoreGap: number;
+  };
+  colbertTailBestScore?: number;
+  colbertTailMinAcceptedScore?: number;
+  colbertTailThresholds?: {
+    minScore: number;
+    maxGap: number;
+    minKeep: number;
+  };
   colbertLatencyMs?: number;
   colbertFallbackUsed: boolean;
   colbertError?: string;
@@ -67,6 +80,19 @@ export interface ColbertIndexDiagnostics {
   colbertCandidates: number;
   colbertScores?: Array<{ id: number; score: number }>;
   tailSourcesBelowThreshold?: number;
+  colbertTailDropEnabled?: boolean;
+  colbertTailDropped?: number;
+  colbertTailDropReasons?: {
+    belowTailMinScore: number;
+    scoreGap: number;
+  };
+  colbertTailBestScore?: number;
+  colbertTailMinAcceptedScore?: number;
+  colbertTailThresholds?: {
+    minScore: number;
+    maxGap: number;
+    minKeep: number;
+  };
   colbertLatencyMs?: number;
   colbertFallbackUsed: boolean;
   colbertError?: string;
@@ -89,6 +115,46 @@ export interface ColbertIndexWriteResult {
   error?: string;
 }
 
+export interface ColbertHealthCollectionStatus {
+  exists?: boolean;
+  points?: number;
+  vectors?: number;
+  error?: string;
+}
+
+export interface ColbertHealthResult extends HttpTestResult {
+  model?: string;
+  collection?: string;
+  collectionStatus?: ColbertHealthCollectionStatus;
+}
+
+interface ColbertTailDiagnostics {
+  colbertTailDropEnabled: boolean;
+  colbertTailDropped: number;
+  colbertTailDropReasons: {
+    belowTailMinScore: number;
+    scoreGap: number;
+  };
+  colbertTailBestScore?: number;
+  colbertTailMinAcceptedScore?: number;
+  colbertTailThresholds: {
+    minScore: number;
+    maxGap: number;
+    minKeep: number;
+  };
+}
+
+interface ColbertRankCandidate {
+  id: number;
+  score: number;
+  chunk: SearchChunk;
+}
+
+interface ColbertRankedChunks {
+  chunks: SearchChunk[];
+  diagnostics: ColbertTailDiagnostics;
+}
+
 const disabledDiagnostics = (config: RagAdminConfig): ColbertRerankDiagnostics => ({
   rerankMode: config.rerankMode,
   colbertApplied: false,
@@ -102,6 +168,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function readBoolean(value: unknown): boolean | undefined {
+  return typeof value === 'boolean' ? value : undefined;
 }
 
 function normalizeTopK(topK: number): number {
@@ -226,32 +296,103 @@ function colbertResultToChunk(result: ColbertResponseResult): SearchChunk | null
   };
 }
 
+function normalizeTailMinKeep(value: number, topK: number): number {
+  if (!Number.isFinite(value)) return 1;
+  return Math.min(Math.max(Math.trunc(value), 1), normalizeTopK(topK));
+}
+
+function tailDiagnostics(config: RagAdminConfig, topK: number): ColbertTailDiagnostics {
+  return {
+    colbertTailDropEnabled: config.colbertTailDropEnabled,
+    colbertTailDropped: 0,
+    colbertTailDropReasons: {
+      belowTailMinScore: 0,
+      scoreGap: 0,
+    },
+    colbertTailThresholds: {
+      minScore: config.colbertTailMinScore,
+      maxGap: config.colbertTailMaxGap,
+      minKeep: normalizeTailMinKeep(config.colbertTailMinKeep, topK),
+    },
+  };
+}
+
+function applyColbertTailCutoff(
+  candidates: ColbertRankCandidate[],
+  config: RagAdminConfig,
+  topK: number
+): ColbertRankedChunks {
+  const limit = normalizeTopK(topK);
+  const minKeep = normalizeTailMinKeep(config.colbertTailMinKeep, topK);
+  const diagnostics = tailDiagnostics(config, topK);
+  const ranked: SearchChunk[] = [];
+  const eligibleScores = candidates
+    .map((candidate) => candidate.score)
+    .filter((score) => score >= config.colbertMinScore);
+  const bestScore = eligibleScores.length > 0 ? Math.max(...eligibleScores) : undefined;
+
+  for (const candidate of candidates) {
+    if (candidate.score < config.colbertMinScore) continue;
+
+    if (config.colbertTailDropEnabled && ranked.length >= minKeep) {
+      if (candidate.score < config.colbertTailMinScore) {
+        diagnostics.colbertTailDropped += 1;
+        diagnostics.colbertTailDropReasons.belowTailMinScore += 1;
+        continue;
+      }
+
+      if (bestScore !== undefined && bestScore - candidate.score > config.colbertTailMaxGap) {
+        diagnostics.colbertTailDropped += 1;
+        diagnostics.colbertTailDropReasons.scoreGap += 1;
+        continue;
+      }
+    }
+
+    ranked.push({
+      ...candidate.chunk,
+      score: candidate.score,
+      scores: {
+        ...candidate.chunk.scores,
+        colbert: candidate.score,
+        final: candidate.score,
+      },
+    });
+
+    if (ranked.length >= limit) break;
+  }
+
+  if (bestScore !== undefined) {
+    diagnostics.colbertTailBestScore = bestScore;
+  }
+  if (ranked.length > 0) {
+    diagnostics.colbertTailMinAcceptedScore = Math.min(...ranked.map((chunk) => chunk.score));
+  }
+
+  return { chunks: ranked, diagnostics };
+}
+
 function applyColbertScores(
   chunks: SearchChunk[],
   results: ColbertResponseResult[],
-  minScore: number,
+  config: RagAdminConfig,
   topK: number
-): SearchChunk[] {
+): ColbertRankedChunks {
   const chunksById = new Map(chunks.map((chunk) => [chunk.id, chunk]));
   const seen = new Set<number>();
-  const ranked: SearchChunk[] = [];
+  const candidates: ColbertRankCandidate[] = [];
 
   for (const result of results) {
     const chunk = chunksById.get(result.id);
-    if (!chunk || seen.has(result.id) || result.score < minScore) continue;
+    if (!chunk || seen.has(result.id)) continue;
     seen.add(result.id);
-    ranked.push({
-      ...chunk,
+    candidates.push({
+      id: result.id,
       score: result.score,
-      scores: {
-        ...chunk.scores,
-        colbert: result.score,
-        final: result.score,
-      },
+      chunk,
     });
   }
 
-  return ranked.slice(0, normalizeTopK(topK));
+  return applyColbertTailCutoff(candidates, config, topK);
 }
 
 function colbertScoreDiagnostics(results: ColbertResponseResult[], minScore: number): {
@@ -302,11 +443,11 @@ export async function rerankChunksWithColbert(input: ColbertRerankInput): Promis
     const ranked = applyColbertScores(
       chunks,
       results,
-      config.colbertMinScore,
+      config,
       topK
     );
 
-    if (ranked.length === 0 && chunks.length > 0 && config.colbertFailMode === 'fallback_current') {
+    if (ranked.chunks.length === 0 && chunks.length > 0 && config.colbertFailMode === 'fallback_current') {
       return {
         chunks: chunks.slice(0, normalizeTopK(topK)),
         diagnostics: {
@@ -314,6 +455,7 @@ export async function rerankChunksWithColbert(input: ColbertRerankInput): Promis
           colbertApplied: false,
           colbertCandidates: candidates.length,
           ...scoreDiagnostics,
+          ...ranked.diagnostics,
           colbertLatencyMs: Date.now() - startedAt,
           colbertFallbackUsed: true,
           colbertError: 'ColBERT response did not rank any candidate above threshold',
@@ -322,12 +464,13 @@ export async function rerankChunksWithColbert(input: ColbertRerankInput): Promis
     }
 
     return {
-      chunks: ranked,
+      chunks: ranked.chunks,
       diagnostics: {
         rerankMode: config.rerankMode,
         colbertApplied: true,
         colbertCandidates: candidates.length,
         ...scoreDiagnostics,
+        ...ranked.diagnostics,
         colbertLatencyMs: Date.now() - startedAt,
         colbertFallbackUsed: false,
       },
@@ -406,23 +549,34 @@ export async function searchColbertIndex(input: {
 
   const results = parseColbertResults(await response.json() as unknown);
   const scoreDiagnostics = colbertScoreDiagnostics(results, config.colbertMinScore);
-  const chunks = results
+  const seen = new Set<number>();
+  const candidates = results
     .map(colbertResultToChunk)
     .filter((chunk): chunk is SearchChunk => chunk !== null)
-    .filter((chunk) => chunk.score >= config.colbertMinScore)
-    .slice(0, candidateLimit);
+    .filter((chunk) => {
+      if (seen.has(chunk.id)) return false;
+      seen.add(chunk.id);
+      return true;
+    })
+    .map((chunk) => ({
+      id: chunk.id,
+      score: chunk.score,
+      chunk,
+    }));
+  const ranked = applyColbertTailCutoff(candidates, config, candidateLimit);
 
   return {
-    chunks,
+    chunks: ranked.chunks,
     limit,
-    aclCandidateLimit: Math.max(limit * 5, Math.min(chunks.length, 100)),
+    aclCandidateLimit: Math.max(limit * 5, Math.min(ranked.chunks.length, 100)),
     showRawScores: config.showRawScores,
     mode: config.searchMode,
     diagnostics: {
       searchMode: config.searchMode,
       colbertIndexApplied: true,
-      colbertCandidates: chunks.length,
+      colbertCandidates: ranked.chunks.length,
       ...scoreDiagnostics,
+      ...ranked.diagnostics,
       colbertLatencyMs: Date.now() - startedAt,
       colbertFallbackUsed: false,
     },
@@ -515,7 +669,7 @@ export async function deleteColbertIndexPage(
   }
 }
 
-export async function testColbertReranker(configOverride?: RagAdminConfig): Promise<HttpTestResult> {
+export async function testColbertReranker(configOverride?: RagAdminConfig): Promise<ColbertHealthResult> {
   const config = configOverride ?? await getRagAdminConfig();
   const url = config.colbertBaseUrl.trim().length > 0
     ? buildServiceUrl(config.colbertBaseUrl, 'health')
@@ -533,13 +687,27 @@ export async function testColbertReranker(configOverride?: RagAdminConfig): Prom
 
   try {
     const response = await fetchWithTimeout(url, { method: 'GET' }, config.colbertTimeoutMs);
+    const body = response.ok
+      ? await response.json().catch(() => undefined) as unknown
+      : undefined;
+    const collectionStatus = isRecord(body) && isRecord(body.collectionStatus)
+      ? {
+        exists: readBoolean(body.collectionStatus.exists),
+        points: readNumber(body.collectionStatus.points),
+        vectors: readNumber(body.collectionStatus.vectors),
+        error: readString(body.collectionStatus.error),
+      }
+      : undefined;
     return {
       status: response.ok ? 'ok' : 'error',
       url,
       httpStatus: response.status,
       latencyMs: Date.now() - startedAt,
+      model: isRecord(body) ? readString(body.model) : undefined,
+      collection: isRecord(body) ? readString(body.collection) : undefined,
+      collectionStatus,
       error: response.ok ? undefined : response.statusText,
-    };
+    } satisfies ColbertHealthResult;
   } catch (err) {
     return {
       status: 'error',

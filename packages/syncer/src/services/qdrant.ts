@@ -62,6 +62,15 @@ export interface QdrantPayloadBackfillSummary {
   groups: number;
   chunks: number;
   failed: number;
+  targetWrites: Record<string, number>;
+}
+
+export interface QdrantPayloadDiagnostics {
+  denseCollection: string;
+  qdrantPayloadPoints: number;
+  qdrantPayloadPages: number;
+  qdrantPayloadGroups: number;
+  qdrantPayloadChunks: number;
 }
 
 interface QdrantPayloadGroup {
@@ -95,6 +104,17 @@ function searchIndexTargets(options: IndexWriteOptions | undefined): string[] | 
 
 function detectContentType(text: string): string | undefined {
   return /```mermaid[\s\S]*?```/i.test(text) ? 'mermaid' : undefined;
+}
+
+function recordTargetWrites(
+  counters: Record<string, number>,
+  result: { targetWrites?: Record<string, number | undefined> } | undefined
+): void {
+  if (!result?.targetWrites) return;
+  for (const [target, chunks] of Object.entries(result.targetWrites)) {
+    if (typeof chunks !== 'number' || chunks <= 0) continue;
+    counters[target] = (counters[target] ?? 0) + chunks;
+  }
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -179,9 +199,7 @@ function groupQdrantPayloadPoints(points: Array<{ id?: unknown; payload?: unknow
   );
 }
 
-export async function syncSearchIndexFromQdrantPayload(
-  options: QdrantPayloadBackfillOptions = {}
-): Promise<QdrantPayloadBackfillSummary> {
+async function readQdrantPayloadPoints(): Promise<Array<{ id?: unknown; payload?: unknown }>> {
   const points: Array<{ id?: unknown; payload?: unknown }> = [];
   let offset: string | number | Record<string, unknown> | null | undefined;
 
@@ -196,11 +214,37 @@ export async function syncSearchIndexFromQdrantPayload(
     offset = page.next_page_offset;
   } while (offset !== undefined && offset !== null);
 
+  return points;
+}
+
+function summarizeQdrantPayloadPoints(points: Array<{ id?: unknown; payload?: unknown }>): QdrantPayloadDiagnostics {
+  const pageGroups = groupQdrantPayloadPoints(points);
+  return {
+    denseCollection: config.qdrantCollection,
+    qdrantPayloadPoints: points.length,
+    qdrantPayloadPages: pageGroups.length,
+    qdrantPayloadGroups: pageGroups.reduce((total, groups) => total + groups.length, 0),
+    qdrantPayloadChunks: pageGroups.reduce(
+      (total, groups) => total + groups.reduce((groupTotal, group) => groupTotal + group.chunks.length, 0),
+      0
+    ),
+  };
+}
+
+export async function getQdrantPayloadDiagnostics(): Promise<QdrantPayloadDiagnostics> {
+  return summarizeQdrantPayloadPoints(await readQdrantPayloadPoints());
+}
+
+export async function syncSearchIndexFromQdrantPayload(
+  options: QdrantPayloadBackfillOptions = {}
+): Promise<QdrantPayloadBackfillSummary> {
+  const points = await readQdrantPayloadPoints();
   const pageGroups = groupQdrantPayloadPoints(points)
     .slice(0, options.maxPages && options.maxPages > 0 ? options.maxPages : undefined);
   let chunks = 0;
   let groups = 0;
   let failed = 0;
+  const targetWrites: Record<string, number> = {};
 
   for (const groupsForPage of pageGroups) {
     for (let index = 0; index < groupsForPage.length; index++) {
@@ -221,6 +265,7 @@ export async function syncSearchIndexFromQdrantPayload(
           colbertCollection: options.colbertCollection,
           chunks: group.chunks,
         });
+        recordTargetWrites(targetWrites, result);
         if (result.status !== 'ok') failed++;
       } catch {
         failed++;
@@ -234,6 +279,7 @@ export async function syncSearchIndexFromQdrantPayload(
     groups,
     chunks,
     failed,
+    targetWrites,
   };
 }
 

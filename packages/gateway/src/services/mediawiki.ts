@@ -68,6 +68,7 @@ export interface FetchWikiListOptions {
   search?: string;
   limit?: number;
   continue?: string;
+  namespaces?: number[];
   sessionCookie?: string;
 }
 
@@ -539,10 +540,15 @@ export async function fetchWikiTemplates(options: FetchWikiListOptions = {}): Pr
 }
 
 export async function fetchWikiPages(options: FetchWikiListOptions = {}): Promise<WikiPage[]> {
-  const limit = clampLimit(options.limit, 50);
+  const limit = clampLimit(options.limit, 50, 500);
   const search = options.search?.trim();
   const namespaces = await fetchWikiNamespaces({ sessionCookie: options.sessionCookie });
-  const searchableNamespaces = namespaces.filter((namespace) => namespace.id >= 0);
+  const requestedNamespaces = Array.isArray(options.namespaces) && options.namespaces.length > 0
+    ? new Set(options.namespaces.filter((namespace) => Number.isInteger(namespace) && namespace >= 0))
+    : undefined;
+  const searchableNamespaces = namespaces.filter((namespace) => (
+    namespace.id >= 0 && (!requestedNamespaces || requestedNamespaces.has(namespace.id))
+  ));
   const pages: WikiPage[] = [];
 
   for (const namespace of searchableNamespaces.length > 0 ? searchableNamespaces : [{ id: 0, name: '', displayName: 'Main', content: true }]) {

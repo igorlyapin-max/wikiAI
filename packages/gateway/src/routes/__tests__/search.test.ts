@@ -592,7 +592,12 @@ describe('search routes trust filtering', () => {
       vectorOnlyFallbackEnabled: false,
     });
     vi.stubGlobal('fetch', vi.fn()
-      .mockResolvedValueOnce({ ok: true, status: 200, statusText: 'OK' })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ({ status: 'ok' }),
+      })
       .mockResolvedValueOnce(new Response('bad gateway', {
         status: 502,
         statusText: 'Bad Gateway',

@@ -57,6 +57,10 @@ MediaWiki; для заказчика сборка должна быть част
 - `SECRETS_PROVIDER` - `None` or `IndeedPamAapm`.
 - `MW_SYNC_COOKIE` - deprecated fallback only. Session cookies expire and should
   not be the primary customer deployment mechanism.
+- `MW_ALLOW_ANON_EDIT` - trusted LAN/demo fallback only. Keep `false` by
+  default; set `true` only when the demo MediaWiki deliberately permits
+  anonymous edits and Syncer must write managed WikiAI blocks without a service
+  user.
 - `EXTERNAL_API_ENABLED` - включает `/api/v1/search`, `/api/v1/chat` и
   `/api/v1/capabilities`. Default `false`.
 - `EXTERNAL_MCP_ENABLED` - включает MCP-facing capability flag для внешнего MCP
@@ -105,6 +109,11 @@ MediaWiki; для заказчика сборка должна быть част
   profiles/targets.
 - `SMW_SYNC_ENABLED`
 - `SMW_SYNC_PROPERTIES`
+- `TESSERACT_LANG_PATH`, `TESSERACT_CACHE_PATH`, `TESSERACT_OCR_LANGUAGES`,
+  `TESSERACT_ALLOW_NETWORK_LANG_DOWNLOAD` - offline OCR settings for image
+  attachments. Runtime default keeps network language downloads disabled; when
+  local traineddata is missing, Syncer writes metadata-only attachment chunks
+  instead of failing reindex.
 - `CMDBDYNAMICPAGES_ENABLED` - включает обработку явных dynamic block markers
   на MediaWiki-страницах. Default `false`.
 - `CMDBDYNAMICPAGES_BASE_URL` - внутренний URL `cmdbdynamicpages` для anonymous
@@ -282,6 +291,11 @@ curl -s -X POST http://127.0.0.1:3000/api/admin/reindex \
 файл. Если файл есть в BM25/PostgreSQL, но отсутствует в OpenSearch, повторите
 reindex с target `opensearch`; изменение retrieval profile само по себе
 OpenSearch index не наполняет.
+
+Для image OCR в контейнере положите `eng.traineddata`/`rus.traineddata` или
+`*.traineddata.gz` в `TESSERACT_LANG_PATH`. Без локальных OCR language files
+изображения индексируются как metadata-only, чтобы attachment profile readiness
+не блокировался из-за сетевого `fetch failed`.
 
 Проверка противоречий "вложение vs родительская страница" не делает отдельный
 fetch страницы при ответе. Для нее должны быть проиндексированы и attachment

@@ -1,4 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { config } from '../../config.js';
 import { buildAttachmentSearchableChunks, getMetadataText, processAttachment } from '../attachment.js';
 import { normalizeDocumentProcessingConfig } from '../document-policy.js';
 
@@ -6,6 +10,20 @@ const pdfGetText = vi.hoisted(() => vi.fn());
 const pdfDestroy = vi.hoisted(() => vi.fn());
 const recognize = vi.hoisted(() => vi.fn());
 const terminate = vi.hoisted(() => vi.fn());
+interface MockTesseractWorkerOptions {
+  errorHandler?: (err: unknown) => void;
+  langPath?: string;
+  cachePath?: string;
+}
+
+const createWorker = vi.hoisted(() => vi.fn(async (
+  _languages?: string | string[],
+  _oem?: number,
+  _options?: MockTesseractWorkerOptions
+) => ({
+  recognize,
+  terminate,
+})));
 
 vi.mock('pdf-parse', () => ({
   PDFParse: vi.fn(function PDFParse() {
@@ -16,12 +34,9 @@ vi.mock('pdf-parse', () => ({
   }),
 }));
 
-vi.mock('tesseract.js', () => ({
-  createWorker: vi.fn(async () => ({
-    recognize,
-    terminate,
-  })),
-}));
+vi.mock('tesseract.js', () => ({ createWorker }));
+
+const tempDirs: string[] = [];
 
 function createStoredZip(entries: Array<{ name: string; content: string }>): Buffer {
   const localParts: Buffer[] = [];
@@ -74,10 +89,18 @@ function createStoredZip(entries: Array<{ name: string; content: string }>): Buf
 describe('attachment processing', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    config.tesseractLangPath = undefined;
+    config.tesseractCachePath = undefined;
+    config.tesseractOcrLanguages = undefined;
+    config.tesseractAllowNetworkLangDownload = true;
     pdfGetText.mockResolvedValue({ text: 'PDF text', total: 3 });
     pdfDestroy.mockResolvedValue(undefined);
     recognize.mockResolvedValue({ data: { text: 'OCR text' } });
     terminate.mockResolvedValue(undefined);
+  });
+
+  afterEach(async () => {
+    await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   });
 
   it('extracts text/plain when policy mode is text', async () => {
@@ -169,8 +192,126 @@ describe('attachment processing', () => {
     expect(result.metadata).toMatchObject({
       filename: 'screen.png',
       mode: 'ocr',
+      requestedOcrLanguages: ['eng'],
+      ocrLanguageSource: 'network',
+    });
+    expect(createWorker).toHaveBeenCalledWith(
+      ['eng'],
+      1,
+      expect.objectContaining({ errorHandler: expect.any(Function) })
+    );
+    expect(terminate).toHaveBeenCalled();
+  });
+
+  it('returns safe metadata and terminates the OCR worker when recognition fails', async () => {
+    recognize.mockRejectedValueOnce(new Error('bad image'));
+    const policy = normalizeDocumentProcessingConfig({
+      mimeTypes: { 'image/png': { mode: 'ocr', ocrLanguages: 'eng' } },
+    });
+
+    const result = await processAttachment(Buffer.from('png'), 'image/png', 'broken.png', policy);
+
+    expect(result.text).toBe('');
+    expect(result.metadata).toMatchObject({
+      filename: 'broken.png',
+      mode: 'ocr',
+      error: 'ocr_failed',
     });
     expect(terminate).toHaveBeenCalled();
+  });
+
+  it('handles OCR worker errorHandler failures without running recognition', async () => {
+    createWorker.mockImplementationOnce(async (_languages, _oem, options) => {
+      options?.errorHandler?.(new Error('worker failed'));
+      return { recognize, terminate };
+    });
+    const policy = normalizeDocumentProcessingConfig({
+      mimeTypes: { 'image/png': { mode: 'ocr', ocrLanguages: 'eng' } },
+    });
+
+    const result = await processAttachment(Buffer.from('png'), 'image/png', 'screen.png', policy);
+
+    expect(result.text).toBe('');
+    expect(result.metadata.error).toBe('ocr_failed');
+    expect(recognize).not.toHaveBeenCalled();
+    expect(terminate).toHaveBeenCalled();
+  });
+
+  it('uses the available local OCR language subset without falling back to CDN', async () => {
+    const tessdataDir = await mkdtemp(join(tmpdir(), 'wikiai-tessdata-'));
+    tempDirs.push(tessdataDir);
+    await writeFile(join(tessdataDir, 'rus.traineddata'), '');
+    config.tesseractAllowNetworkLangDownload = false;
+    config.tesseractLangPath = tessdataDir;
+    config.tesseractCachePath = join(tessdataDir, 'cache');
+    const policy = normalizeDocumentProcessingConfig({
+      mimeTypes: { 'image/png': { mode: 'ocr', ocrLanguages: 'eng+rus' } },
+    });
+
+    const result = await processAttachment(Buffer.from('png'), 'image/png', 'screen.png', policy);
+
+    expect(result.text).toBe('OCR text');
+    expect(result.metadata).toMatchObject({
+      requestedOcrLanguages: ['eng', 'rus'],
+      ocrLanguages: ['rus'],
+      missingOcrLanguages: ['eng'],
+      ocrLanguageSource: 'local',
+      ocrLangPath: tessdataDir,
+      ocrCachePath: join(tessdataDir, 'cache'),
+    });
+    expect(createWorker).toHaveBeenCalledWith(
+      ['rus'],
+      1,
+      expect.objectContaining({
+        langPath: tessdataDir,
+        cachePath: join(tessdataDir, 'cache'),
+        errorHandler: expect.any(Function),
+      })
+    );
+  });
+
+  it('returns metadata-only when local OCR language data is not configured', async () => {
+    config.tesseractAllowNetworkLangDownload = false;
+    config.tesseractLangPath = undefined;
+    const policy = normalizeDocumentProcessingConfig({
+      mimeTypes: { 'image/png': { mode: 'ocr', ocrLanguages: 'eng+rus' } },
+    });
+
+    const result = await processAttachment(Buffer.from('png'), 'image/png', 'screen.png', policy);
+
+    expect(result.text).toBe('');
+    expect(result.metadata).toMatchObject({
+      filename: 'screen.png',
+      mode: 'ocr',
+      requestedOcrLanguages: ['eng', 'rus'],
+      ocrLanguageSource: 'not_configured',
+      error: 'ocr_language_path_not_configured',
+    });
+    expect(createWorker).not.toHaveBeenCalled();
+  });
+
+  it('returns metadata-only when requested local OCR language data is missing', async () => {
+    const tessdataDir = await mkdtemp(join(tmpdir(), 'wikiai-tessdata-'));
+    tempDirs.push(tessdataDir);
+    config.tesseractAllowNetworkLangDownload = false;
+    config.tesseractLangPath = tessdataDir;
+    const policy = normalizeDocumentProcessingConfig({
+      mimeTypes: { 'image/png': { mode: 'ocr', ocrLanguages: 'eng+rus' } },
+    });
+
+    const result = await processAttachment(Buffer.from('png'), 'image/png', 'screen.png', policy);
+
+    expect(result.text).toBe('');
+    expect(result.metadata).toMatchObject({
+      filename: 'screen.png',
+      mode: 'ocr',
+      requestedOcrLanguages: ['eng', 'rus'],
+      ocrLanguages: [],
+      missingOcrLanguages: ['eng', 'rus'],
+      ocrLanguageSource: 'local',
+      error: 'ocr_language_data_missing',
+    });
+    expect(createWorker).not.toHaveBeenCalled();
   });
 
   it('extracts DOCX text from office XML packages', async () => {

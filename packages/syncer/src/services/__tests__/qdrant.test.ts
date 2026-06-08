@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const deleteMock = vi.hoisted(() => vi.fn());
 const upsertMock = vi.hoisted(() => vi.fn());
+const scrollMock = vi.hoisted(() => vi.fn());
 const getEmbedding = vi.hoisted(() => vi.fn());
 const syncSearchIndexPage = vi.hoisted(() => vi.fn());
 
@@ -10,7 +11,7 @@ vi.mock('@qdrant/js-client-rest', () => ({
     return {
       delete: deleteMock,
       upsert: upsertMock,
-      scroll: vi.fn(),
+      scroll: scrollMock,
     };
   }),
 }));
@@ -27,10 +28,52 @@ describe('qdrant indexing payload', () => {
   beforeEach(() => {
     deleteMock.mockReset();
     upsertMock.mockReset();
+    scrollMock.mockReset();
     getEmbedding.mockReset();
     syncSearchIndexPage.mockReset();
     getEmbedding.mockResolvedValue([0.1, 0.2, 0.3]);
     syncSearchIndexPage.mockResolvedValue({ status: 'ok', url: 'gateway', chunks: 1 });
+  });
+
+  it('counts dense payload points, pages, groups, and chunks for ColBERT preflight', async () => {
+    scrollMock.mockResolvedValueOnce({
+      points: [
+        {
+          id: 120000,
+          payload: {
+            page_id: 12,
+            title: 'Page',
+            namespace: 0,
+            text: 'First chunk',
+            allowed_groups: ['*'],
+            chunk_index: 0,
+            total_chunks: 2,
+          },
+        },
+        {
+          id: 120001,
+          payload: {
+            page_id: 12,
+            title: 'Page',
+            namespace: 0,
+            text: 'Second chunk',
+            allowed_groups: ['*'],
+            chunk_index: 1,
+            total_chunks: 2,
+          },
+        },
+      ],
+      next_page_offset: null,
+    });
+    const { getQdrantPayloadDiagnostics } = await import('../qdrant.js');
+
+    await expect(getQdrantPayloadDiagnostics()).resolves.toEqual({
+      denseCollection: 'test_chunks',
+      qdrantPayloadPoints: 2,
+      qdrantPayloadPages: 1,
+      qdrantPayloadGroups: 1,
+      qdrantPayloadChunks: 2,
+    });
   });
 
   it('marks Mermaid page chunks and forwards content type to Gateway', async () => {

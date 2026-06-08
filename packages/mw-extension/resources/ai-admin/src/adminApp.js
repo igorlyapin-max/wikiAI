@@ -111,6 +111,7 @@ export function initializeAIAdmin(options = {}) {
       let selectedRetrievalProfileId = null;
       let selectedChatProfileId = null;
       let chatDebugTraceLastResult = null;
+      let colbertSourceDiagnostics = null;
       let categoryOptionsTimer = null;
       let categoryOptions = [];
       let wikiReferenceTimers = {};
@@ -120,6 +121,7 @@ export function initializeAIAdmin(options = {}) {
       let templateOptions = [];
       let pageOptions = [];
       let trigramBackfillPollTimer = null;
+      let colbertIndexStatusPoll = null;
 
       const t = (key, fallback = key) => i18n[key] || fallback;
       const formatText = (key, values = {}, fallback = key) => Object.entries(values)
@@ -1388,6 +1390,10 @@ export function initializeAIAdmin(options = {}) {
         colbertCandidateLimit: Number(value.colbertCandidateLimit ?? 50),
         colbertTimeoutMs: Number(value.colbertTimeoutMs ?? 5000),
         colbertMinScore: Number(value.colbertMinScore ?? 0),
+        colbertTailDropEnabled: Boolean(value.colbertTailDropEnabled),
+        colbertTailMaxGap: Number(value.colbertTailMaxGap ?? 0.2),
+        colbertTailMinScore: Number(value.colbertTailMinScore ?? 0.7),
+        colbertTailMinKeep: Number(value.colbertTailMinKeep ?? 1),
         colbertFailMode: value.colbertFailMode || "fallback_current",
         semanticFactsInContext: value.semanticFactsInContext !== false,
         includeAttachments: Boolean(value.includeAttachments),
@@ -1528,6 +1534,13 @@ export function initializeAIAdmin(options = {}) {
         appendCheckboxRow(form, "retrieval-profile-edit-distance", t("aiadmin-field-lexical-edit-distance-enabled"), profile.config?.lexicalEditDistanceEnabled);
         appendCheckboxRow(form, "retrieval-profile-trigram", t("aiadmin-field-trigram-index-enabled"), profile.config?.trigramIndexEnabled);
         appendCheckboxRow(form, "retrieval-profile-colbert-enabled", t("aiadmin-field-colbert-enabled", "Use ColBERT"), profile.config?.colbertEnabled);
+        appendInputRow(form, "retrieval-profile-colbert-candidate-limit", t("aiadmin-field-colbert-candidate-limit"), profile.config?.colbertCandidateLimit ?? 50, { type: "number", min: 5, max: 200 });
+        appendInputRow(form, "retrieval-profile-colbert-timeout-ms", t("aiadmin-field-timeout-ms"), profile.config?.colbertTimeoutMs ?? 5000, { type: "number", min: 500, max: 60000 });
+        appendInputRow(form, "retrieval-profile-colbert-min-score", t("aiadmin-field-colbert-min-score"), profile.config?.colbertMinScore ?? 0, { type: "number", min: 0, max: 1, step: "0.01" });
+        appendCheckboxRow(form, "retrieval-profile-colbert-tail-drop-enabled", t("aiadmin-field-colbert-tail-drop-enabled"), profile.config?.colbertTailDropEnabled);
+        appendInputRow(form, "retrieval-profile-colbert-tail-min-score", t("aiadmin-field-colbert-tail-min-score"), profile.config?.colbertTailMinScore ?? 0.7, { type: "number", min: 0, max: 1, step: "0.01" });
+        appendInputRow(form, "retrieval-profile-colbert-tail-max-gap", t("aiadmin-field-colbert-tail-max-gap"), profile.config?.colbertTailMaxGap ?? 0.2, { type: "number", min: 0, max: 1, step: "0.01" });
+        appendInputRow(form, "retrieval-profile-colbert-tail-min-keep", t("aiadmin-field-colbert-tail-min-keep"), profile.config?.colbertTailMinKeep ?? 1, { type: "number", min: 1, max: 20 });
         appendSelectRow(form, "retrieval-profile-colbert-fail-mode", t("aiadmin-field-colbert-fail-mode"), profile.config?.colbertFailMode || "fallback_current", [
           ["fallback_current", t("aiadmin-value-fallback-current")],
           ["fail_search", t("aiadmin-value-fail-search")]
@@ -1595,6 +1608,13 @@ export function initializeAIAdmin(options = {}) {
             lexicalEditDistanceEnabled: document.getElementById("retrieval-profile-edit-distance").checked,
             trigramIndexEnabled: document.getElementById("retrieval-profile-trigram").checked,
             colbertEnabled: document.getElementById("retrieval-profile-colbert-enabled").checked,
+            colbertCandidateLimit: Number(document.getElementById("retrieval-profile-colbert-candidate-limit").value),
+            colbertTimeoutMs: Number(document.getElementById("retrieval-profile-colbert-timeout-ms").value),
+            colbertMinScore: Number(document.getElementById("retrieval-profile-colbert-min-score").value),
+            colbertTailDropEnabled: document.getElementById("retrieval-profile-colbert-tail-drop-enabled").checked,
+            colbertTailMinScore: Number(document.getElementById("retrieval-profile-colbert-tail-min-score").value),
+            colbertTailMaxGap: Number(document.getElementById("retrieval-profile-colbert-tail-max-gap").value),
+            colbertTailMinKeep: Number(document.getElementById("retrieval-profile-colbert-tail-min-keep").value),
             colbertFailMode: document.getElementById("retrieval-profile-colbert-fail-mode").value,
             llmModel: optionalText("retrieval-profile-llm-model"),
             llmTemperature: optionalNumber("retrieval-profile-llm-temperature"),
@@ -2187,15 +2207,25 @@ export function initializeAIAdmin(options = {}) {
         appendInputRow(colbertForm, "rag-colbertCandidateLimit", t("aiadmin-field-colbert-candidate-limit"), ragConfig.colbertCandidateLimit || 50, { type: "number", min: 5, max: 200 });
         appendInputRow(colbertForm, "rag-colbertTimeoutMs", t("aiadmin-field-timeout-ms"), ragConfig.colbertTimeoutMs || 5000, { type: "number", min: 500, max: 60000 });
         appendInputRow(colbertForm, "rag-colbertMinScore", t("aiadmin-field-colbert-min-score"), ragConfig.colbertMinScore || 0, { type: "number", min: 0, max: 1, step: "0.01" });
+        appendCheckboxRow(colbertForm, "rag-colbertTailDropEnabled", t("aiadmin-field-colbert-tail-drop-enabled"), ragConfig.colbertTailDropEnabled);
+        appendInputRow(colbertForm, "rag-colbertTailMinScore", t("aiadmin-field-colbert-tail-min-score"), ragConfig.colbertTailMinScore ?? 0.7, { type: "number", min: 0, max: 1, step: "0.01" });
+        appendInputRow(colbertForm, "rag-colbertTailMaxGap", t("aiadmin-field-colbert-tail-max-gap"), ragConfig.colbertTailMaxGap ?? 0.2, { type: "number", min: 0, max: 1, step: "0.01" });
+        appendInputRow(colbertForm, "rag-colbertTailMinKeep", t("aiadmin-field-colbert-tail-min-keep"), ragConfig.colbertTailMinKeep ?? 1, { type: "number", min: 1, max: 20 });
         appendSelectRow(colbertForm, "rag-colbertFailMode", t("aiadmin-field-colbert-fail-mode"), ragConfig.colbertFailMode || "fallback_current", [
           ["fallback_current", t("aiadmin-value-fallback-current")],
           ["fail_search", t("aiadmin-value-fail-search")]
         ]);
         const colbertActions = document.createElement("div");
         colbertActions.className = "ai-admin-row";
-        colbertActions.innerHTML = `<button type="button" class="ai-admin-btn" id="aiadmin-test-colbert-rag">${t("aiadmin-action-test")}</button><button type="button" class="ai-admin-btn" id="aiadmin-reindex-colbert-rag">${t("aiadmin-action-reindex-colbert")}</button><button type="button" class="ai-admin-btn" id="aiadmin-build-colbert-index">${t("aiadmin-action-build-colbert-index")}</button><span id="aiadmin-colbert-test"></span>`;
+        colbertActions.innerHTML = `<button type="button" class="ai-admin-btn" id="aiadmin-test-colbert-rag">${t("aiadmin-action-test")}</button><button type="button" class="ai-admin-btn" id="aiadmin-reindex-mediawiki-colbert-rag">${t("aiadmin-action-reindex-mediawiki-colbert")}</button><button type="button" class="ai-admin-btn" id="aiadmin-reindex-colbert-rag">${t("aiadmin-action-reindex-colbert-from-dense")}</button><button type="button" class="ai-admin-btn" id="aiadmin-build-colbert-index">${t("aiadmin-action-build-colbert-index")}</button><span id="aiadmin-colbert-test"></span>`;
         colbertForm.appendChild(colbertActions);
+        const colbertSource = document.createElement("div");
+        colbertSource.id = "aiadmin-colbert-source-diagnostics";
+        colbertSource.className = "ai-admin-muted";
+        colbertSource.textContent = t("aiadmin-loading");
+        colbertForm.appendChild(colbertSource);
         await renderColbertIndexes();
+        await loadColbertSourceDiagnostics();
       };
 
       const readFormValue = (id, fallback = "") => document.getElementById(id)?.value ?? fallback;
@@ -2307,6 +2337,10 @@ export function initializeAIAdmin(options = {}) {
           colbertCandidateLimit: readFormNumber("rag-colbertCandidateLimit", ragConfig?.colbertCandidateLimit ?? 50),
           colbertTimeoutMs: readFormNumber("rag-colbertTimeoutMs", ragConfig?.colbertTimeoutMs ?? 5000),
           colbertMinScore: readFormNumber("rag-colbertMinScore", ragConfig?.colbertMinScore ?? 0),
+          colbertTailDropEnabled: readFormChecked("rag-colbertTailDropEnabled", ragConfig?.colbertTailDropEnabled),
+          colbertTailMinScore: readFormNumber("rag-colbertTailMinScore", ragConfig?.colbertTailMinScore ?? 0.7),
+          colbertTailMaxGap: readFormNumber("rag-colbertTailMaxGap", ragConfig?.colbertTailMaxGap ?? 0.2),
+          colbertTailMinKeep: readFormNumber("rag-colbertTailMinKeep", ragConfig?.colbertTailMinKeep ?? 1),
           colbertFailMode: readFormValue("rag-colbertFailMode", ragConfig?.colbertFailMode || "fallback_current"),
           chunkSize: readFormNumber("rag-chunkSize", ragConfig?.chunkSize ?? 512),
           chunkOverlap: readFormNumber("rag-chunkOverlap", ragConfig?.chunkOverlap ?? 80),
@@ -2339,6 +2373,7 @@ export function initializeAIAdmin(options = {}) {
             "aiadmin-table-status",
             "aiadmin-table-active",
             "aiadmin-table-pages",
+            "aiadmin-table-chunks",
             "aiadmin-table-failed",
             "aiadmin-table-actions"
           ]);
@@ -2352,6 +2387,7 @@ export function initializeAIAdmin(options = {}) {
               item.status,
               yesNo(item.active),
               item.pagesProcessed ?? 0,
+              item.chunksIndexed ?? 0,
               item.failures ?? 0,
             ].forEach((cellValue) => {
               const cell = document.createElement("td");
@@ -2809,6 +2845,40 @@ export function initializeAIAdmin(options = {}) {
         ? t("aiadmin-value-autofill-mode-apply-empty")
         : t("aiadmin-value-autofill-mode-suggest-only");
 
+      const autofillWriteTargetLabel = (target) => target === "template_params"
+        ? t("aiadmin-value-autofill-target-template-params")
+        : t("aiadmin-value-autofill-target-managed-block");
+
+      const isLoopbackServiceUrl = (value) => {
+        try {
+          const url = new URL(value);
+          return ["localhost", "127.0.0.1", "::1"].includes(url.hostname);
+        } catch (_err) {
+          return false;
+        }
+      };
+
+      const appendSemanticAutofillWebhookStatus = async (form) => {
+        const data = await request("/api/admin/webhook/config");
+        webhookConfig = data.values || {};
+        const expectedUrl = normalizeServiceUrl(webhookConfig.syncerUrl);
+        const actualUrl = normalizeServiceUrl(mediaWikiSyncerUrl);
+        const usesLoopback = isLoopbackServiceUrl(actualUrl);
+        const status = document.createElement("div");
+        status.className = !usesLoopback && expectedUrl === actualUrl
+          ? "ai-admin-status-ok"
+          : "ai-admin-status-error";
+        status.textContent = usesLoopback
+          ? formatText("aiadmin-status-autofill-webhook-loopback", { url: mediaWikiSyncerUrl || "(empty)" })
+          : expectedUrl === actualUrl
+            ? formatText("aiadmin-status-autofill-webhook-ready", { url: mediaWikiSyncerUrl || "(empty)" })
+            : formatText("aiadmin-status-autofill-webhook-mismatch", {
+              url: mediaWikiSyncerUrl || "(empty)",
+              expected: webhookConfig.syncerUrl || "(empty)",
+            });
+        form.appendChild(status);
+      };
+
       const renderSemanticAutofillStatus = async () => {
         const data = await request("/api/admin/smw/autofill/status?limit=50");
         const values = data.values || {};
@@ -2872,13 +2942,26 @@ export function initializeAIAdmin(options = {}) {
         const form = document.getElementById("aiadmin-autofill-config");
         form.innerHTML = "";
 
+        await appendSemanticAutofillWebhookStatus(form);
         appendCheckboxRow(form, "autofill-enabled", t("aiadmin-field-enabled"), semanticAutofillConfig.enabled);
         appendSelectRow(form, "autofill-mode", t("aiadmin-field-autofill-mode"), semanticAutofillConfig.mode || "suggest_only", [
           ["suggest_only", autofillModeLabel("suggest_only")],
           ["apply_empty", autofillModeLabel("apply_empty")],
         ]);
+        appendSelectRow(form, "autofill-write-target", t("aiadmin-field-autofill-write-target"), semanticAutofillConfig.writeTarget || "managed_block", [
+          ["managed_block", autofillWriteTargetLabel("managed_block")],
+          ["template_params", autofillWriteTargetLabel("template_params")],
+        ], {
+          help: t("aiadmin-help-autofill-write-target")
+        });
         appendInputRow(form, "autofill-min-confidence", t("aiadmin-field-autofill-min-confidence"), semanticAutofillConfig.minConfidence ?? 0.82, { type: "number", min: 0, max: 1, step: 0.01 });
         appendInputRow(form, "autofill-templates", t("aiadmin-field-templates-csv"), (semanticAutofillConfig.templates || []).join(", "));
+        appendInputRow(form, "autofill-managed-template", t("aiadmin-field-autofill-managed-template"), semanticAutofillConfig.managedTemplateName || "WikiAI Semantic");
+        appendInputRow(form, "autofill-managed-profile", t("aiadmin-field-autofill-managed-profile"), semanticAutofillConfig.managedBlockProfile || "default");
+        appendCheckboxRow(form, "autofill-skip-user-fact", t("aiadmin-field-autofill-skip-user-fact"), semanticAutofillConfig.skipIfUserFactExists !== false);
+        appendSelectRow(form, "autofill-insert-position", t("aiadmin-field-autofill-insert-position"), semanticAutofillConfig.insertPosition || "end", [
+          ["end", t("aiadmin-value-autofill-insert-end")],
+        ]);
         appendInputRow(form, "autofill-namespaces", t("aiadmin-field-namespaces-csv"), (semanticAutofillConfig.namespaces || []).join(", "));
         appendInputRow(form, "autofill-max-page-chars", t("aiadmin-field-max-page-chars"), semanticAutofillConfig.maxPageChars ?? 20000, { type: "number", min: 1000, max: 100000, step: 1000 });
         await renderSemanticAutofillStatus();
@@ -2887,8 +2970,13 @@ export function initializeAIAdmin(options = {}) {
       const collectSemanticAutofillConfig = () => ({
         enabled: document.getElementById("autofill-enabled").checked,
         mode: document.getElementById("autofill-mode").value,
+        writeTarget: document.getElementById("autofill-write-target").value,
         minConfidence: Number(document.getElementById("autofill-min-confidence").value),
         templates: parseCsv(document.getElementById("autofill-templates").value),
+        managedTemplateName: document.getElementById("autofill-managed-template").value.trim(),
+        managedBlockProfile: document.getElementById("autofill-managed-profile").value.trim(),
+        skipIfUserFactExists: document.getElementById("autofill-skip-user-fact").checked,
+        insertPosition: document.getElementById("autofill-insert-position").value,
         namespaces: parseNumberCsv(document.getElementById("autofill-namespaces").value),
         maxPageChars: Number(document.getElementById("autofill-max-page-chars").value),
       });
@@ -3061,6 +3149,27 @@ export function initializeAIAdmin(options = {}) {
         renderNamespaceControls();
         return namespaceOptions;
       };
+
+      const contentNamespaceIds = (namespaces = namespaceOptions) => {
+        const contentNamespaces = namespaces
+          .filter((namespace) => namespace?.content === true)
+          .map((namespace) => namespace.id);
+        if (contentNamespaces.length > 0) return Array.from(new Set(contentNamespaces)).sort((left, right) => left - right);
+        return [0];
+      };
+
+      const getIndexStatusNamespaces = async () => {
+        if (namespaceOptions.length === 0) {
+          try {
+            await loadNamespaceOptions();
+          } catch {
+            return [0];
+          }
+        }
+        return contentNamespaceIds(namespaceOptions);
+      };
+
+      const namespaceQueryString = (namespaces) => `namespaces=${encodeURIComponent(namespaces.join(","))}`;
 
       const loadUserGroupOptions = async () => {
         const data = await request("/api/admin/wiki/user-groups");
@@ -5257,6 +5366,190 @@ export function initializeAIAdmin(options = {}) {
       };
 
       const isReindexTerminalState = (state) => ["idle", "completed", "failed"].includes(state);
+      const isColbertIndexTerminalState = (state) => ["complete", "failed", "canceled"].includes(state);
+
+      const setColbertActionButtonsDisabled = (disabled) => {
+        ["aiadmin-reindex-mediawiki-colbert-rag", "aiadmin-reindex-colbert-rag", "aiadmin-build-colbert-index"].forEach((id) => {
+          const button = document.getElementById(id);
+          if (button) button.disabled = Boolean(disabled);
+        });
+      };
+
+      const renderColbertSourceDiagnostics = (diagnostics = colbertSourceDiagnostics) => {
+        const root = document.getElementById("aiadmin-colbert-source-diagnostics");
+        if (!root) return;
+        if (!diagnostics) {
+          root.className = "ai-admin-muted";
+          root.textContent = t("aiadmin-loading");
+          return;
+        }
+        const behind = Boolean(diagnostics.densePagesBehindMediaWiki)
+          || Number(diagnostics.qdrantPayloadPages ?? 0) < Number(diagnostics.mediaWikiPages ?? 0);
+        root.className = behind ? "ai-admin-status-warning" : "ai-admin-status-ok";
+        root.textContent = formatText("aiadmin-status-colbert-source-diagnostics", {
+          mediaWikiPages: diagnostics.mediaWikiPages ?? 0,
+          denseCollection: diagnostics.denseCollection || unknown(),
+          densePages: diagnostics.qdrantPayloadPages ?? 0,
+          denseChunks: diagnostics.qdrantPayloadChunks ?? 0,
+          densePoints: diagnostics.qdrantPayloadPoints ?? 0,
+          namespaces: (diagnostics.mediaWikiNamespaces || [0]).join(", "),
+        });
+      };
+
+      const loadColbertSourceDiagnostics = async () => {
+        try {
+          const namespaces = await getIndexStatusNamespaces();
+          const data = await request(`/api/admin/rag/colbert/source-diagnostics?${namespaceQueryString(namespaces)}`);
+          colbertSourceDiagnostics = data.values || null;
+          renderColbertSourceDiagnostics();
+          return colbertSourceDiagnostics;
+        } catch (err) {
+          const root = document.getElementById("aiadmin-colbert-source-diagnostics");
+          if (root) {
+            root.className = "ai-admin-status-error";
+            root.textContent = err.message;
+          }
+          return null;
+        }
+      };
+
+      const renderColbertReindexStatus = (status = {}) => {
+        const root = document.getElementById("aiadmin-colbert-reindex-status");
+        const progress = status.progress || {};
+        const summary = status.summary || {};
+        const targets = firstDefined(progress.indexTargets, summary.indexTargets, []);
+        const source = firstDefined(progress.source, summary.source, "qdrant_payload");
+        const colbertChunks = firstDefined(progress.colbertChunksIndexed, summary.colbertChunksIndexed);
+        const colbertPages = firstDefined(progress.colbertPagesIndexed, summary.colbertPagesIndexed);
+        const hasColbertTarget = Array.isArray(targets) && targets.includes("colbert");
+        const hasColbertCounters = Number(firstDefined(colbertChunks, 0)) > 0
+          || Number(firstDefined(colbertPages, 0)) > 0
+          || firstDefined(progress.colbertModel, summary.colbertModel)
+          || firstDefined(progress.colbertCollection, summary.colbertCollection);
+        const state = status.state || "idle";
+        const isRelevant = hasColbertTarget || hasColbertCounters;
+        setColbertActionButtonsDisabled(state === "running");
+        if (!root) return;
+        root.innerHTML = "";
+        if (state === "running" && !isRelevant) {
+          root.className = "ai-admin-status-warning";
+          root.textContent = t("aiadmin-status-colbert-reindex-blocked", "Another reindex job is running; ColBERT actions are disabled.");
+          return;
+        }
+        if (!isRelevant || state === "idle") {
+          root.className = "ai-admin-muted";
+          root.textContent = t("aiadmin-status-colbert-reindex-idle", "ColBERT reindex is idle.");
+          return;
+        }
+        root.className = state === "failed"
+          ? "ai-admin-status-error"
+          : state === "running" ? "ai-admin-status-warning" : "ai-admin-status-ok";
+        const line = document.createElement("div");
+        line.textContent = formatText("aiadmin-status-colbert-reindex-line", {
+          state,
+          source,
+          model: firstDefined(progress.colbertModel, summary.colbertModel, document.getElementById("rag-colbertModel")?.value, unknown()),
+          collection: firstDefined(progress.colbertCollection, summary.colbertCollection, document.getElementById("rag-colbertCollection")?.value, unknown()),
+          pages: firstDefined(colbertPages, progress.qdrantPayloadPages, summary.qdrantPayloadPages, progress.processed, summary.processed, 0),
+          total: firstDefined(progress.totalPages, summary.totalPages, 0),
+          sourceChunks: firstDefined(progress.qdrantPayloadChunks, summary.qdrantPayloadChunks, progress.totalChunks, summary.totalChunks, 0),
+          chunks: firstDefined(colbertChunks, unknown()),
+          failed: firstDefined(progress.colbertFailures, summary.colbertFailures, progress.failed, summary.failed, 0),
+          current: firstDefined(progress.currentTitle, summary.currentTitle, t("aiadmin-value-none")),
+        });
+        root.appendChild(line);
+        if (firstDefined(progress.qdrantPayloadPages, summary.qdrantPayloadPages) !== undefined) {
+          const sourceLine = document.createElement("div");
+          sourceLine.textContent = formatText("aiadmin-status-colbert-reindex-source-line", {
+            denseCollection: firstDefined(progress.denseCollection, summary.denseCollection, unknown()),
+            densePages: firstDefined(progress.qdrantPayloadPages, summary.qdrantPayloadPages, 0),
+            denseChunks: firstDefined(progress.qdrantPayloadChunks, summary.qdrantPayloadChunks, 0),
+            densePoints: firstDefined(progress.qdrantPayloadPoints, summary.qdrantPayloadPoints, 0),
+          });
+          root.appendChild(sourceLine);
+        }
+        if (status.error) {
+          const error = document.createElement("div");
+          error.className = "ai-admin-status-error";
+          error.textContent = status.error;
+          root.appendChild(error);
+        }
+      };
+
+      const renderColbertIndexBuildStatus = (spec = {}, reindex = {}) => {
+        const root = document.getElementById("aiadmin-colbert-reindex-status");
+        setColbertActionButtonsDisabled(spec.status === "building" || reindex.state === "running");
+        if (!root) return;
+        root.innerHTML = "";
+        root.className = spec.status === "failed"
+          ? "ai-admin-status-error"
+          : spec.status === "building" ? "ai-admin-status-warning" : "ai-admin-status-ok";
+        const line = document.createElement("div");
+        const reindexProgress = reindex.progress || {};
+        const reindexSummary = reindex.summary || {};
+        const pagesFromReindex = firstDefined(reindexProgress.colbertPagesIndexed, reindexSummary.colbertPagesIndexed);
+        const chunksFromReindex = firstDefined(reindexProgress.colbertChunksIndexed, reindexSummary.colbertChunksIndexed);
+        line.textContent = formatText("aiadmin-status-colbert-index-build-line", {
+          id: spec.id || unknown(),
+          status: spec.status || unknown(),
+          model: spec.model || unknown(),
+          collection: spec.collection || unknown(),
+          pages: firstDefined(pagesFromReindex, spec.status === "building" ? unknown() : spec.pagesProcessed, 0),
+          chunks: firstDefined(chunksFromReindex, spec.status === "building" ? unknown() : spec.chunksIndexed, 0),
+          failed: firstDefined(reindexProgress.colbertFailures, reindexSummary.colbertFailures, spec.failures, 0),
+        });
+        root.appendChild(line);
+        if (firstDefined(reindexProgress.qdrantPayloadPages, reindexSummary.qdrantPayloadPages) !== undefined) {
+          const sourceLine = document.createElement("div");
+          sourceLine.textContent = formatText("aiadmin-status-colbert-reindex-source-line", {
+            denseCollection: firstDefined(reindexProgress.denseCollection, reindexSummary.denseCollection, unknown()),
+            densePages: firstDefined(reindexProgress.qdrantPayloadPages, reindexSummary.qdrantPayloadPages, 0),
+            denseChunks: firstDefined(reindexProgress.qdrantPayloadChunks, reindexSummary.qdrantPayloadChunks, 0),
+            densePoints: firstDefined(reindexProgress.qdrantPayloadPoints, reindexSummary.qdrantPayloadPoints, 0),
+          });
+          root.appendChild(sourceLine);
+        }
+        if (spec.error) {
+          const error = document.createElement("div");
+          error.className = "ai-admin-status-error";
+          error.textContent = spec.error;
+          root.appendChild(error);
+        }
+      };
+
+      const stopColbertIndexStatusPolling = () => {
+        if (!colbertIndexStatusPoll) return;
+        window.clearInterval(colbertIndexStatusPoll);
+        colbertIndexStatusPoll = null;
+      };
+
+      const renderColbertIndexStatus = async (id) => {
+        const data = await request(`/api/admin/rag/colbert/indexes/${encodeURIComponent(id)}/status`);
+        const spec = data.values || {};
+        renderColbertIndexBuildStatus(spec, data.reindex || {});
+        if (isColbertIndexTerminalState(spec.status)) {
+          stopColbertIndexStatusPolling();
+          await renderColbertIndexes();
+          await loadColbertSourceDiagnostics().catch(() => undefined);
+        }
+        return spec.status;
+      };
+
+      const startColbertIndexStatusPolling = async (id) => {
+        stopColbertIndexStatusPolling();
+        if (!id) return;
+        const state = await renderColbertIndexStatus(id);
+        if (isColbertIndexTerminalState(state)) return;
+        colbertIndexStatusPoll = window.setInterval(async () => {
+          try {
+            const nextState = await renderColbertIndexStatus(id);
+            if (isColbertIndexTerminalState(nextState)) stopColbertIndexStatusPolling();
+          } catch (err) {
+            stopColbertIndexStatusPolling();
+            statusText("aiadmin-colbert-status", err.message, false);
+          }
+        }, 3000);
+      };
 
       const renderReindexPreflight = () => {
         const root = document.getElementById("aiadmin-reindex-preflight");
@@ -5294,6 +5587,7 @@ export function initializeAIAdmin(options = {}) {
         try {
           const data = await request("/api/admin/reindex/status");
           const status = data.status || {};
+          renderIndexStatusOperation(status);
           const progress = status.progress || {};
           const summary = status.summary || {};
           const namespaces = firstDefined(progress.namespaces, summary.namespaces, []);
@@ -5305,6 +5599,7 @@ export function initializeAIAdmin(options = {}) {
           const line = document.createElement("p");
           line.textContent = formatText("aiadmin-reindex-status-line", {
             state: status.state || unknown(),
+            source: firstDefined(progress.source, summary.source, "mediawiki"),
             profile: firstDefined(progress.profileId, summary.profileId, unknown()),
             namespaces: Array.isArray(namespaces) && namespaces.length > 0 ? namespaces.join(", ") : unknown(),
             matched: firstDefined(progress.matchedPages, summary.matchedPages, progress.totalPages, summary.totalPages, 0),
@@ -5406,10 +5701,16 @@ export function initializeAIAdmin(options = {}) {
             estimated: firstDefined(progress.estimatedPaidCalls, summary.estimatedPaidCalls, 0)
           });
           root.appendChild(counters);
+          renderColbertReindexStatus(status);
+          if (isReindexTerminalState(status.state || "idle")) {
+            loadColbertSourceDiagnostics().catch(() => undefined);
+          }
           return status.state || "idle";
         } catch (err) {
           root.className = "ai-admin-status-error";
           root.textContent = err.message;
+          renderIndexStatusOperation({ state: "failed", error: err.message });
+          renderColbertReindexStatus({ state: "failed", error: err.message });
           return "failed";
         }
       };
@@ -5420,8 +5721,324 @@ export function initializeAIAdmin(options = {}) {
         if (isReindexTerminalState(state)) return;
         reindexStatusPoll = window.setInterval(async () => {
           const nextState = await renderReindexStatus();
-          if (isReindexTerminalState(nextState)) stopReindexStatusPolling();
+          if (isReindexTerminalState(nextState)) {
+            stopReindexStatusPolling();
+            loadIndexStatusSummary().catch(() => undefined);
+          }
         }, 3000);
+      };
+
+      const indexStatusClass = (status) => status === "ok"
+        ? "ai-admin-status-ok"
+        : status === "warning" || status === "disabled" ? "ai-admin-status-warning" : "ai-admin-status-error";
+
+      const indexStatusLabel = (status) => t(`aiadmin-value-index-status-${status || "error"}`, status || unknown());
+
+      const indexDiffCount = (diff, key) => diff && typeof diff[key] === "number" ? diff[key] : "";
+
+      const indexDiffSamples = (diff) => {
+        if (!diff) return "";
+        const formatSamples = (label, samples) => {
+          if (!Array.isArray(samples) || samples.length === 0) return "";
+          return `${label}: ${samples.map((sample) => `${sample.pageId}${sample.title ? ` ${sample.title}` : ""}`).join(", ")}`;
+        };
+        return [
+          formatSamples(t("aiadmin-table-stale"), diff.staleSamples),
+          formatSamples(t("aiadmin-table-missing"), diff.missingSamples),
+          diff.sourceTruncated ? "source truncated" : "",
+          diff.indexTruncated ? "index truncated" : "",
+        ].filter(Boolean).join("; ");
+      };
+
+      const lastReindexStatus = (lastReindex) => {
+        if (!lastReindex || typeof lastReindex !== "object") return null;
+        return lastReindex.status && typeof lastReindex.status === "object" ? lastReindex.status : lastReindex;
+      };
+
+      const formatReindexTimestamp = (value) => {
+        if (!value) return unknown();
+        const date = new Date(value);
+        return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+      };
+
+      const formatElapsedMs = (value) => {
+        const elapsed = Number(value);
+        if (!Number.isFinite(elapsed) || elapsed < 0) return unknown();
+        if (elapsed < 1000) return `${Math.round(elapsed)} ms`;
+        return `${(elapsed / 1000).toFixed(1)} s`;
+      };
+
+      const formatTargetWrites = (writes) => {
+        if (!writes || typeof writes !== "object") return "";
+        return Object.entries(writes)
+          .filter(([, count]) => Number(count) > 0)
+          .map(([target, count]) => `${target}:${count}`)
+          .join(", ");
+      };
+
+      const renderIndexStatusOperation = (status) => {
+        const root = document.getElementById("aiadmin-index-status-operation");
+        if (!root) return;
+        const reindex = lastReindexStatus(status);
+        root.innerHTML = "";
+        if (!reindex) {
+          root.className = "ai-admin-muted";
+          root.textContent = t("aiadmin-message-index-operation-empty");
+          return;
+        }
+
+        const progress = reindex.progress || {};
+        const summary = reindex.summary || {};
+        const state = reindex.state || unknown();
+        root.className = state === "failed"
+          ? "ai-admin-status-error"
+          : state === "running" ? "ai-admin-status-warning" : "ai-admin-muted";
+
+        const heading = document.createElement("strong");
+        heading.textContent = t("aiadmin-label-index-current-operation");
+        root.appendChild(heading);
+
+        const targets = firstDefined(progress.indexTargets, summary.indexTargets, []);
+        const startedAt = firstDefined(progress.startedAt, summary.startedAt, reindex.startedAt);
+        const finishedAt = firstDefined(progress.finishedAt, summary.finishedAt, reindex.finishedAt);
+        const elapsedMs = firstDefined(progress.elapsedMs, summary.elapsedMs);
+        const runId = firstDefined(progress.runId, summary.runId, reindex.runId, unknown());
+        const line = document.createElement("div");
+        line.textContent = formatText("aiadmin-index-operation-line", {
+          state,
+          runId,
+          started: formatReindexTimestamp(startedAt),
+          finished: finishedAt ? formatReindexTimestamp(finishedAt) : t("aiadmin-value-none"),
+          elapsed: formatElapsedMs(elapsedMs),
+          targets: Array.isArray(targets) && targets.length > 0 ? targets.join(", ") : t("aiadmin-value-none"),
+          processed: firstDefined(progress.processed, summary.processed, 0),
+          total: firstDefined(progress.totalPages, summary.totalPages, 0),
+          chunks: firstDefined(progress.totalChunks, summary.totalChunks, 0),
+          failed: firstDefined(progress.failed, summary.failed, 0),
+        });
+        root.appendChild(line);
+
+        const targetWrites = firstDefined(progress.targetWrites, summary.targetWrites, {});
+        const writesText = formatTargetWrites(targetWrites);
+        const writes = document.createElement("div");
+        writes.className = writesText ? "ai-admin-muted" : "ai-admin-status-warning";
+        writes.textContent = formatText("aiadmin-index-operation-target-writes", {
+          writes: writesText || t("aiadmin-value-none"),
+        });
+        root.appendChild(writes);
+
+        const currentTitle = firstDefined(progress.currentTitle, summary.currentTitle);
+        if (currentTitle) {
+          const current = document.createElement("div");
+          current.className = "ai-admin-muted";
+          current.textContent = formatText("aiadmin-reindex-current-title", { title: currentTitle });
+          root.appendChild(current);
+        }
+        if (reindex.error) {
+          const error = document.createElement("div");
+          error.className = "ai-admin-status-error";
+          error.textContent = reindex.error;
+          root.appendChild(error);
+        }
+      };
+
+      const renderIndexStatusSummaryValues = (values) => {
+        const root = document.getElementById("aiadmin-index-status-summary");
+        if (!root) return;
+        root.innerHTML = "";
+        root.className = "ai-admin-search-results";
+
+        const summary = document.createElement("div");
+        summary.className = "ai-admin-summary";
+        [
+          [t("aiadmin-table-status"), indexStatusLabel(values.status)],
+          [t("aiadmin-label-index-source"), `${values.source?.pages ?? 0} / fetched ${values.source?.fetchedPages ?? 0}`],
+          [t("aiadmin-table-namespaces"), Array.isArray(values.source?.namespaces) ? values.source.namespaces.join(", ") : unknown()],
+        ].forEach(([label, value]) => {
+          const item = document.createElement("div");
+          item.className = "ai-admin-summary-item";
+          const strong = document.createElement("strong");
+          strong.textContent = String(value);
+          const span = document.createElement("span");
+          span.textContent = label;
+          item.append(strong, span);
+          summary.appendChild(item);
+        });
+        root.appendChild(summary);
+
+        const namespaceScope = Array.isArray(values.source?.namespaces) && values.source.namespaces.length > 0
+          ? values.source.namespaces.join(", ")
+          : unknown();
+        const rows = [
+          {
+            name: "MediaWiki",
+            status: values.source?.status,
+            pages: values.source?.pages,
+            chunks: "",
+            diff: null,
+            details: [
+              `fetched ${values.source?.fetchedPages ?? 0}`,
+              `scope namespaces ${namespaceScope}`,
+              values.source?.truncated ? "truncated" : "",
+              values.source?.error || "",
+            ].filter(Boolean).join("; "),
+          },
+          {
+            name: "Dense Qdrant",
+            status: values.indexes?.dense?.status,
+            pages: values.indexes?.dense?.pages,
+            chunks: values.indexes?.dense?.chunks,
+            diff: null,
+            details: [
+              values.indexes?.dense?.collection || "",
+              values.indexes?.dense?.points !== undefined ? `points ${values.indexes.dense.points}` : "",
+              values.indexes?.dense?.error || "",
+            ].filter(Boolean).join("; "),
+          },
+          {
+            name: "ColBERT",
+            status: values.indexes?.colbert?.status,
+            pages: values.indexes?.colbert?.pages,
+            chunks: values.indexes?.colbert?.chunks ?? values.indexes?.colbert?.points,
+            diff: null,
+            details: [
+              values.indexes?.colbert?.collection || "",
+              values.indexes?.colbert?.points !== undefined ? `points ${values.indexes.colbert.points}` : "",
+              values.indexes?.colbert?.source ? `source ${values.indexes.colbert.source}` : "",
+              values.indexes?.colbert?.lastReindexIncludedColbert === false
+                ? t("aiadmin-status-colbert-last-reindex-skipped", "Last reindex did not include ColBERT")
+                : "",
+              values.indexes?.colbert?.state ? `state ${values.indexes.colbert.state}` : "",
+              values.indexes?.colbert?.error || "",
+            ].filter(Boolean).join("; "),
+          },
+          {
+            name: "BM25/Postgres",
+            status: values.indexes?.bm25?.status,
+            pages: values.indexes?.bm25?.pages,
+            chunks: values.indexes?.bm25?.chunks,
+            diff: values.indexes?.bm25?.diff,
+            details: [
+              `scope namespaces ${namespaceScope}`,
+              values.indexes?.bm25?.latestUpdatedAt ? `updated ${values.indexes.bm25.latestUpdatedAt}` : "",
+              values.indexes?.bm25?.attachmentChunks !== undefined ? `attachments ${values.indexes.bm25.attachmentChunks}` : "",
+              values.indexes?.bm25?.error || "",
+            ].filter(Boolean).join("; "),
+          },
+          {
+            name: "OpenSearch",
+            status: values.indexes?.opensearch?.status,
+            pages: values.indexes?.opensearch?.pages,
+            chunks: values.indexes?.opensearch?.docs,
+            diff: values.indexes?.opensearch?.diff,
+            details: [
+              `scope namespaces ${namespaceScope}`,
+              values.indexes?.opensearch?.indexName || "",
+              values.indexes?.opensearch?.enabled === false ? "disabled" : "",
+              values.indexes?.opensearch?.ready === false ? "not ready" : "",
+              values.indexes?.opensearch?.error || "",
+            ].filter(Boolean).join("; "),
+          },
+          {
+            name: "Trigram",
+            status: values.indexes?.trigram?.status,
+            pages: "",
+            chunks: values.indexes?.trigram?.chunks,
+            diff: null,
+            details: [
+              values.indexes?.trigram?.ftsChunks !== undefined ? `fts ${values.indexes.trigram.ftsChunks}` : "",
+              values.indexes?.trigram?.expectedChunks !== undefined ? `expected ${values.indexes.trigram.expectedChunks}` : "",
+              values.indexes?.trigram?.backfillRequired ? t("aiadmin-action-backfill-trigram") : "",
+              values.indexes?.trigram?.error || "",
+            ].filter(Boolean).join("; "),
+          },
+        ];
+
+        const table = document.createElement("table");
+        table.className = "ai-admin-table";
+        table.innerHTML = tableHtml([
+          "aiadmin-table-index",
+          "aiadmin-table-status",
+          "aiadmin-table-pages",
+          "aiadmin-table-chunks",
+          "aiadmin-table-stale",
+          "aiadmin-table-missing",
+          "aiadmin-table-details",
+        ]);
+        const tbody = table.querySelector("tbody");
+        rows.forEach((item) => {
+          const row = document.createElement("tr");
+          appendTableCell(row, item.name);
+          const statusCell = appendTableCell(row, indexStatusLabel(item.status));
+          statusCell.className = indexStatusClass(item.status);
+          appendTableCell(row, item.pages ?? "");
+          appendTableCell(row, item.chunks ?? "");
+          appendTableCell(row, indexDiffCount(item.diff, "staleCount"));
+          appendTableCell(row, indexDiffCount(item.diff, "missingCount"));
+          appendTableCell(row, [item.details, indexDiffSamples(item.diff)].filter(Boolean).join("; "));
+          tbody.appendChild(row);
+        });
+        root.appendChild(table);
+
+        if (Array.isArray(values.recommendations) && values.recommendations.length > 0) {
+          const heading = document.createElement("h3");
+          heading.textContent = t("aiadmin-label-index-recommendations");
+          root.appendChild(heading);
+          const list = document.createElement("ul");
+          values.recommendations.forEach((recommendation) => {
+            const item = document.createElement("li");
+            item.textContent = recommendation;
+            list.appendChild(item);
+          });
+          root.appendChild(list);
+        }
+
+        const reindex = lastReindexStatus(values.lastReindex);
+        renderIndexStatusOperation(reindex);
+        if (reindex) {
+          const progress = reindex.progress || reindex.summary || {};
+          const line = document.createElement("div");
+          line.className = reindex.state === "failed" ? "ai-admin-status-error" : reindex.state === "running" ? "ai-admin-status-warning" : "ai-admin-muted";
+          line.textContent = `${t("aiadmin-label-index-last-reindex")}: ${reindex.state || unknown()}; ${progress.processed ?? 0}/${progress.totalPages ?? 0}; chunks ${progress.totalChunks ?? 0}; failed ${progress.failed ?? 0}`;
+          root.appendChild(line);
+        }
+      };
+
+      const loadIndexStatusSummary = async () => {
+        const root = document.getElementById("aiadmin-index-status-summary");
+        if (root) {
+          root.className = "ai-admin-search-results";
+          root.textContent = t("aiadmin-loading");
+        }
+        const namespaces = await getIndexStatusNamespaces();
+        const data = await request(`/api/admin/index-status/summary?${namespaceQueryString(namespaces)}`, { timeoutMs: 30000 });
+        renderIndexStatusSummaryValues(data.values || {});
+        statusText("aiadmin-index-status-action", t("aiadmin-message-index-status-refreshed"));
+        return data.values || {};
+      };
+
+      const startIndexStatusReindex = async (indexTargets, messageKey, options = {}) => {
+        const namespaces = await getIndexStatusNamespaces();
+        const body = {
+          source: "mediawiki",
+          namespaces,
+          indexTargets,
+          attachmentsEnabled: Boolean(options.attachmentsEnabled),
+          semanticFactsEnabled: options.semanticFactsEnabled !== false,
+          dryRun: false,
+          llmEnrichmentEnabled: false,
+        };
+        const data = await request("/api/admin/reindex", {
+          method: "POST",
+          body: JSON.stringify(body),
+          timeoutMs: 30000,
+        });
+        renderIndexStatusOperation(data.status || data);
+        statusText("aiadmin-index-status-action", t(messageKey));
+        await startReindexStatusPolling();
+        window.setTimeout(() => {
+          loadIndexStatusSummary().catch((err) => statusText("aiadmin-index-status-action", err.message, false));
+        }, 1500);
       };
 
       const startReindex = async () => {
@@ -5807,10 +6424,38 @@ export function initializeAIAdmin(options = {}) {
         }
       });
       document.addEventListener("click", async (event) => {
+        if (event.target?.id !== "aiadmin-reindex-mediawiki-colbert-rag") return;
+        try {
+          const saved = await request("/api/admin/rag/config", { method: "POST", body: JSON.stringify(collectRagConfig()) });
+          ragConfig = saved.values || {};
+          const namespaces = await getIndexStatusNamespaces();
+          await request("/api/admin/reindex", {
+            method: "POST",
+            body: JSON.stringify({
+              indexTargets: ["dense", "colbert"],
+              source: "mediawiki",
+              namespaces,
+              colbertModel: ragConfig.colbertModel,
+              colbertCollection: ragConfig.colbertCollection,
+              attachmentsEnabled: false,
+              semanticFactsEnabled: false,
+              dryRun: false,
+              llmEnrichmentEnabled: false,
+            }),
+          });
+          statusText("aiadmin-colbert-status", t("aiadmin-message-colbert-mediawiki-reindex-started", "Full MediaWiki reindex for ColBERT started; waiting for first status..."));
+          renderColbertReindexStatus({ state: "running", progress: { source: "mediawiki", indexTargets: ["dense", "colbert"] } });
+          await startReindexStatusPolling();
+        } catch (err) {
+          statusText("aiadmin-colbert-status", err.message, false);
+        }
+      });
+      document.addEventListener("click", async (event) => {
         if (event.target?.id !== "aiadmin-reindex-colbert-rag") return;
         try {
           const saved = await request("/api/admin/rag/config", { method: "POST", body: JSON.stringify(collectRagConfig()) });
           ragConfig = saved.values || {};
+          await loadColbertSourceDiagnostics();
           await request("/api/admin/reindex", {
             method: "POST",
             body: JSON.stringify({
@@ -5822,7 +6467,8 @@ export function initializeAIAdmin(options = {}) {
               llmEnrichmentEnabled: false,
             }),
           });
-          statusText("aiadmin-colbert-status", t("aiadmin-message-reindex-started"));
+          statusText("aiadmin-colbert-status", t("aiadmin-message-colbert-reindex-started", "ColBERT reindex started; waiting for first status..."));
+          renderColbertReindexStatus({ state: "running", progress: { source: "qdrant_payload", indexTargets: ["colbert"] } });
           await startReindexStatusPolling();
         } catch (err) {
           statusText("aiadmin-colbert-status", err.message, false);
@@ -5832,7 +6478,8 @@ export function initializeAIAdmin(options = {}) {
         if (event.target?.id !== "aiadmin-build-colbert-index") return;
         try {
           const model = document.getElementById("rag-colbertModel").value.trim();
-          await request("/api/admin/rag/colbert/indexes", {
+          await loadColbertSourceDiagnostics();
+          const data = await request("/api/admin/rag/colbert/indexes", {
             method: "POST",
             body: JSON.stringify({
               model,
@@ -5841,8 +6488,9 @@ export function initializeAIAdmin(options = {}) {
             }),
           });
           await renderColbertIndexes();
-          statusText("aiadmin-colbert-status", t("aiadmin-message-reindex-started"));
-          await startReindexStatusPolling();
+          statusText("aiadmin-colbert-status", t("aiadmin-message-colbert-build-started", "ColBERT index build is running: waiting for first status..."));
+          renderColbertIndexBuildStatus(data.values || {}, data.reindex?.status || data.reindex || {});
+          await startColbertIndexStatusPolling(data.values?.id);
         } catch (err) {
           statusText("aiadmin-colbert-status", err.message, false);
         }
@@ -6286,6 +6934,56 @@ export function initializeAIAdmin(options = {}) {
           statusText("aiadmin-management-status", err.message, false);
         }
       });
+      document.getElementById("aiadmin-refresh-index-status").addEventListener("click", async () => {
+        try {
+          await loadIndexStatusSummary();
+        } catch (err) {
+          statusText("aiadmin-index-status-action", err.message, false);
+        }
+      });
+      document.getElementById("aiadmin-reindex-all-indexes").addEventListener("click", async () => {
+        try {
+          await startIndexStatusReindex(
+            ["dense", "bm25", "opensearch", "colbert", "attachments", "semanticFacts"],
+            "aiadmin-message-index-status-reindex-all-started",
+            { attachmentsEnabled: true, semanticFactsEnabled: true }
+          );
+        } catch (err) {
+          statusText("aiadmin-index-status-action", err.message, false);
+        }
+      });
+      document.getElementById("aiadmin-reindex-dense-colbert").addEventListener("click", async () => {
+        try {
+          await startIndexStatusReindex(
+            ["dense", "colbert", "semanticFacts"],
+            "aiadmin-message-index-status-reindex-dense-colbert-started",
+            { attachmentsEnabled: false, semanticFactsEnabled: true }
+          );
+        } catch (err) {
+          statusText("aiadmin-index-status-action", err.message, false);
+        }
+      });
+      document.getElementById("aiadmin-reindex-lexical-indexes").addEventListener("click", async () => {
+        try {
+          await startIndexStatusReindex(
+            ["bm25", "opensearch", "attachments", "semanticFacts"],
+            "aiadmin-message-index-status-reindex-lexical-started",
+            { attachmentsEnabled: true, semanticFactsEnabled: true }
+          );
+        } catch (err) {
+          statusText("aiadmin-index-status-action", err.message, false);
+        }
+      });
+      document.getElementById("aiadmin-index-status-backfill-trigram").addEventListener("click", async () => {
+        try {
+          await request("/api/admin/search-index/trigram/backfill", { method: "POST" });
+          await renderRagConfig();
+          await loadIndexStatusSummary();
+          statusText("aiadmin-index-status-action", t("aiadmin-message-index-status-trigram-started"));
+        } catch (err) {
+          statusText("aiadmin-index-status-action", err.message, false);
+        }
+      });
       document.getElementById("aiadmin-clear-cache").addEventListener("click", async () => {
         try {
           await request("/api/admin/cache/clear", { method: "POST" });
@@ -6332,6 +7030,7 @@ export function initializeAIAdmin(options = {}) {
       renderEmbeddingConfig().catch((err) => statusText("aiadmin-embedding-status", err.message, false));
       renderRagConfig().catch((err) => statusText("aiadmin-rag-status", err.message, false));
       renderDebugChainConfig().catch((err) => statusText("aiadmin-chat-debug-status", err.message, false));
+      loadIndexStatusSummary().catch((err) => statusText("aiadmin-index-status-action", err.message, false));
       renderWebhookConfig().catch((err) => statusText("aiadmin-webhook-status", err.message, false));
       renderChatManagementConfig().catch((err) => statusText("aiadmin-chat-management-status", err.message, false));
       renderChatRetentionConfig().catch((err) => statusText("aiadmin-chat-retention-status", err.message, false));

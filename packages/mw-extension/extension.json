@@ -81,7 +81,7 @@
       "description": "Optional browser-facing base URL of the AI Gateway. When empty, Docker-local hosts such as gateway or host.docker.internal are converted to the current wiki hostname."
     },
     "AIAssistantSyncerUrl": {
-      "value": "http://localhost:3001",
+      "value": "http://syncer:3001",
       "description": "Base URL of the Syncer webhook endpoint"
     },
     "AIAssistantWebhookSecret": {

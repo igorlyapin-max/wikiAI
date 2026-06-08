@@ -29,6 +29,7 @@ import {
   setSemanticAutofillConfig,
 } from '../services/semantic-autofill.js';
 import {
+  getSyncerReindexSourceDiagnostics,
   getSyncerReindexStatus,
   isSyncerAdminError,
   startSyncerReindex,
@@ -115,6 +116,7 @@ import {
 } from '../services/chat-store.js';
 import { getIndexingProfileSchedulerStatus } from '../services/indexing-profile-scheduler.js';
 import { getTrustRecalculationSchedulerStatus } from '../services/trust-recalculation-scheduler.js';
+import { getIndexStatusSummary } from '../services/index-status-summary.js';
 import {
   cancelTrigramBackfillJob,
   deleteSearchIndexPage,
@@ -268,6 +270,15 @@ function parseIntegerParam(value: unknown, fallback: number | undefined): number
   if (value === undefined) return fallback;
   if (typeof value !== 'string' || !/^\d+$/.test(value)) return fallback;
   return Number(value);
+}
+
+function parseNamespaceQueryParam(value: unknown): number[] {
+  if (typeof value !== 'string') return [0];
+  const namespaces = value
+    .split(',')
+    .map((item) => Number(item.trim()))
+    .filter((item) => Number.isInteger(item) && item >= 0);
+  return namespaces.length > 0 ? Array.from(new Set(namespaces)).sort((a, b) => a - b) : [0];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1254,6 +1265,38 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     }
   );
 
+  app.get(
+    '/api/admin/rag/colbert/source-diagnostics',
+    { preHandler: mwAuthMiddleware },
+    async (request, reply) => {
+      if (rejectNonAdmin(request as AuthenticatedRequest, reply)) return;
+      const query = request.query as Record<string, unknown>;
+      try {
+        reply.send(await getSyncerReindexSourceDiagnostics(parseNamespaceQueryParam(query.namespaces)));
+      } catch (err) {
+        reply.status(502).send({
+          error: 'Unable to read ColBERT source diagnostics',
+          message: err instanceof Error ? err.message : 'Unknown syncer diagnostics error',
+        });
+      }
+    }
+  );
+
+  app.get(
+    '/api/admin/index-status/summary',
+    { preHandler: mwAuthMiddleware },
+    async (request, reply) => {
+      if (rejectNonAdmin(request as AuthenticatedRequest, reply)) return;
+      const query = request.query as Record<string, unknown>;
+      const sessionCookie = typeof request.headers.cookie === 'string' ? request.headers.cookie : undefined;
+      const values = await getIndexStatusSummary({
+        namespaces: parseNamespaceQueryParam(query.namespaces),
+        sessionCookie,
+      });
+      reply.send({ values });
+    }
+  );
+
   app.post(
     '/api/admin/rag/colbert/indexes',
     { preHandler: mwAuthMiddleware },
@@ -1326,16 +1369,35 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
           if (reindexStatus.state === 'completed' && isRecord(reindexStatus.summary)) {
             spec = await updateColbertIndexSpecStatus(id, {
               status: 'complete',
-              pagesProcessed: typeof reindexStatus.summary.processed === 'number'
-                ? reindexStatus.summary.processed
-                : spec.pagesProcessed,
-              chunksIndexed: typeof reindexStatus.summary.totalChunks === 'number'
-                ? reindexStatus.summary.totalChunks
-                : spec.chunksIndexed,
-              failures: typeof reindexStatus.summary.failed === 'number'
-                ? reindexStatus.summary.failed
-                : spec.failures,
+              pagesProcessed: typeof reindexStatus.summary.colbertPagesIndexed === 'number'
+                ? reindexStatus.summary.colbertPagesIndexed
+                : typeof reindexStatus.summary.processed === 'number'
+                  ? reindexStatus.summary.processed
+                  : spec.pagesProcessed,
+              chunksIndexed: typeof reindexStatus.summary.colbertChunksIndexed === 'number'
+                ? reindexStatus.summary.colbertChunksIndexed
+                : typeof reindexStatus.summary.totalChunks === 'number'
+                  ? reindexStatus.summary.totalChunks
+                  : spec.chunksIndexed,
+              failures: typeof reindexStatus.summary.colbertFailures === 'number'
+                ? reindexStatus.summary.colbertFailures
+                : typeof reindexStatus.summary.failed === 'number'
+                  ? reindexStatus.summary.failed
+                  : spec.failures,
             }, auditActor(authenticated));
+          } else if (reindexStatus.state === 'running' && isRecord(reindexStatus.progress)) {
+            spec = {
+              ...spec,
+              pagesProcessed: typeof reindexStatus.progress.colbertPagesIndexed === 'number'
+                ? reindexStatus.progress.colbertPagesIndexed
+                : spec.pagesProcessed,
+              chunksIndexed: typeof reindexStatus.progress.colbertChunksIndexed === 'number'
+                ? reindexStatus.progress.colbertChunksIndexed
+                : spec.chunksIndexed,
+              failures: typeof reindexStatus.progress.colbertFailures === 'number'
+                ? reindexStatus.progress.colbertFailures
+                : spec.failures,
+            };
           } else if (reindexStatus.state === 'failed') {
             spec = await updateColbertIndexSpecStatus(id, {
               status: 'failed',

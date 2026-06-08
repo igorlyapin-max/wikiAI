@@ -11,19 +11,28 @@ import { getOntologyProperties, OntologyProperty } from './ontology-vectors.js';
 const CONFIG_AREA = 'smw-autofill-config';
 const CONFIG_KEY = 'default';
 const DEFAULT_TEMPLATE = 'Корпоративный документ';
+const DEFAULT_MANAGED_TEMPLATE = 'WikiAI Semantic';
+const DEFAULT_MANAGED_PROFILE = 'default';
 const DEFAULT_MAX_PAGE_CHARS = 20_000;
 const AI_SUMMARY_PREFIX = 'WikiAI semantic autofill';
 
 export type SemanticAutofillMode = 'suggest_only' | 'apply_empty';
+export type SemanticAutofillWriteTarget = 'managed_block' | 'template_params';
+export type SemanticAutofillInsertPosition = 'end';
 export type SemanticAutofillFieldState = 'auto' | 'user' | 'suggested' | 'disabled';
 
 export interface SemanticAutofillConfig {
   enabled: boolean;
   mode: SemanticAutofillMode;
+  writeTarget: SemanticAutofillWriteTarget;
   minConfidence: number;
   templates: string[];
   namespaces: number[];
   maxPageChars: number;
+  managedTemplateName: string;
+  managedBlockProfile: string;
+  skipIfUserFactExists: boolean;
+  insertPosition: SemanticAutofillInsertPosition;
 }
 
 export interface SemanticAutofillFieldRecord {
@@ -57,19 +66,29 @@ export interface SemanticAutofillPatchItem {
   expectedValue?: string;
 }
 
+export interface SemanticAutofillManagedBlockConfig {
+  templateName: string;
+  profile: string;
+  insertPosition: SemanticAutofillInsertPosition;
+}
+
 export interface SemanticAutofillEvaluationResult {
   enabled: boolean;
   mode: SemanticAutofillMode;
+  writeTarget: SemanticAutofillWriteTarget;
   templates: string[];
+  managedBlock: SemanticAutofillManagedBlockConfig;
   patch: SemanticAutofillPatchItem[];
   suggestions: SemanticAutofillSuggestion[];
   lockedFields: Array<{ property: string; state: SemanticAutofillFieldState; reason?: string }>;
   diagnostics: {
     skippedReason?: string;
+    targetStatus?: 'managed_block_missing' | 'managed_block_found' | 'template_found';
     candidateCount: number;
     eligiblePropertyCount: number;
     llmCalled: boolean;
     error?: string;
+    skippedFields?: Array<{ property: string; reason: string }>;
   };
 }
 
@@ -83,6 +102,12 @@ interface TemplateReadResult {
   found: boolean;
   templateName?: string;
   params: Record<string, string>;
+}
+
+interface ManagedBlockReadResult {
+  status: 'missing' | 'found' | 'corrupt';
+  params: Record<string, string>;
+  contentWithoutBlock: string;
 }
 
 interface UpsertFieldStateInput {
@@ -102,10 +127,15 @@ interface UpsertFieldStateInput {
 const configUpdateSchema = z.object({
   enabled: z.boolean().optional(),
   mode: z.enum(['suggest_only', 'apply_empty']).optional(),
+  writeTarget: z.enum(['managed_block', 'template_params']).optional(),
   minConfidence: z.number().min(0).max(1).optional(),
   templates: z.array(z.string().trim().min(1).max(160)).max(20).optional(),
   namespaces: z.array(z.number().int().min(0)).max(200).optional(),
   maxPageChars: z.number().int().min(1000).max(100_000).optional(),
+  managedTemplateName: z.string().trim().min(1).max(160).optional(),
+  managedBlockProfile: z.string().trim().min(1).max(120).optional(),
+  skipIfUserFactExists: z.boolean().optional(),
+  insertPosition: z.enum(['end']).optional(),
 }).strict();
 
 const semanticFactsSchema = z.record(z.array(z.string().trim().min(1).max(500)).max(50));
@@ -163,12 +193,17 @@ const llmResponseSchema = z.object({
 }).passthrough();
 
 export const DEFAULT_SEMANTIC_AUTOFILL_CONFIG: SemanticAutofillConfig = {
-  enabled: false,
-  mode: 'suggest_only',
+  enabled: true,
+  mode: 'apply_empty',
+  writeTarget: 'managed_block',
   minConfidence: 0.82,
   templates: [DEFAULT_TEMPLATE],
   namespaces: [],
   maxPageChars: DEFAULT_MAX_PAGE_CHARS,
+  managedTemplateName: DEFAULT_MANAGED_TEMPLATE,
+  managedBlockProfile: DEFAULT_MANAGED_PROFILE,
+  skipIfUserFactExists: true,
+  insertPosition: 'end',
 };
 
 function nowIso(): string {
@@ -235,6 +270,93 @@ function readTemplateParameters(content: string, templateNames: string[]): Templ
   }
 
   return { found: false, params: {} };
+}
+
+function managedBlockConfig(config: SemanticAutofillConfig): SemanticAutofillManagedBlockConfig {
+  return {
+    templateName: config.managedTemplateName,
+    profile: config.managedBlockProfile,
+    insertPosition: config.insertPosition,
+  };
+}
+
+function baseEvaluationResult(
+  config: SemanticAutofillConfig,
+  values: Omit<SemanticAutofillEvaluationResult, 'mode' | 'writeTarget' | 'templates' | 'managedBlock'>
+): SemanticAutofillEvaluationResult {
+  return {
+    mode: config.mode,
+    writeTarget: config.writeTarget,
+    templates: config.templates,
+    managedBlock: managedBlockConfig(config),
+    ...values,
+  };
+}
+
+function findManagedBlock(content: string): {
+  status: 'missing' | 'found' | 'corrupt';
+  start?: number;
+  end?: number;
+  innerStart?: number;
+  innerEnd?: number;
+} {
+  const startPattern = /<!--\s*WikiAI:semantic:start(?:\s+\{[\s\S]*?\})?\s*-->/g;
+  const endPattern = /<!--\s*WikiAI:semantic:end\s*-->/g;
+  const starts = Array.from(content.matchAll(startPattern));
+  const ends = Array.from(content.matchAll(endPattern));
+  if (starts.length === 0 && ends.length === 0) return { status: 'missing' };
+  if (starts.length !== 1 || ends.length !== 1) return { status: 'corrupt' };
+
+  const startMatch = starts[0];
+  const endMatch = ends[0];
+  const start = startMatch.index ?? -1;
+  const innerStart = start + startMatch[0].length;
+  const innerEnd = endMatch.index ?? -1;
+  const end = innerEnd + endMatch[0].length;
+  if (start < 0 || innerStart > innerEnd || end <= start) return { status: 'corrupt' };
+  return { status: 'found', start, end, innerStart, innerEnd };
+}
+
+function readManagedBlock(content: string, templateName: string): ManagedBlockReadResult {
+  const block = findManagedBlock(content);
+  if (block.status === 'missing') {
+    return { status: 'missing', params: {}, contentWithoutBlock: content };
+  }
+  if (
+    block.status === 'corrupt' ||
+    block.start === undefined ||
+    block.end === undefined ||
+    block.innerStart === undefined ||
+    block.innerEnd === undefined
+  ) {
+    return { status: 'corrupt', params: {}, contentWithoutBlock: content };
+  }
+
+  const blockText = content.slice(block.innerStart, block.innerEnd);
+  const template = readTemplateParameters(blockText, [templateName]);
+  if (!template.found) {
+    return { status: 'corrupt', params: {}, contentWithoutBlock: content };
+  }
+
+  return {
+    status: 'found',
+    params: template.params,
+    contentWithoutBlock: `${content.slice(0, block.start)}${content.slice(block.end)}`,
+  };
+}
+
+function readDirectSmwFacts(content: string): Map<string, string[]> {
+  const facts = new Map<string, string[]>();
+  const pattern = /\[\[\s*([^:\]\|]+?)\s*::\s*([^\]\|]+?)(?:\|[^\]]*)?\]\]/gu;
+  for (const match of content.matchAll(pattern)) {
+    const property = normalizeValue(match[1]);
+    const value = normalizeValue(match[2]);
+    if (!property || !value) continue;
+    const values = facts.get(property) ?? [];
+    values.push(value);
+    facts.set(property, values);
+  }
+  return facts;
 }
 
 function extractJsonObject(content: string): unknown {
@@ -619,10 +741,8 @@ export async function evaluateSemanticAutofill(input: unknown): Promise<Semantic
   const config = await getSemanticAutofillConfig();
   const enabled = parsed.force ? true : config.enabled;
   if (!enabled) {
-    return {
+    return baseEvaluationResult(config, {
       enabled: false,
-      mode: config.mode,
-      templates: config.templates,
       patch: [],
       suggestions: [],
       lockedFields: [],
@@ -632,13 +752,11 @@ export async function evaluateSemanticAutofill(input: unknown): Promise<Semantic
         eligiblePropertyCount: 0,
         llmCalled: false,
       },
-    };
+    });
   }
   if (config.namespaces.length > 0 && !config.namespaces.includes(parsed.namespace)) {
-    return {
+    return baseEvaluationResult(config, {
       enabled: true,
-      mode: config.mode,
-      templates: config.templates,
       patch: [],
       suggestions: [],
       lockedFields: [],
@@ -648,33 +766,13 @@ export async function evaluateSemanticAutofill(input: unknown): Promise<Semantic
         eligiblePropertyCount: 0,
         llmCalled: false,
       },
-    };
-  }
-
-  const template = readTemplateParameters(parsed.content, config.templates);
-  if (!template.found) {
-    return {
-      enabled: true,
-      mode: config.mode,
-      templates: config.templates,
-      patch: [],
-      suggestions: [],
-      lockedFields: [],
-      diagnostics: {
-        skippedReason: 'template_not_found',
-        candidateCount: 0,
-        eligiblePropertyCount: 0,
-        llmCalled: false,
-      },
-    };
+    });
   }
 
   const serviceEdit = isServiceEdit(parsed);
   if (serviceEdit) {
-    return {
+    return baseEvaluationResult(config, {
       enabled: true,
-      mode: config.mode,
-      templates: config.templates,
       patch: [],
       suggestions: [],
       lockedFields: [],
@@ -684,20 +782,69 @@ export async function evaluateSemanticAutofill(input: unknown): Promise<Semantic
         eligiblePropertyCount: 0,
         llmCalled: false,
       },
-    };
+    });
+  }
+
+  const targetParams: Record<string, string> = {};
+  let targetStatus: SemanticAutofillEvaluationResult['diagnostics']['targetStatus'];
+  let userFacts = new Map<string, string[]>();
+  if (config.writeTarget === 'template_params') {
+    const template = readTemplateParameters(parsed.content, config.templates);
+    if (!template.found) {
+      return baseEvaluationResult(config, {
+        enabled: true,
+        patch: [],
+        suggestions: [],
+        lockedFields: [],
+        diagnostics: {
+          skippedReason: 'template_not_found',
+          candidateCount: 0,
+          eligiblePropertyCount: 0,
+          llmCalled: false,
+        },
+      });
+    }
+    Object.assign(targetParams, template.params);
+    targetStatus = 'template_found';
+  } else {
+    const managedBlock = readManagedBlock(parsed.content, config.managedTemplateName);
+    if (managedBlock.status === 'corrupt') {
+      return baseEvaluationResult(config, {
+        enabled: true,
+        patch: [],
+        suggestions: [],
+        lockedFields: [],
+        diagnostics: {
+          skippedReason: 'managed_block_corrupt',
+          candidateCount: 0,
+          eligiblePropertyCount: 0,
+          llmCalled: false,
+        },
+      });
+    }
+    Object.assign(targetParams, managedBlock.params);
+    targetStatus = managedBlock.status === 'found' ? 'managed_block_found' : 'managed_block_missing';
+    userFacts = readDirectSmwFacts(managedBlock.contentWithoutBlock);
   }
 
   const properties = eligibleProperties(await getOntologyProperties());
   const states = await loadFieldState(parsed.pageId);
-  const candidates: OntologyProperty[] = [];
+  const candidates: Array<{ property: OntologyProperty; expectedValue: string }> = [];
   const lockedFields: SemanticAutofillEvaluationResult['lockedFields'] = [];
+  const skippedFields: Array<{ property: string; reason: string }> = [];
 
   for (const property of properties) {
-    const currentValue = normalizeValue(template.params[property.name]);
+    const currentValue = normalizeValue(targetParams[property.name]);
     const state = states.get(property.name);
 
     if (state?.state === 'disabled' || state?.state === 'user') {
       lockedFields.push({ property: property.name, state: state.state, reason: state.reason });
+      continue;
+    }
+
+    if (config.writeTarget === 'managed_block' && config.skipIfUserFactExists && userFacts.has(property.name)) {
+      lockedFields.push({ property: property.name, state: 'user', reason: 'user_fact_exists' });
+      skippedFields.push({ property: property.name, reason: 'user_fact_exists' });
       continue;
     }
 
@@ -710,13 +857,15 @@ export async function evaluateSemanticAutofill(input: unknown): Promise<Semantic
         currentValue,
         lastUserRevisionId: parsed.revId,
         confidence: state?.confidence,
-        reason: 'manual_value',
+        reason: config.writeTarget === 'managed_block' ? 'manual_override' : 'manual_value',
       });
       lockedFields.push({ property: property.name, state: record.state, reason: record.reason });
       continue;
     }
 
-    if (!currentValue && state?.lastAiValue) {
+    if (!currentValue && state?.lastAiValue && (
+      config.writeTarget === 'template_params' || targetStatus === 'managed_block_found'
+    )) {
       const record = await upsertFieldState({
         pageId: parsed.pageId,
         title: parsed.title,
@@ -732,26 +881,28 @@ export async function evaluateSemanticAutofill(input: unknown): Promise<Semantic
       continue;
     }
 
-    if (!currentValue) {
-      candidates.push(property);
+    if (config.writeTarget === 'template_params') {
+      if (!currentValue) candidates.push({ property, expectedValue: '' });
+    } else {
+      candidates.push({ property, expectedValue: currentValue });
     }
   }
 
   if (candidates.length === 0) {
-    return {
+    return baseEvaluationResult(config, {
       enabled: true,
-      mode: config.mode,
-      templates: config.templates,
       patch: [],
       suggestions: [],
       lockedFields,
       diagnostics: {
-        skippedReason: 'no_empty_auto_fields',
+        skippedReason: config.writeTarget === 'template_params' ? 'no_empty_auto_fields' : 'no_candidates',
+        targetStatus,
         candidateCount: 0,
         eligiblePropertyCount: properties.length,
         llmCalled: false,
+        skippedFields,
       },
-    };
+    });
   }
 
   try {
@@ -759,19 +910,21 @@ export async function evaluateSemanticAutofill(input: unknown): Promise<Semantic
       title: parsed.title,
       content: parsed.content,
       semanticFacts: parsed.semanticFacts,
-      properties: candidates,
+      properties: candidates.map((candidate) => candidate.property),
       maxPageChars: config.maxPageChars,
     }));
     const content = response.choices?.[0]?.message?.content ?? '';
     const llm = llmResponseSchema.parse(extractJsonObject(content));
-    const candidateNames = new Set(candidates.map((property) => property.name));
+    const candidatesByName = new Map(candidates.map((candidate) => [candidate.property.name, candidate]));
     const suggestions: SemanticAutofillSuggestion[] = [];
     const patch: SemanticAutofillPatchItem[] = [];
 
     for (const field of llm.fields) {
-      if (!candidateNames.has(field.property)) continue;
+      const candidate = candidatesByName.get(field.property);
+      if (!candidate) continue;
       const value = normalizeValue(field.value);
       if (!value) continue;
+      const threshold = Math.max(config.minConfidence, candidate.property.classificationThreshold);
       const suggestion: SemanticAutofillSuggestion = {
         property: field.property,
         value,
@@ -785,51 +938,56 @@ export async function evaluateSemanticAutofill(input: unknown): Promise<Semantic
         title: parsed.title,
         property: field.property,
         state: 'suggested',
-        currentValue: '',
+        currentValue: candidate.expectedValue,
         confidence: field.confidence,
-        reason: field.confidence >= config.minConfidence ? 'suggested_ready' : 'low_confidence',
+        reason: field.confidence >= threshold ? 'suggested_ready' : 'low_confidence',
         evidence: field.evidence,
       });
 
-      if (config.mode === 'apply_empty' && field.confidence >= config.minConfidence) {
+      if (field.confidence < threshold) {
+        skippedFields.push({ property: field.property, reason: 'below_threshold' });
+        continue;
+      }
+
+      if (config.mode === 'apply_empty') {
         patch.push({
           property: field.property,
           value,
           confidence: field.confidence,
           evidence: field.evidence,
-          expectedValue: '',
+          expectedValue: candidate.expectedValue,
         });
       }
     }
 
-    return {
+    return baseEvaluationResult(config, {
       enabled: true,
-      mode: config.mode,
-      templates: config.templates,
       patch,
       suggestions,
       lockedFields,
       diagnostics: {
+        targetStatus,
         candidateCount: candidates.length,
         eligiblePropertyCount: properties.length,
         llmCalled: true,
+        skippedFields,
       },
-    };
+    });
   } catch (err) {
-    return {
+    return baseEvaluationResult(config, {
       enabled: true,
-      mode: config.mode,
-      templates: config.templates,
       patch: [],
       suggestions: [],
       lockedFields,
       diagnostics: {
+        targetStatus,
         candidateCount: candidates.length,
         eligiblePropertyCount: properties.length,
         llmCalled: true,
         error: err instanceof Error ? err.message : 'Unknown semantic autofill error',
+        skippedFields,
       },
-    };
+    });
   }
 }
 

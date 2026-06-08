@@ -109,10 +109,18 @@ export interface SemanticAutofillPatchItem {
   expectedValue?: string;
 }
 
+export interface SemanticAutofillManagedBlockConfig {
+  templateName: string;
+  profile: string;
+  insertPosition: 'end';
+}
+
 export interface SemanticAutofillEvaluationResult {
   enabled: boolean;
   mode: 'suggest_only' | 'apply_empty';
+  writeTarget: 'managed_block' | 'template_params';
   templates: string[];
+  managedBlock: SemanticAutofillManagedBlockConfig;
   patch: SemanticAutofillPatchItem[];
   suggestions: Array<{
     property: string;
@@ -128,10 +136,12 @@ export interface SemanticAutofillEvaluationResult {
   }>;
   diagnostics: {
     skippedReason?: string;
+    targetStatus?: 'managed_block_missing' | 'managed_block_found' | 'template_found';
     candidateCount: number;
     eligiblePropertyCount: number;
     llmCalled: boolean;
     error?: string;
+    skippedFields?: Array<{ property: string; reason: string }>;
   };
 }
 

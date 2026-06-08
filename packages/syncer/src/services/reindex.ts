@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { config } from '../config.js';
 import { getAllowedGroups } from './acl.js';
 import { buildAttachmentSearchableChunks, getMetadataText, processAttachment } from './attachment.js';
@@ -42,6 +43,7 @@ import {
 import { logOperationalEvent } from './logging.js';
 
 export interface ReindexOptions {
+  runId?: string;
   profileId?: string;
   indexTargets?: string[];
   source?: 'mediawiki' | 'qdrant_payload';
@@ -73,7 +75,9 @@ export interface ReindexTextFilters {
 }
 
 export interface ReindexSummary {
+  runId: string;
   profileId?: string;
+  source: 'mediawiki' | 'qdrant_payload';
   dryRun: boolean;
   namespaces: number[];
   matchedPages: number;
@@ -88,6 +92,16 @@ export interface ReindexSummary {
   llmEnrichmentCalls: number;
   estimatedPaidCalls: number;
   chunkSourceCounts: Record<string, number>;
+  targetWrites: Record<string, number>;
+  colbertPagesIndexed: number;
+  colbertChunksIndexed: number;
+  colbertFailures: number;
+  colbertModel?: string;
+  colbertCollection?: string;
+  denseCollection?: string;
+  qdrantPayloadPoints?: number;
+  qdrantPayloadPages?: number;
+  qdrantPayloadChunks?: number;
   attachmentsRequested: boolean;
   attachmentsActive: boolean;
   documentPolicyEnabled: boolean;
@@ -110,7 +124,12 @@ export interface ReindexSummary {
 
 export interface ReindexProgress {
   phase: 'started' | 'page' | 'complete';
+  runId?: string;
   profileId?: string;
+  source?: 'mediawiki' | 'qdrant_payload';
+  startedAt?: string;
+  finishedAt?: string;
+  elapsedMs?: number;
   dryRun?: boolean;
   namespaces?: number[];
   matchedPages?: number;
@@ -125,6 +144,16 @@ export interface ReindexProgress {
   llmEnrichmentCalls?: number;
   estimatedPaidCalls?: number;
   chunkSourceCounts?: Record<string, number>;
+  targetWrites?: Record<string, number>;
+  colbertPagesIndexed?: number;
+  colbertChunksIndexed?: number;
+  colbertFailures?: number;
+  colbertModel?: string;
+  colbertCollection?: string;
+  denseCollection?: string;
+  qdrantPayloadPoints?: number;
+  qdrantPayloadPages?: number;
+  qdrantPayloadChunks?: number;
   attachmentsRequested?: boolean;
   attachmentsActive?: boolean;
   documentPolicyEnabled?: boolean;
@@ -309,6 +338,52 @@ interface AttachmentCounters {
   attachmentTargetWrites: Record<string, number>;
 }
 
+interface ColbertCounters {
+  colbertPagesIndexed: number;
+  colbertChunksIndexed: number;
+  colbertFailures: number;
+  colbertModel?: string;
+  colbertCollection?: string;
+}
+
+function createColbertCounters(options: ReindexOptions): ColbertCounters {
+  return {
+    colbertPagesIndexed: 0,
+    colbertChunksIndexed: 0,
+    colbertFailures: 0,
+    colbertModel: options.colbertModel,
+    colbertCollection: options.colbertCollection,
+  };
+}
+
+function recordColbertWrite(
+  counters: ColbertCounters,
+  result: { status?: string; targetWrites?: Record<string, number | undefined> } | undefined,
+  expected: boolean,
+  countPage: boolean
+): void {
+  const chunks = result?.targetWrites?.colbert;
+  if (typeof chunks === 'number' && chunks > 0) {
+    counters.colbertChunksIndexed += chunks;
+    if (countPage) counters.colbertPagesIndexed++;
+    return;
+  }
+  if (expected && result?.status === 'error') {
+    counters.colbertFailures++;
+  }
+}
+
+function recordTargetWrites(
+  counters: Record<string, number>,
+  result: { targetWrites?: Record<string, number | undefined> } | undefined
+): void {
+  if (!result?.targetWrites) return;
+  for (const [target, chunks] of Object.entries(result.targetWrites)) {
+    if (typeof chunks !== 'number' || chunks <= 0) continue;
+    counters[target] = (counters[target] ?? 0) + chunks;
+  }
+}
+
 function recordAttachmentTargetWrites(
   counters: AttachmentCounters,
   result: { targetWrites?: Record<string, number | undefined> } | undefined
@@ -345,6 +420,19 @@ function attachmentProgressFields(
     currentAttachmentFilename: current?.filename,
     currentAttachmentMime: current?.mime,
     currentAttachmentMode: current?.mode,
+  };
+}
+
+function colbertProgressFields(counters: ColbertCounters): Pick<
+  ReindexProgress,
+  | 'colbertPagesIndexed'
+  | 'colbertChunksIndexed'
+  | 'colbertFailures'
+  | 'colbertModel'
+  | 'colbertCollection'
+> {
+  return {
+    ...counters,
   };
 }
 
@@ -400,7 +488,23 @@ export async function runReindex(
         : await getIndexingProfileFromAdminStorage(options.profileId)
     )
     : options;
+  const runId = effectiveOptions.runId ?? randomUUID();
   const startedAt = new Date();
+  const startedAtIso = startedAt.toISOString();
+  const targetWrites: Record<string, number> = {};
+  const runtimeProgressFields = (finishedAt?: Date): Pick<
+    ReindexProgress,
+    'runId' | 'startedAt' | 'finishedAt' | 'elapsedMs' | 'targetWrites'
+  > => {
+    const fields: Pick<ReindexProgress, 'runId' | 'startedAt' | 'finishedAt' | 'elapsedMs' | 'targetWrites'> = {
+      runId,
+      startedAt: startedAtIso,
+      elapsedMs: finishedAt ? finishedAt.getTime() - startedAt.getTime() : Date.now() - startedAt.getTime(),
+      targetWrites: { ...targetWrites },
+    };
+    if (finishedAt) fields.finishedAt = finishedAt.toISOString();
+    return fields;
+  };
   const documentPolicy = await getDocumentProcessingConfig();
   const requestedAttachmentsEnabled = effectiveOptions.attachmentsEnabled ?? false;
   const requestedSemanticFactsEnabled = effectiveOptions.semanticFactsEnabled ?? config.smwSyncEnabled;
@@ -416,6 +520,7 @@ export async function runReindex(
   ));
   const smwProperties = effectiveOptions.smwProperties ?? config.smwSyncProperties;
   const dryRun = effectiveOptions.dryRun ?? false;
+  const source = effectiveOptions.source ?? 'mediawiki';
   const llmEnrichmentEnabled = effectiveOptions.llmEnrichmentEnabled ?? false;
   const cmdbDynamicPagesEnabled = effectiveOptions.cmdbDynamicPagesEnabled ?? config.cmdbDynamicPagesEnabled;
   const legacyRule = legacyChunkingRule({
@@ -445,11 +550,15 @@ export async function runReindex(
     attachmentsSkippedEmpty: 0,
     attachmentTargetWrites: {},
   };
+  const colbertCounters = createColbertCounters(effectiveOptions);
+  const colbertTargetEnabled = searchIndexTargets.includes('colbert');
   await validateGatewayAttachmentSchemaIfNeeded(attachmentCounters, searchIndexTargets);
   if (effectiveOptions.source === 'qdrant_payload') {
     onProgress?.({
       phase: 'started',
+      ...runtimeProgressFields(),
       profileId: effectiveOptions.profileId,
+      source,
       dryRun,
       namespaces: [],
       matchedPages: 0,
@@ -464,6 +573,8 @@ export async function runReindex(
       llmEnrichmentCalls: 0,
       estimatedPaidCalls: 0,
       chunkSourceCounts: { ...chunkSourceCounts },
+      denseCollection: config.qdrantCollection,
+      ...colbertProgressFields(colbertCounters),
       ...attachmentProgressFields(attachmentCounters),
     });
     const payloadSummary = await syncSearchIndexFromQdrantPayload({
@@ -473,9 +584,17 @@ export async function runReindex(
       colbertModel: effectiveOptions.colbertModel,
       colbertCollection: effectiveOptions.colbertCollection,
     });
+    recordTargetWrites(targetWrites, { targetWrites: payloadSummary.targetWrites });
+    if (!dryRun && colbertTargetEnabled) {
+      colbertCounters.colbertPagesIndexed = payloadSummary.pages;
+      colbertCounters.colbertChunksIndexed = payloadSummary.chunks;
+      colbertCounters.colbertFailures = payloadSummary.failed;
+    }
     const finishedAt = new Date();
     const summary: ReindexSummary = {
+      runId,
       profileId: effectiveOptions.profileId,
+      source,
       dryRun,
       namespaces: [],
       matchedPages: payloadSummary.pages,
@@ -490,18 +609,26 @@ export async function runReindex(
       llmEnrichmentCalls: 0,
       estimatedPaidCalls: 0,
       chunkSourceCounts: { ...chunkSourceCounts },
+      targetWrites: { ...targetWrites },
+      denseCollection: config.qdrantCollection,
+      qdrantPayloadPoints: payloadSummary.qdrantPoints,
+      qdrantPayloadPages: payloadSummary.pages,
+      qdrantPayloadChunks: payloadSummary.chunks,
+      ...colbertCounters,
       ...attachmentCounters,
       dynamicBlocksMatched: 0,
       dynamicSnapshotsIndexed: 0,
       dynamicSnapshotsMissed: 0,
       dynamicSnapshotsFailed: 0,
-      startedAt: startedAt.toISOString(),
+      startedAt: startedAtIso,
       finishedAt: finishedAt.toISOString(),
       elapsedMs: finishedAt.getTime() - startedAt.getTime(),
     };
     onProgress?.({
       phase: 'complete',
+      ...runtimeProgressFields(finishedAt),
       profileId: summary.profileId,
+      source,
       dryRun,
       namespaces: [],
       matchedPages: summary.matchedPages,
@@ -516,6 +643,11 @@ export async function runReindex(
       llmEnrichmentCalls: 0,
       estimatedPaidCalls: 0,
       chunkSourceCounts: { ...chunkSourceCounts },
+      denseCollection: summary.denseCollection,
+      qdrantPayloadPoints: summary.qdrantPayloadPoints,
+      qdrantPayloadPages: summary.qdrantPayloadPages,
+      qdrantPayloadChunks: summary.qdrantPayloadChunks,
+      ...colbertProgressFields(colbertCounters),
       ...attachmentProgressFields(attachmentCounters),
     });
     return summary;
@@ -534,7 +666,9 @@ export async function runReindex(
   }
   onProgress?.({
     phase: 'started',
+    ...runtimeProgressFields(),
     profileId: effectiveOptions.profileId,
+    source,
     dryRun,
     namespaces,
     limitApplied: maxPages,
@@ -549,6 +683,7 @@ export async function runReindex(
     llmEnrichmentCalls: 0,
     estimatedPaidCalls: 0,
     chunkSourceCounts: { ...chunkSourceCounts },
+    ...colbertProgressFields(colbertCounters),
     ...attachmentProgressFields(attachmentCounters),
   });
   const allPages = (
@@ -573,7 +708,9 @@ export async function runReindex(
 
   onProgress?.({
     phase: 'started',
+    ...runtimeProgressFields(),
     profileId: effectiveOptions.profileId,
+    source,
     dryRun,
     namespaces,
     matchedPages,
@@ -588,17 +725,20 @@ export async function runReindex(
     llmEnrichmentCalls,
     estimatedPaidCalls,
     chunkSourceCounts: { ...chunkSourceCounts },
+    ...colbertProgressFields(colbertCounters),
     ...attachmentProgressFields(attachmentCounters),
   });
 
   for (const page of pages) {
     try {
-      const content = await fetchPageContent(page.title);
+      const content = await fetchPageContent(page.title, page.pageid);
       if (!content || !content.content) {
         skipped++;
         onProgress?.({
           phase: 'page',
+          ...runtimeProgressFields(),
           profileId: effectiveOptions.profileId,
+          source,
           dryRun,
           namespaces,
           matchedPages,
@@ -613,6 +753,7 @@ export async function runReindex(
           llmEnrichmentCalls,
           estimatedPaidCalls,
           chunkSourceCounts: { ...chunkSourceCounts },
+          ...colbertProgressFields(colbertCounters),
           ...attachmentProgressFields(attachmentCounters),
           currentTitle: page.title,
         });
@@ -651,7 +792,7 @@ export async function runReindex(
       }
 
       if (!dryRun) {
-        await upsertChunks(
+        const writeResult = await upsertChunks(
           page.pageid,
           page.title,
           page.ns,
@@ -671,6 +812,8 @@ export async function runReindex(
             colbertCollection: effectiveOptions.colbertCollection,
           }
         );
+        recordColbertWrite(colbertCounters, writeResult, colbertTargetEnabled, true);
+        recordTargetWrites(targetWrites, writeResult);
       }
 
       processed++;
@@ -702,7 +845,7 @@ export async function runReindex(
           }
 
           if (!dryRun) {
-            await upsertCmdbDynamicSnapshotChunks(
+            const writeResult = await upsertCmdbDynamicSnapshotChunks(
               page.pageid,
               page.title,
               page.ns,
@@ -716,6 +859,8 @@ export async function runReindex(
                 colbertCollection: effectiveOptions.colbertCollection,
               }
             );
+            recordColbertWrite(colbertCounters, writeResult, colbertTargetEnabled, false);
+            recordTargetWrites(targetWrites, writeResult);
           }
         }
       }
@@ -765,6 +910,8 @@ export async function runReindex(
                   colbertCollection: effectiveOptions.colbertCollection,
                 }
               );
+              recordColbertWrite(colbertCounters, writeResult, colbertTargetEnabled, false);
+              recordTargetWrites(targetWrites, writeResult);
               assertAttachmentWriteOk(writeResult, filename);
               recordAttachmentTargetWrites(attachmentCounters, writeResult);
               totalChunks += 1;
@@ -772,7 +919,9 @@ export async function runReindex(
               attachmentCounters.attachmentsProcessed++;
               onProgress?.({
                 phase: 'page',
+                ...runtimeProgressFields(),
                 profileId: effectiveOptions.profileId,
+                source,
                 dryRun,
                 namespaces,
                 matchedPages,
@@ -787,6 +936,7 @@ export async function runReindex(
                 llmEnrichmentCalls,
                 estimatedPaidCalls,
                 chunkSourceCounts: { ...chunkSourceCounts },
+                ...colbertProgressFields(colbertCounters),
                 ...attachmentProgressFields(attachmentCounters, currentAttachment),
                 currentTitle: page.title,
               });
@@ -830,6 +980,8 @@ export async function runReindex(
                   colbertCollection: effectiveOptions.colbertCollection,
                 }
               );
+              recordColbertWrite(colbertCounters, writeResult, colbertTargetEnabled, false);
+              recordTargetWrites(targetWrites, writeResult);
               assertAttachmentWriteOk(writeResult, filename);
               recordAttachmentTargetWrites(attachmentCounters, writeResult);
               totalChunks += attachmentChunkTexts.length;
@@ -854,6 +1006,8 @@ export async function runReindex(
                   colbertCollection: effectiveOptions.colbertCollection,
                 }
               );
+              recordColbertWrite(colbertCounters, writeResult, colbertTargetEnabled, false);
+              recordTargetWrites(targetWrites, writeResult);
               assertAttachmentWriteOk(writeResult, filename);
               recordAttachmentTargetWrites(attachmentCounters, writeResult);
               totalChunks += 1;
@@ -862,7 +1016,9 @@ export async function runReindex(
             attachmentCounters.attachmentsProcessed++;
             onProgress?.({
               phase: 'page',
+              ...runtimeProgressFields(),
               profileId: effectiveOptions.profileId,
+              source,
               dryRun,
               namespaces,
               matchedPages,
@@ -877,6 +1033,7 @@ export async function runReindex(
               llmEnrichmentCalls,
               estimatedPaidCalls,
               chunkSourceCounts: { ...chunkSourceCounts },
+              ...colbertProgressFields(colbertCounters),
               ...attachmentProgressFields(attachmentCounters, currentAttachment),
               currentTitle: page.title,
             });
@@ -888,7 +1045,9 @@ export async function runReindex(
 
       onProgress?.({
         phase: 'page',
+        ...runtimeProgressFields(),
         profileId: effectiveOptions.profileId,
+        source,
         dryRun,
         namespaces,
         matchedPages,
@@ -903,6 +1062,7 @@ export async function runReindex(
         llmEnrichmentCalls,
         estimatedPaidCalls,
         chunkSourceCounts: { ...chunkSourceCounts },
+        ...colbertProgressFields(colbertCounters),
         ...attachmentProgressFields(attachmentCounters),
         currentTitle: page.title,
       });
@@ -910,7 +1070,9 @@ export async function runReindex(
       failed++;
       onProgress?.({
         phase: 'page',
+        ...runtimeProgressFields(),
         profileId: effectiveOptions.profileId,
+        source,
         dryRun,
         namespaces,
         matchedPages,
@@ -925,6 +1087,7 @@ export async function runReindex(
         llmEnrichmentCalls,
         estimatedPaidCalls,
         chunkSourceCounts: { ...chunkSourceCounts },
+        ...colbertProgressFields(colbertCounters),
         ...attachmentProgressFields(attachmentCounters),
         currentTitle: page.title,
       });
@@ -933,7 +1096,9 @@ export async function runReindex(
 
   const finishedAt = new Date();
   const summary: ReindexSummary = {
+    runId,
     profileId: effectiveOptions.profileId,
+    source,
     dryRun,
     namespaces,
     matchedPages,
@@ -948,19 +1113,23 @@ export async function runReindex(
     llmEnrichmentCalls,
     estimatedPaidCalls,
     chunkSourceCounts: { ...chunkSourceCounts },
+    targetWrites: { ...targetWrites },
+    ...colbertCounters,
     ...attachmentCounters,
     dynamicBlocksMatched,
     dynamicSnapshotsIndexed,
     dynamicSnapshotsMissed,
     dynamicSnapshotsFailed,
-    startedAt: startedAt.toISOString(),
+    startedAt: startedAtIso,
     finishedAt: finishedAt.toISOString(),
     elapsedMs: finishedAt.getTime() - startedAt.getTime(),
   };
 
   onProgress?.({
     phase: 'complete',
+    ...runtimeProgressFields(finishedAt),
     profileId: effectiveOptions.profileId,
+    source,
     dryRun,
     namespaces,
     matchedPages,
@@ -975,6 +1144,7 @@ export async function runReindex(
     llmEnrichmentCalls,
     estimatedPaidCalls,
     chunkSourceCounts: { ...chunkSourceCounts },
+    ...colbertProgressFields(colbertCounters),
     ...attachmentProgressFields(attachmentCounters),
   });
 

@@ -16,7 +16,7 @@ ENV NODE_ENV=production
 COPY --from=builder /app/dist ./dist
 COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
-RUN mkdir -p /app/state && chown -R node:node /app
+RUN mkdir -p /app/state /app/tessdata /app/state/tesseract && chown -R node:node /app
 
 USER node
 

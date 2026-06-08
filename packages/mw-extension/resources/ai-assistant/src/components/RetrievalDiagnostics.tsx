@@ -33,6 +33,12 @@ export interface RetrievalDiagnostics {
   duplicateContextChunksCollapsed?: number;
   sourceDisplayMode?: string;
   tailSourcesBelowThreshold?: number;
+  colbertTailDropEnabled?: boolean;
+  colbertTailDropped?: number;
+  colbertTailDropReasons?: string;
+  colbertTailBestScore?: number;
+  colbertTailMinAcceptedScore?: number;
+  colbertTailThresholds?: string;
   colbertScores?: string;
 }
 
@@ -81,6 +87,30 @@ function readNumberList(value: unknown): string | undefined {
   return values.length > 0 ? values.join(', ') : undefined;
 }
 
+function readTailDropReasons(value: unknown): string | undefined {
+  if (!isRecord(value)) return undefined;
+  const belowTailMinScore = readNumber(value.belowTailMinScore);
+  const scoreGap = readNumber(value.scoreGap);
+  const values = [
+    belowTailMinScore === undefined ? undefined : `belowTailMinScore=${belowTailMinScore}`,
+    scoreGap === undefined ? undefined : `scoreGap=${scoreGap}`,
+  ].filter((item): item is string => Boolean(item));
+  return values.length > 0 ? values.join(', ') : undefined;
+}
+
+function readTailThresholds(value: unknown): string | undefined {
+  if (!isRecord(value)) return undefined;
+  const minScore = readNumber(value.minScore);
+  const maxGap = readNumber(value.maxGap);
+  const minKeep = readNumber(value.minKeep);
+  const values = [
+    minScore === undefined ? undefined : `minScore=${minScore}`,
+    maxGap === undefined ? undefined : `maxGap=${maxGap}`,
+    minKeep === undefined ? undefined : `minKeep=${minKeep}`,
+  ].filter((item): item is string => Boolean(item));
+  return values.length > 0 ? values.join(', ') : undefined;
+}
+
 export function normalizeRetrievalDiagnostics(value: unknown): RetrievalDiagnostics | undefined {
   if (!isRecord(value)) return undefined;
 
@@ -119,6 +149,12 @@ export function normalizeRetrievalDiagnostics(value: unknown): RetrievalDiagnost
     duplicateContextChunksCollapsed: readNumber(value.duplicateContextChunksCollapsed),
     sourceDisplayMode: readString(value.sourceDisplayMode),
     tailSourcesBelowThreshold: readNumber(value.tailSourcesBelowThreshold),
+    colbertTailDropEnabled: readBoolean(value.colbertTailDropEnabled),
+    colbertTailDropped: readNumber(value.colbertTailDropped),
+    colbertTailDropReasons: readTailDropReasons(value.colbertTailDropReasons),
+    colbertTailBestScore: readNumber(value.colbertTailBestScore),
+    colbertTailMinAcceptedScore: readNumber(value.colbertTailMinAcceptedScore),
+    colbertTailThresholds: readTailThresholds(value.colbertTailThresholds),
     colbertScores: readColbertScores(value.colbertScores),
   };
 
@@ -167,6 +203,12 @@ function DiagnosticsGrid({ diagnostics }: { diagnostics: RetrievalDiagnostics })
     ['duplicateContextChunksCollapsed', diagnostics.duplicateContextChunksCollapsed],
     ['sourceDisplayMode', diagnostics.sourceDisplayMode],
     ['tailSourcesBelowThreshold', diagnostics.tailSourcesBelowThreshold],
+    ['colbertTailDropEnabled', diagnostics.colbertTailDropEnabled],
+    ['colbertTailDropped', diagnostics.colbertTailDropped],
+    ['colbertTailDropReasons', diagnostics.colbertTailDropReasons],
+    ['colbertTailBestScore', diagnostics.colbertTailBestScore],
+    ['colbertTailMinAcceptedScore', diagnostics.colbertTailMinAcceptedScore],
+    ['colbertTailThresholds', diagnostics.colbertTailThresholds],
     ['ColBERT scores', diagnostics.colbertScores],
   ];
   const visibleRows = rows.filter(([, value]) => value !== undefined);

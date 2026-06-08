@@ -66,6 +66,19 @@ export interface RagSearchDiagnostics {
   vectorOnlyFallbackMinScore: number;
   colbertApplied: boolean;
   colbertCandidates: number;
+  colbertTailDropEnabled?: boolean;
+  colbertTailDropped?: number;
+  colbertTailDropReasons?: {
+    belowTailMinScore: number;
+    scoreGap: number;
+  };
+  colbertTailBestScore?: number;
+  colbertTailMinAcceptedScore?: number;
+  colbertTailThresholds?: {
+    minScore: number;
+    maxGap: number;
+    minKeep: number;
+  };
   colbertLatencyMs?: number;
   colbertFallbackUsed: boolean;
   colbertError?: string;

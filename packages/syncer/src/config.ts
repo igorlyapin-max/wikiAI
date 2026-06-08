@@ -51,6 +51,7 @@ export interface SyncerConfig {
   mwServiceUsername?: string;
   mwServicePassword?: string;
   mwServicePasswordSecret?: string;
+  mwAllowAnonymousEdit: boolean;
   secretsProvider: string;
   pamBaseUrl?: string;
   pamToken?: string;
@@ -95,6 +96,10 @@ export interface SyncerConfig {
   cmdbDynamicPagesMaxSnapshotChars: number;
   cmdbDynamicPagesSnapshotTimeoutMs: number;
   cmdbDynamicPagesRedactParams: string[];
+  tesseractLangPath?: string;
+  tesseractCachePath?: string;
+  tesseractOcrLanguages?: string;
+  tesseractAllowNetworkLangDownload: boolean;
   nodeEnv: string;
   debugDiagnosticsEnabled: boolean;
   debugDiagnosticsLevel: DiagnosticLevel;
@@ -148,6 +153,7 @@ export const config: SyncerConfig = {
   mwServiceUsername: optionalEnv('MW_SERVICE_USERNAME'),
   mwServicePassword: optionalEnv('MW_SERVICE_PASSWORD'),
   mwServicePasswordSecret: optionalEnv('MW_SERVICE_PASSWORD_SECRET'),
+  mwAllowAnonymousEdit: envBool('MW_ALLOW_ANON_EDIT', false),
   secretsProvider: optionalEnv('SECRETS_PROVIDER', 'Secrets__Provider') ?? 'None',
   pamBaseUrl: optionalEnv('PAMURL', 'Secrets__IndeedPamAapm__BaseUrl'),
   pamToken: optionalEnv('PAMTOKEN', 'Secrets__IndeedPamAapm__ApplicationToken'),
@@ -224,6 +230,10 @@ export const config: SyncerConfig = {
     'auth',
     'csrf',
   ]),
+  tesseractLangPath: optionalEnv('TESSERACT_LANG_PATH'),
+  tesseractCachePath: optionalEnv('TESSERACT_CACHE_PATH'),
+  tesseractOcrLanguages: optionalEnv('TESSERACT_OCR_LANGUAGES'),
+  tesseractAllowNetworkLangDownload: envBool('TESSERACT_ALLOW_NETWORK_LANG_DOWNLOAD', false),
   nodeEnv,
   debugDiagnosticsEnabled: envBool('DEBUG_DIAGNOSTICS_ENABLED', false),
   debugDiagnosticsLevel: parseDiagnosticLevel(process.env.DEBUG_DIAGNOSTICS_LEVEL),

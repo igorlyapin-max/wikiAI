@@ -1,15 +1,21 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import SearchTab from './components/SearchTab';
 import ChatTab from './components/ChatTab';
+import { createAssistantEndpoint, type AssistantEndpoint } from './assistantEndpoint';
 import './assistant.css';
 
 interface AppProps {
   gatewayUrl: string;
+  endpoint?: AssistantEndpoint;
 }
 
-export default function App({ gatewayUrl }: AppProps) {
+export default function App({ gatewayUrl, endpoint }: AppProps) {
   const [tab, setTab] = useState<'search' | 'chat'>('search');
   const [chatMounted, setChatMounted] = useState(false);
+  const apiEndpoint = useMemo(
+    () => endpoint ?? createAssistantEndpoint({ gatewayUrl }),
+    [endpoint, gatewayUrl]
+  );
 
   const openChat = (): void => {
     setChatMounted(true);
@@ -55,7 +61,7 @@ export default function App({ gatewayUrl }: AppProps) {
         aria-labelledby="ai-assistant-tab-search"
         hidden={tab !== 'search'}
       >
-        <SearchTab gatewayUrl={gatewayUrl} />
+        <SearchTab gatewayUrl={gatewayUrl} endpoint={apiEndpoint} />
       </section>
       <section
         id="ai-assistant-panel-chat"
@@ -64,7 +70,7 @@ export default function App({ gatewayUrl }: AppProps) {
         aria-labelledby="ai-assistant-tab-chat"
         hidden={tab !== 'chat'}
       >
-        {chatMounted && <ChatTab gatewayUrl={gatewayUrl} />}
+        {chatMounted && <ChatTab gatewayUrl={gatewayUrl} endpoint={apiEndpoint} />}
       </section>
     </div>
   );

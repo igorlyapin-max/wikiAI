@@ -118,6 +118,43 @@ const templatePage = `
 </includeonly>
 `;
 
+const wikiAiSemanticTemplatePage = `
+<noinclude>
+Managed semantic block template for WikiAI-generated SMW facts. User semantic
+facts should live outside the WikiAI managed block and are not overwritten by
+the autofill service.
+</noinclude><includeonly>
+{| class="wikitable"
+! Департамент
+| [[Департамент::{{{Департамент|}}}]]
+|-
+! Отдел
+| [[Отдел::{{{Отдел|}}}]]
+|-
+! Тип документа
+| [[Тип документа::{{{Тип документа|}}}]]
+|-
+! Владелец процесса
+| [[Владелец процесса::{{{Владелец процесса|}}}]]
+|-
+! Статус
+| [[Статус документа::{{{Статус документа|}}}]]
+|-
+! Система
+| [[Система::{{{Система|}}}]]
+|-
+! Процесс
+| [[Процесс::{{{Процесс|}}}]]
+|-
+! Дата действия
+| [[Дата действия::{{{Дата действия|}}}]]
+|-
+! Критичность
+| [[Критичность::{{{Критичность|}}}]]
+|}
+</includeonly>
+`;
+
 function formPage(kind) {
   return `
 <noinclude>
@@ -258,6 +295,7 @@ for (const [title, text] of Object.entries(propertyPages)) {
 }
 
 upsertPage('Шаблон:Корпоративный документ', templatePage);
+upsertPage('Шаблон:WikiAI Semantic', wikiAiSemanticTemplatePage);
 upsertPage('Form:Регламент', formPage('Регламент процесса'));
 upsertPage('Form:Инструкция', formPage('Инструкция'));
 upsertPage('Form:FAQ', formPage('FAQ'));

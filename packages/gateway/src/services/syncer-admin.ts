@@ -57,6 +57,18 @@ export interface SyncerMediaWikiServiceLoginTestResult {
   error?: string;
 }
 
+export interface SyncerReindexSourceDiagnostics {
+  source: 'qdrant_payload';
+  mediaWikiNamespaces: number[];
+  mediaWikiPages: number;
+  denseCollection: string;
+  qdrantPayloadPoints: number;
+  qdrantPayloadPages: number;
+  qdrantPayloadGroups: number;
+  qdrantPayloadChunks: number;
+  densePagesBehindMediaWiki: boolean;
+}
+
 export class SyncerAdminError extends Error {
   constructor(
     message: string,
@@ -132,6 +144,15 @@ export async function startSyncerReindex(input: StartReindexRequest): Promise<un
 
 export async function getSyncerReindexStatus(): Promise<unknown> {
   return callSyncerAdmin('/admin/reindex/status');
+}
+
+export async function getSyncerReindexSourceDiagnostics(
+  namespaces: number[] = [0]
+): Promise<{ values: SyncerReindexSourceDiagnostics }> {
+  const params = new URLSearchParams();
+  if (namespaces.length > 0) params.set('namespaces', namespaces.join(','));
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  return callSyncerAdmin(`/admin/reindex/source-diagnostics${suffix}`) as Promise<{ values: SyncerReindexSourceDiagnostics }>;
 }
 
 export async function getSyncerMediaWikiServiceAuthStatus(

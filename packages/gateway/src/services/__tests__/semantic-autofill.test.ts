@@ -3,6 +3,7 @@ import { resetAdminStoreForTests } from '../../db/admin-store.js';
 import { upsertOntologyProperty } from '../ontology-vectors.js';
 import {
   evaluateSemanticAutofill,
+  getSemanticAutofillConfig,
   getSemanticAutofillStatus,
   recordSemanticAutofillApplied,
   resetSemanticAutofillOwnership,
@@ -39,17 +40,18 @@ describe('semantic autofill', () => {
     callLiteLLM.mockReset();
   });
 
-  it('stays disabled by default and does not call LLM', async () => {
-    const result = await evaluateSemanticAutofill({
-      pageId: 10,
-      title: 'CorpIT:Service Desk/Регламент',
-      namespace: 3030,
-      content: pageContent(),
-      semanticFacts: {},
-    });
+  it('uses enabled managed block defaults', async () => {
+    const config = await getSemanticAutofillConfig();
 
-    expect(result.enabled).toBe(false);
-    expect(result.diagnostics.skippedReason).toBe('disabled');
+    expect(config).toMatchObject({
+      enabled: true,
+      mode: 'apply_empty',
+      writeTarget: 'managed_block',
+      managedTemplateName: 'WikiAI Semantic',
+      managedBlockProfile: 'default',
+      skipIfUserFactExists: true,
+      insertPosition: 'end',
+    });
     expect(callLiteLLM).not.toHaveBeenCalled();
   });
 
@@ -64,6 +66,7 @@ describe('semantic autofill', () => {
     await setSemanticAutofillConfig({
       enabled: true,
       mode: 'apply_empty',
+      writeTarget: 'template_params',
       minConfidence: 0.8,
     });
     callLiteLLM.mockResolvedValueOnce({
@@ -111,6 +114,7 @@ describe('semantic autofill', () => {
     await setSemanticAutofillConfig({
       enabled: true,
       mode: 'apply_empty',
+      writeTarget: 'template_params',
     });
     await recordSemanticAutofillApplied({
       pageId: 10,
@@ -140,6 +144,7 @@ describe('semantic autofill', () => {
   it('skips disabled namespaces, missing templates, and service edits before calling LLM', async () => {
     await setSemanticAutofillConfig({
       enabled: true,
+      writeTarget: 'template_params',
       namespaces: [3010],
     });
 
@@ -220,5 +225,139 @@ describe('semantic autofill', () => {
     await expect(resetSemanticAutofillOwnership({})).rejects.toThrow(
       'At least one of pageId, title or property is required'
     );
+  });
+
+  it('suggests a managed block for a page without a document template', async () => {
+    await upsertOntologyProperty({
+      name: 'Департамент',
+      indexed: true,
+      aiExtractable: true,
+      sensitive: false,
+      classificationThreshold: 0.7,
+    });
+    await setSemanticAutofillConfig({
+      enabled: true,
+      mode: 'apply_empty',
+      writeTarget: 'managed_block',
+      minConfidence: 0.8,
+    });
+    callLiteLLM.mockResolvedValueOnce({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            fields: [{
+              property: 'Департамент',
+              value: 'ИТ-департамент',
+              confidence: 0.91,
+              evidence: 'Текст про Service Desk.',
+            }],
+          }),
+        },
+      }],
+    });
+
+    const result = await evaluateSemanticAutofill({
+      pageId: 30,
+      title: 'Тест семантики',
+      namespace: 0,
+      revId: 301,
+      content: 'Тест семантики Service Desk',
+      semanticFacts: {},
+    });
+
+    expect(result.writeTarget).toBe('managed_block');
+    expect(result.managedBlock).toMatchObject({ templateName: 'WikiAI Semantic', profile: 'default' });
+    expect(result.diagnostics.targetStatus).toBe('managed_block_missing');
+    expect(result.patch).toEqual([expect.objectContaining({
+      property: 'Департамент',
+      value: 'ИТ-департамент',
+      expectedValue: '',
+    })]);
+  });
+
+  it('does not classify a property when the user already owns a direct SMW fact outside the managed block', async () => {
+    await upsertOntologyProperty({
+      name: 'Департамент',
+      indexed: true,
+      aiExtractable: true,
+      sensitive: false,
+    });
+    await setSemanticAutofillConfig({
+      enabled: true,
+      mode: 'apply_empty',
+      writeTarget: 'managed_block',
+      skipIfUserFactExists: true,
+    });
+    callLiteLLM.mockResolvedValueOnce({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            fields: [{
+              property: 'Департамент',
+              value: 'ИТ-департамент',
+              confidence: 0.95,
+            }],
+          }),
+        },
+      }],
+    });
+
+    const result = await evaluateSemanticAutofill({
+      pageId: 31,
+      title: 'Тест семантики',
+      namespace: 0,
+      revId: 302,
+      content: 'Текст\n[[Департамент::Финансы]]',
+      semanticFacts: { Департамент: ['Финансы'] },
+    });
+
+    expect(result.diagnostics.skippedFields).toContainEqual({
+      property: 'Департамент',
+      reason: 'user_fact_exists',
+    });
+    expect(result.patch.find((item) => item.property === 'Департамент')).toBeUndefined();
+    expect(callLiteLLM).toHaveBeenCalledTimes(1);
+  });
+
+  it('locks a manually changed managed block value', async () => {
+    await upsertOntologyProperty({
+      name: 'Департамент',
+      indexed: true,
+      aiExtractable: true,
+      sensitive: false,
+    });
+    await setSemanticAutofillConfig({
+      enabled: true,
+      mode: 'apply_empty',
+      writeTarget: 'managed_block',
+    });
+    await recordSemanticAutofillApplied({
+      pageId: 32,
+      title: 'Тест семантики',
+      revId: 303,
+      fields: [{ property: 'Департамент', value: 'ИТ-департамент', confidence: 0.9 }],
+    });
+
+    const result = await evaluateSemanticAutofill({
+      pageId: 32,
+      title: 'Тест семантики',
+      namespace: 0,
+      revId: 304,
+      content: `Text
+
+<!-- WikiAI:semantic:start {"version":1,"profile":"default"} -->
+{{WikiAI Semantic
+|Департамент=Финансы
+}}
+<!-- WikiAI:semantic:end -->`,
+      semanticFacts: { Департамент: ['Финансы'] },
+    });
+
+    expect(result.lockedFields).toContainEqual(expect.objectContaining({
+      property: 'Департамент',
+      state: 'user',
+      reason: 'manual_override',
+    }));
+    expect(result.patch).toEqual([]);
   });
 });

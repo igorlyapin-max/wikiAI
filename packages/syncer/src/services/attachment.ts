@@ -1,4 +1,7 @@
+import { access } from 'node:fs/promises';
+import { join } from 'node:path';
 import { DocumentProcessingConfig, getMimeProcessingRule, MimeProcessingRule } from './document-policy.js';
+import { config } from '../config.js';
 import { logOperationalError } from './logging.js';
 import { extractOfficeAttachmentText, isOfficeTextMimeType } from './office-extractor.js';
 
@@ -54,6 +57,91 @@ export function getMetadataText(filename: string, mimeType: string, metadata: Re
   return `Attachment metadata: ${filename}; MIME: ${mimeType}${page}; size: ${size}; processing mode: ${mode}${format}${error}`;
 }
 
+function splitOcrLanguages(value: string | undefined): string[] {
+  const languages = (value ?? 'eng+rus')
+    .split(/[+,]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return languages.length > 0 ? Array.from(new Set(languages)) : ['eng', 'rus'];
+}
+
+async function hasLocalTrainedData(langPath: string, language: string): Promise<boolean> {
+  for (const suffix of ['.traineddata', '.traineddata.gz']) {
+    try {
+      await access(join(langPath, `${language}${suffix}`));
+      return true;
+    } catch {
+      // Try the next supported local traineddata extension.
+    }
+  }
+  return false;
+}
+
+async function resolveOcrLanguagePlan(rule: MimeProcessingRule): Promise<{
+  languages: string[];
+  metadata: Record<string, unknown>;
+  error?: 'ocr_language_data_missing' | 'ocr_language_path_not_configured';
+}> {
+  const requestedLanguages = splitOcrLanguages(config.tesseractOcrLanguages ?? rule.ocrLanguages);
+
+  if (!config.tesseractLangPath) {
+    if (config.tesseractAllowNetworkLangDownload) {
+      return {
+        languages: requestedLanguages,
+        metadata: {
+          requestedOcrLanguages: requestedLanguages,
+          ocrLanguageSource: 'network',
+        },
+      };
+    }
+    return {
+      languages: [],
+      error: 'ocr_language_path_not_configured',
+      metadata: {
+        requestedOcrLanguages: requestedLanguages,
+        ocrLanguageSource: 'not_configured',
+      },
+    };
+  }
+
+  const availableLanguages: string[] = [];
+  const missingLanguages: string[] = [];
+  for (const language of requestedLanguages) {
+    if (await hasLocalTrainedData(config.tesseractLangPath, language)) {
+      availableLanguages.push(language);
+    } else {
+      missingLanguages.push(language);
+    }
+  }
+
+  const metadata: Record<string, unknown> = {
+    requestedOcrLanguages: requestedLanguages,
+    ocrLanguages: availableLanguages,
+    ocrLanguageSource: 'local',
+    ocrLangPath: config.tesseractLangPath,
+  };
+  if (config.tesseractCachePath) metadata.ocrCachePath = config.tesseractCachePath;
+  if (missingLanguages.length > 0) metadata.missingOcrLanguages = missingLanguages;
+  if (availableLanguages.length === 0) {
+    return {
+      languages: [],
+      error: 'ocr_language_data_missing',
+      metadata,
+    };
+  }
+
+  return {
+    languages: availableLanguages,
+    metadata,
+  };
+}
+
+function normalizeWorkerError(err: unknown): Error {
+  if (err instanceof Error) return err;
+  if (typeof err === 'string') return new Error(err);
+  return new Error('Tesseract worker error');
+}
+
 export async function processAttachment(
   buffer: Buffer,
   mimeType: string,
@@ -101,17 +189,55 @@ export async function processAttachment(
   }
 
   if (rule.mode === 'ocr' && mimeType.startsWith('image/')) {
+    let worker: { recognize: (image: Buffer) => Promise<{ data: { text?: string } }>; terminate: () => Promise<unknown> } | null = null;
+    let workerError: unknown;
     try {
+      const languagePlan = await resolveOcrLanguagePlan(rule);
+      if (languagePlan.error) {
+        logOperationalError('attachment.ocr_language_data_unavailable', new Error(languagePlan.error), {
+          filename,
+          mimeType,
+          ...languagePlan.metadata,
+        });
+        return {
+          text: '',
+          metadata: {
+            ...metadata,
+            ...languagePlan.metadata,
+            error: languagePlan.error,
+          },
+        };
+      }
+
       const { createWorker } = await import('tesseract.js');
-      const worker = await createWorker(rule.ocrLanguages ?? 'eng+rus');
+      const workerOptions: Parameters<typeof createWorker>[2] = {
+        errorHandler: (err: unknown) => {
+          workerError = err;
+          logOperationalError('attachment.ocr_worker_error', err, { filename, mimeType });
+        },
+      };
+      if (config.tesseractLangPath) workerOptions.langPath = config.tesseractLangPath;
+      if (config.tesseractCachePath) workerOptions.cachePath = config.tesseractCachePath;
+      worker = await createWorker(languagePlan.languages, 1, workerOptions);
+      if (workerError) throw normalizeWorkerError(workerError);
       const {
         data: { text },
       } = await worker.recognize(buffer);
-      await worker.terminate();
-      return { text: text ?? '', metadata };
+      if (workerError) throw normalizeWorkerError(workerError);
+      return {
+        text: text ?? '',
+        metadata: {
+          ...metadata,
+          ...languagePlan.metadata,
+        },
+      };
     } catch (err) {
       logOperationalError('attachment.ocr_error', err, { filename, mimeType });
       return { text: '', metadata: { ...metadata, error: 'ocr_failed' } };
+    } finally {
+      await worker?.terminate().catch((err: unknown) => {
+        logOperationalError('attachment.ocr_terminate_error', err, { filename, mimeType });
+      });
     }
   }
 

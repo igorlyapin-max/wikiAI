@@ -111,6 +111,7 @@ describe('runReindex', () => {
       groups: 1,
       chunks: 2,
       failed: 0,
+      targetWrites: {},
     });
     fetchEffectiveEmbeddingConfig.mockReset();
     fetchIndexingProfiles.mockReset();
@@ -214,9 +215,86 @@ describe('runReindex', () => {
       attachmentsProcessed: 1,
       attachmentsFailed: 0,
       attachmentsSkippedNoInfo: 1,
+      targetWrites: { bm25: 1, opensearch: 1 },
       attachmentTargetWrites: { bm25: 1, opensearch: 1 },
     });
     expect(progress.some((entry) => entry.currentAttachmentFilename === 'Manual.pdf')).toBe(true);
+  });
+
+  it('reports target writes during lexical MediaWiki reindex', async () => {
+    fetchAllPages.mockResolvedValueOnce([
+      { pageid: 12, ns: 0, title: 'Lexical Page' },
+    ]);
+    fetchPageContent.mockResolvedValueOnce({
+      pageid: 12,
+      ns: 0,
+      title: 'Lexical Page',
+      content: 'Page body for lexical indexes',
+      lastModified: '2026-06-08T04:00:00Z',
+    });
+    upsertChunks.mockResolvedValueOnce({
+      status: 'ok',
+      url: 'gateway',
+      chunks: 2,
+      targetWrites: { bm25: 2, opensearch: 2 },
+    });
+    const progress: Array<{ runId?: string; targetWrites?: Record<string, number> }> = [];
+
+    const summary = await runReindex({
+      semanticFactsEnabled: false,
+      indexTargets: ['bm25', 'opensearch'],
+    }, (entry) => progress.push(entry));
+
+    expect(summary.runId).toEqual(expect.any(String));
+    expect(summary.startedAt).toEqual(expect.any(String));
+    expect(summary.finishedAt).toEqual(expect.any(String));
+    expect(summary.elapsedMs).toEqual(expect.any(Number));
+    expect(summary.targetWrites).toEqual({ bm25: 2, opensearch: 2 });
+    expect(progress[progress.length - 1]).toMatchObject({
+      runId: summary.runId,
+      targetWrites: { bm25: 2, opensearch: 2 },
+    });
+  });
+
+  it('reports ColBERT write counters during MediaWiki reindex', async () => {
+    fetchAllPages.mockResolvedValueOnce([
+      { pageid: 11, ns: 0, title: 'ColBERT Page' },
+    ]);
+    fetchPageContent.mockResolvedValueOnce({
+      pageid: 11,
+      ns: 0,
+      title: 'ColBERT Page',
+      content: 'Page body for ColBERT',
+      lastModified: '2026-06-07T04:00:00Z',
+    });
+    upsertChunks.mockResolvedValueOnce({
+      status: 'ok',
+      url: 'gateway',
+      chunks: 3,
+      targetWrites: { colbert: 3, bm25: 3 },
+    });
+    const progress: Array<{ colbertChunksIndexed?: number; colbertPagesIndexed?: number }> = [];
+
+    const summary = await runReindex({
+      semanticFactsEnabled: false,
+      indexTargets: ['colbert'],
+      colbertModel: 'candidate-model',
+      colbertCollection: 'candidate_collection',
+    }, (entry) => progress.push(entry));
+
+    expect(summary).toMatchObject({
+      colbertModel: 'candidate-model',
+      colbertCollection: 'candidate_collection',
+      colbertPagesIndexed: 1,
+      colbertChunksIndexed: 3,
+      colbertFailures: 0,
+      targetWrites: { colbert: 3, bm25: 3 },
+    });
+    expect(progress[progress.length - 1]).toMatchObject({
+      colbertPagesIndexed: 1,
+      colbertChunksIndexed: 3,
+      colbertFailures: 0,
+    });
   });
 
   it('passes searchable attachment chunks with filename and parent page context', async () => {
@@ -542,13 +620,20 @@ describe('runReindex', () => {
     });
 
     expect(summary).toMatchObject({
+      source: 'qdrant_payload',
       dryRun: true,
       namespaces: [],
       matchedPages: 1,
       processed: 1,
       totalChunks: 2,
+      denseCollection: 'test_chunks',
+      qdrantPayloadPoints: 2,
+      qdrantPayloadPages: 1,
+      qdrantPayloadChunks: 2,
       embeddingCalls: 0,
       indexTargets: ['colbert', 'opensearch'],
+      colbertPagesIndexed: 0,
+      colbertChunksIndexed: 0,
     });
     expect(fetchAllPages).not.toHaveBeenCalled();
     expect(upsertChunks).not.toHaveBeenCalled();
@@ -558,6 +643,43 @@ describe('runReindex', () => {
       searchIndexTargets: ['colbert', 'opensearch'],
       colbertModel: 'candidate-model',
       colbertCollection: 'candidate_collection',
+    });
+  });
+
+  it('reports ColBERT counters for Qdrant payload rebuilds', async () => {
+    syncSearchIndexFromQdrantPayload.mockResolvedValueOnce({
+      qdrantPoints: 2,
+      pages: 1,
+      groups: 1,
+      chunks: 2,
+      failed: 0,
+      targetWrites: { colbert: 2 },
+    });
+
+    const summary = await runReindex({
+      source: 'qdrant_payload',
+      indexTargets: ['colbert'],
+      maxPages: 5,
+      dryRun: false,
+      colbertModel: 'candidate-model',
+      colbertCollection: 'candidate_collection',
+    });
+
+    expect(summary).toMatchObject({
+      source: 'qdrant_payload',
+      dryRun: false,
+      processed: 1,
+      totalChunks: 2,
+      denseCollection: 'test_chunks',
+      qdrantPayloadPoints: 2,
+      qdrantPayloadPages: 1,
+      qdrantPayloadChunks: 2,
+      colbertModel: 'candidate-model',
+      colbertCollection: 'candidate_collection',
+      colbertPagesIndexed: 1,
+      colbertChunksIndexed: 2,
+      colbertFailures: 0,
+      targetWrites: { colbert: 2 },
     });
   });
 
@@ -789,8 +911,8 @@ describe('runReindex', () => {
       skipped: 0,
       failed: 0,
     });
-    expect(fetchPageContent).toHaveBeenCalledWith('CorpIT:VPN FAQ');
-    expect(fetchPageContent).not.toHaveBeenCalledWith('CorpIT:Audit Policy');
+    expect(fetchPageContent).toHaveBeenCalledWith('CorpIT:VPN FAQ', 1);
+    expect(fetchPageContent).not.toHaveBeenCalledWith('CorpIT:Audit Policy', 4);
     expect(upsertChunks.mock.calls[0][4]).toEqual(['ai-it', 'ai-exec']);
   });
 

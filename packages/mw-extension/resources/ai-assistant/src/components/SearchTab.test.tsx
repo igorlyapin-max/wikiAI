@@ -2,6 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import SearchTab from './SearchTab';
+import { createAssistantEndpoint } from '../assistantEndpoint';
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -81,6 +82,43 @@ describe('SearchTab', () => {
       credentials: 'include',
       body: JSON.stringify({ query: 'ИТ регламент', topK: 5 }),
     });
+  });
+
+  it('ходит в поиск через same-origin assistant proxy, если он передан', async () => {
+    const endpoint = createAssistantEndpoint({
+      gatewayUrl: 'http://gateway:3000',
+      proxyEnabled: true,
+      proxyBase: 'http://wiki.example/index.php/Special:AIAssistant',
+      locationHref: 'http://wiki.example/index.php/Special:AIAssistant',
+    });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        values: { searchHistoryEnabled: true, searchHistoryLimit: 8 },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        results: [
+          {
+            id: 'r1',
+            pageId: 42,
+            title: 'Регламент ИТ',
+            pageUrl: 'https://wiki.example/Reglament',
+            text: 'Описание регламента',
+          },
+        ],
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<SearchTab endpoint={endpoint} />);
+    await userEvent.type(screen.getByPlaceholderText('Введите вопрос...'), 'ИТ регламент');
+    await userEvent.click(screen.getByRole('button', { name: 'Найти' }));
+
+    await screen.findByText('Регламент ИТ');
+    const [configUrl] = fetchMock.mock.calls[0];
+    const [searchUrl] = fetchMock.mock.calls[1];
+    expect(String(configUrl)).toContain('http://wiki.example/index.php/Special:AIAssistant?');
+    expect(new URL(String(configUrl)).searchParams.get('path')).toBe('/api/ui/config');
+    expect(new URL(String(searchUrl)).searchParams.get('path')).toBe('/api/search');
+    expect(new URL(String(searchUrl)).searchParams.get('aiassistant-proxy')).toBe('1');
   });
 
   it('не показывает literal html-теги из legacy search snippets', async () => {

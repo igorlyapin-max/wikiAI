@@ -200,6 +200,10 @@ export interface RagAdminConfig {
   colbertCandidateLimit: number;
   colbertTimeoutMs: number;
   colbertMinScore: number;
+  colbertTailDropEnabled: boolean;
+  colbertTailMaxGap: number;
+  colbertTailMinScore: number;
+  colbertTailMinKeep: number;
   colbertFailMode: 'fallback_current' | 'fail_search';
   semanticFactsInContext: boolean;
   includeAttachments: boolean;
@@ -261,6 +265,10 @@ export type RetrievalProfileOverrides = Pick<RagAdminConfig,
   | 'colbertCandidateLimit'
   | 'colbertTimeoutMs'
   | 'colbertMinScore'
+  | 'colbertTailDropEnabled'
+  | 'colbertTailMaxGap'
+  | 'colbertTailMinScore'
+  | 'colbertTailMinKeep'
   | 'colbertFailMode'
   | 'semanticFactsInContext'
   | 'includeAttachments'
@@ -799,6 +807,10 @@ const ragConfigBaseSchema = z.object({
   colbertCandidateLimit: z.number().int().min(5).max(200),
   colbertTimeoutMs: z.number().int().min(500).max(60000),
   colbertMinScore: z.number().min(0).max(1),
+  colbertTailDropEnabled: z.boolean(),
+  colbertTailMaxGap: z.number().min(0).max(1),
+  colbertTailMinScore: z.number().min(0).max(1),
+  colbertTailMinKeep: z.number().int().min(1).max(20),
   colbertFailMode: z.enum(['fallback_current', 'fail_search']),
   semanticFactsInContext: z.boolean(),
   includeAttachments: z.boolean(),
@@ -850,6 +862,10 @@ const retrievalProfileRagConfigSchema = ragConfigBaseSchema.pick({
   colbertCandidateLimit: true,
   colbertTimeoutMs: true,
   colbertMinScore: true,
+  colbertTailDropEnabled: true,
+  colbertTailMaxGap: true,
+  colbertTailMinScore: true,
+  colbertTailMinKeep: true,
   colbertFailMode: true,
   semanticFactsInContext: true,
   includeAttachments: true,
@@ -1886,6 +1902,10 @@ export async function getRagAdminConfig(): Promise<RagAdminConfig> {
     colbertCandidateLimit: 50,
     colbertTimeoutMs: 5000,
     colbertMinScore: 0,
+    colbertTailDropEnabled: false,
+    colbertTailMaxGap: 0.2,
+    colbertTailMinScore: 0.7,
+    colbertTailMinKeep: 1,
     colbertFailMode: 'fallback_current',
     semanticFactsInContext: true,
     includeAttachments: true,
@@ -1974,6 +1994,10 @@ function retrievalProfileConfigFromRag(
     colbertCandidateLimit: rag.colbertCandidateLimit,
     colbertTimeoutMs: rag.colbertTimeoutMs,
     colbertMinScore: rag.colbertMinScore,
+    colbertTailDropEnabled: rag.colbertTailDropEnabled,
+    colbertTailMaxGap: rag.colbertTailMaxGap,
+    colbertTailMinScore: rag.colbertTailMinScore,
+    colbertTailMinKeep: rag.colbertTailMinKeep,
     colbertFailMode: rag.colbertFailMode,
     semanticFactsInContext: rag.semanticFactsInContext,
     includeAttachments: rag.includeAttachments,
@@ -2047,6 +2071,10 @@ export async function getDefaultRetrievalProfiles(): Promise<RetrievalProfile[]>
       colbertEnabled: true,
       colbertTimeoutMs: 12000,
       colbertMinScore: 0.58,
+      colbertTailDropEnabled: true,
+      colbertTailMaxGap: 0.2,
+      colbertTailMinScore: 0.7,
+      colbertTailMinKeep: 1,
       colbertFailMode: 'fail_search',
     }, ['opensearch', 'hybrid', 'colbert']),
     base('prod_hybrid_colbert', 'Production hybrid + ColBERT', 'BM25 gate, dense semantic search and ColBERT rerank for production-facing scenarios.', {
@@ -2109,6 +2137,7 @@ export async function getDefaultRetrievalProfiles(): Promise<RetrievalProfile[]>
 
 function normalizeRetrievalProfile(profile: RetrievalProfile): RetrievalProfile {
   const configRecord = profile.config as unknown as Record<string, unknown>;
+  const defaultTailDropEnabled = profile.id === 'opensearch_hybrid_colbert';
   return {
     ...profile,
     tags: profile.tags ?? [],
@@ -2121,6 +2150,18 @@ function normalizeRetrievalProfile(profile: RetrievalProfile): RetrievalProfile 
       lexicalBackend: typeof configRecord.lexicalBackend === 'string'
         ? configRecord.lexicalBackend
         : 'sqlite_fts',
+      colbertTailDropEnabled: typeof configRecord.colbertTailDropEnabled === 'boolean'
+        ? configRecord.colbertTailDropEnabled
+        : defaultTailDropEnabled,
+      colbertTailMaxGap: typeof configRecord.colbertTailMaxGap === 'number'
+        ? configRecord.colbertTailMaxGap
+        : 0.2,
+      colbertTailMinScore: typeof configRecord.colbertTailMinScore === 'number'
+        ? configRecord.colbertTailMinScore
+        : 0.7,
+      colbertTailMinKeep: typeof configRecord.colbertTailMinKeep === 'number'
+        ? configRecord.colbertTailMinKeep
+        : 1,
     } as DeepPartial<RagAdminConfig>)),
   };
 }

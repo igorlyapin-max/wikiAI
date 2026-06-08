@@ -18,11 +18,14 @@ const gatewayBaseUrl = envUrl('GATEWAY_BASE_URL', 'http://127.0.0.1:3000');
 const syncerBaseUrl = envUrl('SYNCER_BASE_URL', 'http://127.0.0.1:3001');
 const mwBaseUrl = envUrl('MW_BASE_URL', 'http://127.0.0.1:8082');
 const qdrantUrl = envUrl('QDRANT_URL', 'http://127.0.0.1:6333');
+const qdrantApiKey = process.env.QDRANT_API_KEY || '';
 const opensearchBaseUrl = envUrl('OPENSEARCH_BASE_URL', 'http://127.0.0.1:9200');
 const colbertBaseUrl = envUrl('COLBERT_BASE_URL', 'http://127.0.0.1:8083');
 const adminCookie = process.env.MW_TEST_COOKIE || process.env.WIKIAI_ADMIN_COOKIE || '';
 const liveTimeoutMs = Number.parseInt(process.env.WIKIAI_ENV_DEV_TIMEOUT_MS || '8000', 10);
 const gatewayContainer = process.env.WIKIAI_GATEWAY_CONTAINER || 'wikiai-gateway-1';
+const mediaWikiContainer = process.env.WIKIAI_MEDIAWIKI_CONTAINER || 'mediawiki';
+const mediaWikiContainerSyncerUrl = envUrl('WIKIAI_MEDIAWIKI_SYNCER_URL', 'http://syncer:3001');
 const externalAccessToken = process.env.WIKIAI_ACCESS_TOKEN || '';
 const externalCookie = process.env.WIKIAI_COOKIE || adminCookie;
 const externalConfigAdminCookie = process.env.WIKIAI_ADMIN_COOKIE || process.env.MW_TEST_COOKIE || process.env.WIKIAI_COOKIE || '';
@@ -137,6 +140,37 @@ async function assertTextEndpoint(label, url, validate, acceptedStatuses = [200]
   record(label, 'pass', `HTTP ${response.status}`);
 }
 
+function assertMediaWikiCanReachSyncer() {
+  const inspect = runCommandCapture('docker', ['inspect', mediaWikiContainer]);
+  if (inspect.status !== 0) {
+    record('MediaWiki container Syncer webhook reachability', 'skip', `${mediaWikiContainer} container not found`);
+    return;
+  }
+
+  const healthUrl = `${mediaWikiContainerSyncerUrl}/health`;
+  const result = runCommandCapture('docker', [
+    'exec',
+    mediaWikiContainer,
+    'sh',
+    '-lc',
+    `curl -sS -m 3 ${quoteShellArg(healthUrl)}`,
+  ]);
+  if (result.status !== 0) {
+    throw new Error(`MediaWiki container cannot reach Syncer at ${healthUrl}: ${(result.stderr || result.stdout).trim()}`);
+  }
+
+  let body;
+  try {
+    body = JSON.parse(result.stdout);
+  } catch {
+    throw new Error(`Expected JSON from ${healthUrl}, got ${result.stdout.slice(0, 160)}`);
+  }
+  if (!body.status || !body.checks) {
+    throw new Error(`Invalid Syncer /health shape from MediaWiki container: ${JSON.stringify(body).slice(0, 160)}`);
+  }
+  record('MediaWiki container Syncer webhook reachability', 'pass', healthUrl);
+}
+
 function mediaWikiApiUrl(params) {
   const url = new URL('/api.php', mwBaseUrl);
   for (const [key, value] of Object.entries(params)) {
@@ -158,6 +192,10 @@ function adminHeaders(cookie = adminCookie) {
   return cookie ? { Cookie: cookie } : {};
 }
 
+function qdrantHeaders(headers = {}) {
+  return qdrantApiKey ? { ...headers, 'api-key': qdrantApiKey } : headers;
+}
+
 async function runQdrantRoundtrip() {
   const collection = `wikiai_env_dev_${Date.now()}`;
   const createBody = {
@@ -166,14 +204,14 @@ async function runQdrantRoundtrip() {
   try {
     let response = await fetchWithTimeout(`${qdrantUrl}/collections/${collection}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: qdrantHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(createBody),
     });
     if (!response.ok) throw new Error(`Qdrant create returned HTTP ${response.status}`);
 
     response = await fetchWithTimeout(`${qdrantUrl}/collections/${collection}/points?wait=true`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: qdrantHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         points: [{
           id: 1,
@@ -186,7 +224,7 @@ async function runQdrantRoundtrip() {
 
     response = await fetchWithTimeout(`${qdrantUrl}/collections/${collection}/points/search`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: qdrantHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ vector: [1, 0, 0, 0], limit: 1, with_payload: true }),
     });
     const body = await response.json();
@@ -195,7 +233,10 @@ async function runQdrantRoundtrip() {
     }
     record('Qdrant temporary collection roundtrip', 'pass', collection);
   } finally {
-    await fetchWithTimeout(`${qdrantUrl}/collections/${collection}`, { method: 'DELETE' }).catch(() => undefined);
+    await fetchWithTimeout(`${qdrantUrl}/collections/${collection}`, {
+      method: 'DELETE',
+      headers: qdrantHeaders(),
+    }).catch(() => undefined);
   }
 }
 
@@ -636,6 +677,7 @@ async function runLiveChecks() {
   await assertJsonEndpoint('Syncer /health', `${syncerBaseUrl}/health`, (body) => {
     if (!body.status || !body.checks) throw new Error('Invalid Syncer /health shape');
   }, [200, 503]);
+  assertMediaWikiCanReachSyncer();
   await assertTextEndpoint('Syncer /metrics', `${syncerBaseUrl}/metrics`, (text) => {
     if (!text.includes('wikiai_http_requests_total')) throw new Error('Syncer metrics do not include wikiai_http_requests_total');
   });

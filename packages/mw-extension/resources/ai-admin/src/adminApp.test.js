@@ -167,6 +167,38 @@ describe('AI admin helpers', () => {
     expect(enMessages['aiadmin-section-indexing-automation']).toBe('Automation');
   });
 
+  it('wires unified index status and rebuild actions into the admin UI', () => {
+    expect(specialAdminSource).toContain('data-ai-tab="index-status"');
+    expect(specialAdminSource).toContain('id="aiadmin-index-status-summary"');
+    expect(specialAdminSource).toContain('id="aiadmin-reindex-all-indexes"');
+    expect(specialAdminSource).toContain('id="aiadmin-reindex-dense-colbert"');
+    expect(specialAdminSource).toContain('id="aiadmin-reindex-lexical-indexes"');
+    expect(specialAdminSource).toContain('id="aiadmin-index-status-operation"');
+    expect(adminAppSource).toContain('contentNamespaceIds');
+    expect(adminAppSource).toContain('getIndexStatusNamespaces');
+    expect(adminAppSource).toContain('/api/admin/index-status/summary?${namespaceQueryString(namespaces)}');
+    expect(adminAppSource).not.toContain('/api/admin/index-status/summary?namespaces=0');
+    expect(adminAppSource).toContain('renderIndexStatusSummaryValues');
+    expect(adminAppSource).toContain('renderIndexStatusOperation');
+    expect(adminAppSource).toContain('startIndexStatusReindex');
+    expect(adminAppSource).toContain('targetWrites');
+    expect(adminAppSource).toContain('aiadmin-index-operation-target-writes');
+    expect(adminAppSource).toContain('["dense", "bm25", "opensearch", "colbert", "attachments", "semanticFacts"]');
+    expect(adminAppSource).toContain('["bm25", "opensearch", "attachments", "semanticFacts"]');
+    expect(adminAppSource).toContain('namespaces,');
+    expect(adminAppSource).not.toContain('namespaceAclForIndexStatus');
+    expect(adminAppSource).toContain('lastReindexIncludedColbert');
+    expect(adminAppSource).toContain('aiadmin-status-colbert-last-reindex-skipped');
+    expect(adminAppSource).toContain('aiadmin-table-stale');
+    expect(adminAppSource).toContain('aiadmin-table-missing');
+    expect(ruMessages['aiadmin-status-colbert-last-reindex-skipped']).toContain('не включала ColBERT');
+    expect(ruMessages['aiadmin-label-index-current-operation']).toContain('операция');
+    expect(ruMessages['aiadmin-index-operation-line']).toContain('run');
+    expect(enMessages['aiadmin-index-operation-target-writes']).toContain('Target writes');
+    expect(ruMessages['aiadmin-tab-index-status']).toBe('Индексы');
+    expect(enMessages['aiadmin-tab-index-status']).toBe('Indexes');
+  });
+
   it('builds document recognition capability summary from current MIME policy modes', () => {
     const summary = getDocumentCapabilitySummary({
       mimeTypes: {
@@ -208,6 +240,38 @@ describe('AI admin helpers', () => {
     expect(adminAppSource).toContain('/api/admin/search-index/trigram/backfill/cancel');
     expect(adminAppSource).toContain('aiadmin-status-trigram-job');
     expect(adminAppSource).toContain('trigramBackfillPollTimer');
+  });
+
+  it('keeps ColBERT reindex and index build progress visible in the admin UI', () => {
+    expect(specialAdminSource).toContain('aiadmin-colbert-reindex-status');
+    expect(adminAppSource).toContain('renderColbertReindexStatus');
+    expect(adminAppSource).toContain('renderColbertIndexBuildStatus');
+    expect(adminAppSource).toContain('colbertIndexStatusPoll');
+    expect(adminAppSource).toContain('/api/admin/rag/colbert/indexes/${encodeURIComponent(id)}/status');
+    expect(adminAppSource).toContain('/api/admin/rag/colbert/source-diagnostics?${namespaceQueryString(namespaces)}');
+    expect(adminAppSource).toContain('aiadmin-reindex-mediawiki-colbert-rag');
+    expect(adminAppSource).toContain('aiadmin-action-reindex-colbert-from-dense');
+    expect(adminAppSource).toContain('colbertChunksIndexed');
+    expect(adminAppSource).toContain('qdrantPayloadPages');
+    expect(adminAppSource).toContain('aiadmin-status-colbert-reindex-line');
+    expect(adminAppSource).toContain('aiadmin-status-colbert-source-diagnostics');
+    expect(adminAppSource).toContain('aiadmin-status-colbert-index-build-line');
+    expect(adminAppSource).toContain('aiadmin-message-colbert-build-started');
+    expect(ruMessages['aiadmin-status-colbert-reindex-line']).toContain('chunks');
+    expect(ruMessages['aiadmin-action-reindex-mediawiki-colbert']).toContain('MediaWiki');
+    expect(enMessages['aiadmin-status-colbert-index-build-line']).toContain('chunks indexed');
+  });
+
+  it('exposes ColBERT tail cutoff controls in RAG and retrieval profile forms', () => {
+    expect(adminAppSource).toContain('rag-colbertTailDropEnabled');
+    expect(adminAppSource).toContain('rag-colbertTailMinScore');
+    expect(adminAppSource).toContain('rag-colbertTailMaxGap');
+    expect(adminAppSource).toContain('rag-colbertTailMinKeep');
+    expect(adminAppSource).toContain('retrieval-profile-colbert-tail-drop-enabled');
+    expect(adminAppSource).toContain('retrieval-profile-colbert-tail-min-score');
+    expect(adminAppSource).toContain('colbertTailDropEnabled: document.getElementById("retrieval-profile-colbert-tail-drop-enabled").checked');
+    expect(ruMessages['aiadmin-field-colbert-tail-drop-enabled']).toContain('хвост');
+    expect(enMessages['aiadmin-field-colbert-tail-drop-enabled']).toContain('tail');
   });
 
   it('keeps source-aware chunking controls wired into the admin UI', () => {
@@ -332,6 +396,21 @@ describe('AI admin helpers', () => {
     expect(ruMessages['aiadmin-chat-profile-name-chat_followup_questions']).toContain('Уточняющие');
     expect(enMessages['aiadmin-chat-profile-name-chat_followup_questions']).toContain('Follow-up');
     expect(ruMessages['aiadmin-help-chat-prompt-owner']).toContain('Профили чата управляют только историей');
+  });
+
+  it('places semantic autofill controls in the settings panel', () => {
+    expect(specialAdminSource).not.toContain('data-ai-tab="autofill"');
+    expect(specialAdminSource).not.toContain('data-ai-panel="autofill"');
+    const settingsPanel = specialAdminSource.match(/data-ai-panel="llm"[\s\S]*?data-ai-panel="embeddings"/)?.[0] || '';
+    expect(settingsPanel).toContain('aiadmin-settings-form');
+    expect(settingsPanel).toContain('aiadmin-autofill-config');
+    expect(settingsPanel).toContain('aiadmin-save-autofill-config');
+    expect(settingsPanel).toContain('aiadmin-autofill-fields');
+    expect(adminAppSource).toContain('/api/admin/smw/autofill/config');
+    expect(adminAppSource).toContain('aiadmin-status-autofill-webhook-loopback');
+    expect(adminAppSource).toContain('isLoopbackServiceUrl');
+    expect(ruMessages['aiadmin-status-autofill-webhook-loopback']).toContain('http://syncer:3001');
+    expect(enMessages['aiadmin-status-autofill-webhook-loopback']).toContain('http://syncer:3001');
   });
 
   it('wires chain debug trace into a dedicated admin tab', () => {

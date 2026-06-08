@@ -26,9 +26,11 @@ const fetchWikiPages = vi.hoisted(() => vi.fn());
 const fetchSmwProperties = vi.hoisted(() => vi.fn());
 const startSyncerReindex = vi.hoisted(() => vi.fn());
 const getSyncerReindexStatus = vi.hoisted(() => vi.fn());
+const getSyncerReindexSourceDiagnostics = vi.hoisted(() => vi.fn());
 const getSyncerMediaWikiServiceAuthStatus = vi.hoisted(() => vi.fn());
 const testSyncerMediaWikiServiceAuth = vi.hoisted(() => vi.fn());
 const runAdminChatDebugTrace = vi.hoisted(() => vi.fn());
+const getIndexStatusSummary = vi.hoisted(() => vi.fn());
 const originalConfig = { ...config };
 
 vi.mock('../../services/mediawiki.js', () => ({
@@ -117,6 +119,7 @@ vi.mock('../../services/qdrant.js', () => ({
 vi.mock('../../services/syncer-admin.js', () => ({
   startSyncerReindex,
   getSyncerReindexStatus,
+  getSyncerReindexSourceDiagnostics,
   getSyncerMediaWikiServiceAuthStatus,
   testSyncerMediaWikiServiceAuth,
   isSyncerAdminError: (err: unknown) =>
@@ -125,6 +128,10 @@ vi.mock('../../services/syncer-admin.js', () => ({
 
 vi.mock('../../services/chat-debug-trace.js', () => ({
   runAdminChatDebugTrace,
+}));
+
+vi.mock('../../services/index-status-summary.js', () => ({
+  getIndexStatusSummary,
 }));
 
 describe('admin routes', () => {
@@ -194,6 +201,20 @@ describe('admin routes', () => {
     userCanRead.mockClear();
     startSyncerReindex.mockReset();
     getSyncerReindexStatus.mockReset();
+    getSyncerReindexSourceDiagnostics.mockReset();
+    getSyncerReindexSourceDiagnostics.mockResolvedValue({
+      values: {
+        source: 'qdrant_payload',
+        mediaWikiNamespaces: [0],
+        mediaWikiPages: 102,
+        denseCollection: 'wiki_chunks',
+        qdrantPayloadPoints: 1,
+        qdrantPayloadPages: 1,
+        qdrantPayloadGroups: 1,
+        qdrantPayloadChunks: 1,
+        densePagesBehindMediaWiki: true,
+      },
+    });
     getSyncerMediaWikiServiceAuthStatus.mockReset();
     getSyncerMediaWikiServiceAuthStatus.mockResolvedValue({
       configured: true,
@@ -244,6 +265,46 @@ describe('admin routes', () => {
       retrieval: { chunks: { context: [] }, attachmentIndexCoverage: [] },
       promptStack: [{ index: 1, role: 'user', label: 'current user question', chars: 18, content: 'Как подключить VPN?' }],
       promptText: '### 1. user\nКак подключить VPN?',
+    });
+    getIndexStatusSummary.mockReset();
+    getIndexStatusSummary.mockResolvedValue({
+      status: 'warning',
+      source: {
+        status: 'ok',
+        namespaces: [0],
+        pages: 103,
+        fetchedPages: 103,
+        truncated: false,
+      },
+      indexes: {
+        dense: { status: 'ok', collection: 'wiki_chunks', pages: 103, chunks: 105, points: 105 },
+        colbert: {
+          status: 'ok',
+          collection: 'wiki_colbert_chunks',
+          chunks: 105,
+          points: 105,
+          state: 'completed',
+          source: 'live_health',
+          lastReindexIncludedColbert: false,
+        },
+        bm25: {
+          status: 'warning',
+          pages: 185,
+          chunks: 650,
+          diff: {
+            staleCount: 82,
+            missingCount: 0,
+            staleSamples: [{ pageId: 11, title: 'Old page', chunks: 4 }],
+            missingSamples: [],
+            sourceTruncated: false,
+            indexTruncated: false,
+          },
+        },
+        opensearch: { status: 'warning', enabled: true, ready: true, indexName: 'wikiai_chunks', pages: 183, docs: 644 },
+        trigram: { status: 'warning', chunks: 645, expectedChunks: 650, backfillRequired: true },
+      },
+      lastReindex: { status: { state: 'completed' } },
+      recommendations: ['Run BM25/OpenSearch rebuild or full all-index reindex.'],
     });
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true,
@@ -322,6 +383,11 @@ describe('admin routes', () => {
       ok: true,
       status: 200,
       statusText: 'OK',
+      json: async () => ({
+        model: 'antoinelouis/colbert-xm',
+        collection: 'wiki_colbert_chunks',
+        collectionStatus: { exists: true, points: 1, vectors: 1 },
+      }),
     })));
     const app = await makeApp();
 
@@ -1168,6 +1234,10 @@ describe('admin routes', () => {
         colbertCandidateLimit: 40,
         colbertTimeoutMs: 3000,
         colbertMinScore: 0.05,
+        colbertTailDropEnabled: true,
+        colbertTailMaxGap: 0.18,
+        colbertTailMinScore: 0.72,
+        colbertTailMinKeep: 2,
         colbertFailMode: 'fallback_current',
       },
     });
@@ -1215,6 +1285,10 @@ describe('admin routes', () => {
       colbertCandidateLimit: 40,
       colbertTimeoutMs: 3000,
       colbertMinScore: 0.05,
+      colbertTailDropEnabled: true,
+      colbertTailMaxGap: 0.18,
+      colbertTailMinScore: 0.72,
+      colbertTailMinKeep: 2,
       colbertFailMode: 'fallback_current',
     });
 
@@ -1476,7 +1550,14 @@ describe('admin routes', () => {
     const openSearchColbert = read.json().retrievalProfiles.find((profile: { id: string }) =>
       profile.id === 'opensearch_hybrid_colbert'
     );
-    expect(openSearchColbert?.config).toMatchObject({ colbertTimeoutMs: 12000, colbertMinScore: 0.58 });
+    expect(openSearchColbert?.config).toMatchObject({
+      colbertTimeoutMs: 12000,
+      colbertMinScore: 0.58,
+      colbertTailDropEnabled: true,
+      colbertTailMaxGap: 0.2,
+      colbertTailMinScore: 0.7,
+      colbertTailMinKeep: 1,
+    });
 
     const storedAfterRead = await getAdminStore().getJson<Array<{ id: string }>>('retrieval-profiles', 'default');
     expect(storedAfterRead?.map((profile) => profile.id)).toEqual(['semantic_broad']);
@@ -1490,6 +1571,10 @@ describe('admin routes', () => {
     if (!openSearchProfile) throw new Error('opensearch_hybrid_colbert retrieval profile template is missing');
     const legacyConfig: Partial<typeof openSearchProfile.config> = { ...openSearchProfile.config };
     delete legacyConfig.chatRetrievalQueryMode;
+    delete legacyConfig.colbertTailDropEnabled;
+    delete legacyConfig.colbertTailMaxGap;
+    delete legacyConfig.colbertTailMinScore;
+    delete legacyConfig.colbertTailMinKeep;
     await getAdminStore().setJson('retrieval-profiles', 'default', [{
       ...openSearchProfile,
       name: 'Custom OpenSearch + ColBERT',
@@ -1510,7 +1595,13 @@ describe('admin routes', () => {
       id: 'opensearch_hybrid_colbert',
       name: 'Custom OpenSearch + ColBERT',
       description: 'Customized by admin',
-      config: expect.objectContaining({ chatRetrievalQueryMode: 'current_message' }),
+      config: expect.objectContaining({
+        chatRetrievalQueryMode: 'current_message',
+        colbertTailDropEnabled: true,
+        colbertTailMaxGap: 0.2,
+        colbertTailMinScore: 0.7,
+        colbertTailMinKeep: 1,
+      }),
     });
     expect(list.json().values.map((item: { id: string }) => item.id)).toContain('opensearch_hybrid');
 
@@ -1919,7 +2010,17 @@ describe('admin routes', () => {
     startSyncerReindex.mockResolvedValueOnce({
       status: {
         state: 'running',
+        runId: 'run-lexical-1',
         startedAt: '2026-05-31T00:00:00.000Z',
+        progress: {
+          runId: 'run-lexical-1',
+          startedAt: '2026-05-31T00:00:00.000Z',
+          totalPages: 3,
+          processed: 0,
+          failed: 0,
+          totalChunks: 0,
+          targetWrites: {},
+        },
       },
     });
 
@@ -2050,7 +2151,17 @@ describe('admin routes', () => {
     startSyncerReindex.mockResolvedValueOnce({
       status: {
         state: 'running',
+        runId: 'run-lexical-1',
         startedAt: '2026-05-31T00:00:00.000Z',
+        progress: {
+          runId: 'run-lexical-1',
+          startedAt: '2026-05-31T00:00:00.000Z',
+          totalPages: 3,
+          processed: 0,
+          failed: 0,
+          totalChunks: 0,
+          targetWrites: {},
+        },
       },
     });
 
@@ -2089,11 +2200,130 @@ describe('admin routes', () => {
     await app.close();
   });
 
+  it('maps ColBERT index status from Syncer ColBERT counters', async () => {
+    startSyncerReindex.mockResolvedValueOnce({
+      status: {
+        state: 'running',
+        startedAt: '2026-06-08T08:00:00.000Z',
+      },
+    });
+
+    const app = await makeApp();
+    const started = await app.inject({
+      method: 'POST',
+      url: '/api/admin/rag/colbert/indexes',
+      headers: { cookie: 'mw=1' },
+      payload: {
+        id: 'candidate-colbert',
+        model: 'candidate-model',
+        collection: 'candidate_collection',
+        source: 'qdrant_payload',
+      },
+    });
+
+    expect(started.statusCode).toBe(202);
+    const spec = started.json().values;
+    getSyncerReindexStatus.mockResolvedValueOnce({
+      state: 'completed',
+      startedAt: spec.startedAt,
+      summary: {
+        processed: 10,
+        totalChunks: 99,
+        failed: 4,
+        colbertPagesIndexed: 3,
+        colbertChunksIndexed: 12,
+        colbertFailures: 1,
+      },
+    });
+
+    const status = await app.inject({
+      method: 'GET',
+      url: '/api/admin/rag/colbert/indexes/candidate-colbert/status',
+      headers: { cookie: 'mw=1' },
+    });
+
+    expect(status.statusCode).toBe(200);
+    expect(status.json().values).toMatchObject({
+      id: 'candidate-colbert',
+      status: 'complete',
+      pagesProcessed: 3,
+      chunksIndexed: 12,
+      failures: 1,
+    });
+    await app.close();
+  });
+
+  it('proxies ColBERT source diagnostics from syncer', async () => {
+    const app = await makeApp();
+
+    const result = await app.inject({
+      method: 'GET',
+      url: '/api/admin/rag/colbert/source-diagnostics?namespaces=0',
+      headers: { cookie: 'mw=1' },
+    });
+
+    expect(result.statusCode).toBe(200);
+    expect(getSyncerReindexSourceDiagnostics).toHaveBeenCalledWith([0]);
+    expect(result.json().values).toMatchObject({
+      source: 'qdrant_payload',
+      mediaWikiPages: 102,
+      denseCollection: 'wiki_chunks',
+      qdrantPayloadPages: 1,
+      qdrantPayloadChunks: 1,
+      densePagesBehindMediaWiki: true,
+    });
+    await app.close();
+  });
+
+  it('serves unified index status summary for admin reindex operations', async () => {
+    const app = await makeApp();
+
+    const result = await app.inject({
+      method: 'GET',
+      url: '/api/admin/index-status/summary?namespaces=0',
+      headers: { cookie: 'mw=1' },
+    });
+
+    expect(result.statusCode).toBe(200);
+    expect(getIndexStatusSummary).toHaveBeenCalledWith({
+      namespaces: [0],
+      sessionCookie: 'mw=1',
+    });
+    expect(result.json().values).toMatchObject({
+      status: 'warning',
+      source: { pages: 103 },
+      indexes: {
+        bm25: {
+          status: 'warning',
+          diff: {
+            staleCount: 82,
+            staleSamples: [{ pageId: 11, title: 'Old page' }],
+          },
+        },
+        trigram: {
+          status: 'warning',
+          backfillRequired: true,
+        },
+      },
+    });
+    await app.close();
+  });
+
   it('removes stale attachment target when attachment reindex is not requested', async () => {
     startSyncerReindex.mockResolvedValueOnce({
       status: {
         state: 'running',
+        runId: 'run-lexical-1',
         startedAt: '2026-05-31T00:00:00.000Z',
+        progress: {
+          runId: 'run-lexical-1',
+          startedAt: '2026-05-31T00:00:00.000Z',
+          totalPages: 3,
+          processed: 0,
+          failed: 0,
+          totalChunks: 0,
+          targetWrites: {},
+        },
       },
     });
     const now = '2026-06-06T00:00:00.000Z';
@@ -3499,7 +3729,17 @@ describe('admin routes', () => {
     startSyncerReindex.mockResolvedValueOnce({
       status: {
         state: 'running',
+        runId: 'run-lexical-1',
         startedAt: '2026-05-31T00:00:00.000Z',
+        progress: {
+          runId: 'run-lexical-1',
+          startedAt: '2026-05-31T00:00:00.000Z',
+          totalPages: 3,
+          processed: 0,
+          failed: 0,
+          totalChunks: 0,
+          targetWrites: {},
+        },
       },
     });
 
@@ -3512,6 +3752,8 @@ describe('admin routes', () => {
     });
 
     expect(res.statusCode).toBe(202);
+    expect(res.json().status.runId).toBe('run-lexical-1');
+    expect(res.json().status.progress.targetWrites).toEqual({});
     expect(startSyncerReindex).toHaveBeenCalledWith(expect.objectContaining({
       attachmentsEnabled: true,
       semanticFactsEnabled: undefined,
@@ -3602,7 +3844,14 @@ describe('admin routes', () => {
     getSyncerReindexStatus.mockResolvedValueOnce({
       status: {
         state: 'completed',
-        summary: { totalPages: 34, processed: 34, failed: 0 },
+        runId: 'run-lexical-2',
+        summary: {
+          runId: 'run-lexical-2',
+          totalPages: 34,
+          processed: 34,
+          failed: 0,
+          targetWrites: { bm25: 34, opensearch: 34 },
+        },
       },
     });
 
@@ -3615,6 +3864,7 @@ describe('admin routes', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.json().status.state).toBe('completed');
+    expect(res.json().status.summary.targetWrites).toEqual({ bm25: 34, opensearch: 34 });
     await app.close();
   });
 
@@ -3846,7 +4096,12 @@ describe('admin routes', () => {
       headers,
     });
     expect(configRead.statusCode).toBe(200);
-    expect(configRead.json().values).toMatchObject({ enabled: false, mode: 'suggest_only' });
+    expect(configRead.json().values).toMatchObject({
+      enabled: true,
+      mode: 'apply_empty',
+      writeTarget: 'managed_block',
+      managedTemplateName: 'WikiAI Semantic',
+    });
 
     const saved = await app.inject({
       method: 'POST',
@@ -3855,13 +4110,23 @@ describe('admin routes', () => {
       payload: {
         enabled: true,
         mode: 'suggest_only',
+        writeTarget: 'managed_block',
         minConfidence: 0.75,
         templates: ['Корпоративный документ'],
         namespaces: [3030],
+        managedTemplateName: 'WikiAI Semantic',
+        managedBlockProfile: 'demo',
+        skipIfUserFactExists: true,
       },
     });
     expect(saved.statusCode).toBe(200);
-    expect(saved.json().values).toMatchObject({ enabled: true, minConfidence: 0.75, namespaces: [3030] });
+    expect(saved.json().values).toMatchObject({
+      enabled: true,
+      writeTarget: 'managed_block',
+      minConfidence: 0.75,
+      namespaces: [3030],
+      managedBlockProfile: 'demo',
+    });
 
     const applied = await app.inject({
       method: 'POST',
@@ -3902,6 +4167,7 @@ describe('admin routes', () => {
     expect(test.statusCode).toBe(200);
     expect(test.json().values).toMatchObject({
       enabled: true,
+      writeTarget: 'managed_block',
       diagnostics: { llmCalled: true },
     });
 

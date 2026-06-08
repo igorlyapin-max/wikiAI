@@ -50,6 +50,30 @@ export interface OpenSearchAttachmentDiagnostics {
   error?: string;
 }
 
+export interface OpenSearchPageSetEntry {
+  pageId: number;
+  title: string;
+  docs: number;
+  sourceType?: string;
+  attachmentFilename?: string;
+}
+
+export interface OpenSearchPageSet {
+  status: 'ok' | 'disabled' | 'error';
+  ready: boolean;
+  enabled: boolean;
+  indexName: string;
+  pages: OpenSearchPageSetEntry[];
+  totalPages: number;
+  limit: number;
+  truncated: boolean;
+  error?: string;
+}
+
+export interface OpenSearchPageSetOptions {
+  namespaces?: number[];
+}
+
 export interface OpenSearchAnalyzeResult {
   status: 'ok' | 'disabled' | 'error';
   query: string;
@@ -189,6 +213,18 @@ function normalizeLimit(limit: number | undefined, fallback: number): number {
   const value = limit ?? fallback;
   if (!Number.isFinite(value)) return fallback;
   return Math.min(Math.max(Math.trunc(value), 1), 200);
+}
+
+function normalizePageSetLimit(limit = 500): number {
+  if (!Number.isFinite(limit)) return 500;
+  return Math.min(Math.max(Math.trunc(limit), 1), 1000);
+}
+
+function normalizeNamespaceFilter(namespaces: number[] | undefined): number[] {
+  if (!Array.isArray(namespaces)) return [];
+  return Array.from(new Set(
+    namespaces.filter((namespace) => Number.isInteger(namespace) && namespace >= 0)
+  )).sort((left, right) => left - right);
 }
 
 function indexName(config: Pick<EffectiveOpenSearchConfig, 'indexName'>): string {
@@ -511,6 +547,29 @@ function searchBody(query: string, limit: number, config: EffectiveOpenSearchCon
   };
 }
 
+function openSearchPageSetTopHit(bucket: Record<string, unknown>): JsonRecord {
+  const topDoc = bucket.topDoc;
+  if (!topDoc || typeof topDoc !== 'object' || Array.isArray(topDoc)) return {};
+  const hits = (topDoc as { hits?: unknown }).hits;
+  if (!hits || typeof hits !== 'object' || Array.isArray(hits)) return {};
+  const items = (hits as { hits?: unknown }).hits;
+  if (!Array.isArray(items) || items.length === 0) return {};
+  return hitSource(items[0]);
+}
+
+function openSearchPageSetEntry(bucket: { key: unknown; doc_count?: unknown }): OpenSearchPageSetEntry | undefined {
+  const pageId = readNumber(bucket.key, Number.NaN);
+  if (!Number.isFinite(pageId)) return undefined;
+  const source = openSearchPageSetTopHit(bucket as Record<string, unknown>);
+  return {
+    pageId,
+    title: typeof source.title === 'string' ? source.title : '',
+    docs: readNumber(bucket.doc_count),
+    sourceType: typeof source.sourceType === 'string' ? source.sourceType : undefined,
+    attachmentFilename: typeof source.attachmentFilename === 'string' ? source.attachmentFilename : undefined,
+  };
+}
+
 export async function analyzeOpenSearchQuery(query: string): Promise<OpenSearchAnalyzeResult> {
   const startedAt = Date.now();
   const config = await getEffectiveOpenSearchConfig();
@@ -732,6 +791,103 @@ export async function getOpenSearchAttachmentDiagnostics(
       status: 'error',
       ready: false,
       error: err instanceof Error ? err.message : 'Unknown OpenSearch attachment diagnostics error',
+    };
+  }
+}
+
+export async function getOpenSearchPageSet(
+  limit = 500,
+  options: OpenSearchPageSetOptions = {}
+): Promise<OpenSearchPageSet> {
+  const config = await getEffectiveOpenSearchConfig();
+  const normalizedLimit = normalizePageSetLimit(limit);
+  const namespaces = normalizeNamespaceFilter(options.namespaces);
+  const base = {
+    enabled: config.enabled,
+    indexName: config.indexName,
+    pages: [],
+    totalPages: 0,
+    limit: normalizedLimit,
+    truncated: false,
+  };
+  if (!config.enabled) {
+    return {
+      ...base,
+      status: 'disabled',
+      ready: false,
+      error: 'OpenSearch is disabled',
+    };
+  }
+  const configError = getEnabledConfigError(config);
+  if (configError) {
+    return {
+      ...base,
+      status: 'error',
+      ready: false,
+      error: configError,
+    };
+  }
+
+  try {
+    const namespaceQuery = namespaces.length > 0
+      ? {
+        query: {
+          bool: {
+            filter: [
+              {
+                terms: {
+                  namespace: namespaces,
+                },
+              },
+            ],
+          },
+        },
+      }
+      : {};
+    const { response, body } = await requestJson<JsonRecord>(config, `/${indexName(config)}/_search`, {
+      method: 'POST',
+      body: JSON.stringify({
+        ...namespaceQuery,
+        size: 0,
+        aggs: {
+          pages: {
+            terms: {
+              field: 'pageId',
+              size: normalizedLimit + 1,
+              order: { _key: 'asc' },
+            },
+            aggs: {
+              topDoc: {
+                top_hits: {
+                  size: 1,
+                  _source: ['title', 'sourceType', 'attachmentFilename'],
+                  sort: [{ chunkIndex: 'asc' }],
+                },
+              },
+            },
+          },
+        },
+      }),
+    });
+    if (!response.ok) throw new Error(`OpenSearch page set failed with HTTP ${response.status}`);
+    const buckets = aggregationBuckets(body, 'pages');
+    return {
+      ...base,
+      status: 'ok',
+      ready: true,
+      totalPages: buckets.length > normalizedLimit ? normalizedLimit : buckets.length,
+      pages: buckets
+        .slice(0, normalizedLimit)
+        .map(openSearchPageSetEntry)
+        .filter((entry): entry is OpenSearchPageSetEntry => Boolean(entry)),
+      truncated: buckets.length > normalizedLimit,
+    };
+  } catch (err) {
+    return {
+      ...base,
+      status: 'error',
+      ready: false,
+      error: err instanceof Error ? err.message : 'Unknown OpenSearch page diagnostics error',
     };
   }
 }

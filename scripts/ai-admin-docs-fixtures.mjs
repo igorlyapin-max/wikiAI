@@ -250,7 +250,7 @@ Embedding test зависит от выбранного provider. При <code>p
 |-
 | <code>gateway.corsOrigins</code> || dev: <code>localhost/127.0.0.1:5173, 8082</code>; production: пусто || Кто может обращаться к Gateway напрямую из браузера.
 |-
-| <code>syncer.baseUrl</code> || <code>http://localhost:3001</code> || Адрес Syncer.
+| <code>syncer.baseUrl</code> || <code>http://syncer:3001</code> || Адрес Syncer внутри Docker-сети.
 |-
 | <code>redis.url</code> || <code>redis://localhost:16379/0</code> || Redis для runtime-настроек и кэша.
 |-
@@ -1164,7 +1164,7 @@ Preview не вызывает LLM/OpenAI. Он считает score локаль
 {| class="wikitable"
 ! Настройка !! Дефолт !! Что означает
 |-
-| <code>syncerUrl</code> || <code>http://localhost:3001</code> || Куда отправлять webhook.
+| <code>syncerUrl</code> || <code>http://syncer:3001</code> || Куда отправлять webhook внутри Docker-сети.
 |-
 | <code>timeoutMs</code> || <code>3000</code> || Сколько ждать ответ Syncer.
 |-

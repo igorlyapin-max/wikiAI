@@ -13,3 +13,4 @@ process.env.CHUNK_OVERLAP ??= '50';
 process.env.NAMESPACE_ACL ??= '{"0":["*"]}';
 process.env.NODE_ENV ??= 'test';
 process.env.LOG_SINKS ??= 'stdout';
+process.env.TESSERACT_ALLOW_NETWORK_LANG_DOWNLOAD ??= 'true';

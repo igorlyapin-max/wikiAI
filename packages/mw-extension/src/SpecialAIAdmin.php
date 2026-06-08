@@ -174,6 +174,8 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-action-promote',
       'aiadmin-action-recalculate-trust-payload',
       'aiadmin-action-reindex-colbert',
+      'aiadmin-action-reindex-colbert-from-dense',
+      'aiadmin-action-reindex-mediawiki-colbert',
       'aiadmin-action-refresh',
       'aiadmin-action-refresh-status',
       'aiadmin-action-open',
@@ -250,6 +252,11 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-field-attachments',
       'aiadmin-field-autofill-min-confidence',
       'aiadmin-field-autofill-mode',
+      'aiadmin-field-autofill-write-target',
+      'aiadmin-field-autofill-managed-template',
+      'aiadmin-field-autofill-managed-profile',
+      'aiadmin-field-autofill-skip-user-fact',
+      'aiadmin-field-autofill-insert-position',
       'aiadmin-field-author-groups-csv',
       'aiadmin-field-author-group',
       'aiadmin-field-base-score',
@@ -551,6 +558,9 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-message-preview-complete',
       'aiadmin-message-recalculation-complete',
       'aiadmin-message-reindex-started',
+      'aiadmin-message-colbert-mediawiki-reindex-started',
+      'aiadmin-message-colbert-reindex-started',
+      'aiadmin-message-colbert-build-started',
       'aiadmin-message-reset',
       'aiadmin-message-refreshed',
       'aiadmin-message-duplicated-from-current-rag',
@@ -609,9 +619,19 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-status-mediawiki-profile-readiness',
       'aiadmin-status-retrieval-profile-limits-ui',
       'aiadmin-status-colbert-test',
+      'aiadmin-status-colbert-reindex-idle',
+      'aiadmin-status-colbert-reindex-blocked',
+      'aiadmin-status-colbert-source-diagnostics',
+      'aiadmin-status-colbert-reindex-line',
+      'aiadmin-status-colbert-reindex-source-line',
+      'aiadmin-status-colbert-index-build-line',
+      'aiadmin-status-colbert-last-reindex-skipped',
       'aiadmin-status-external-api-capabilities',
       'aiadmin-status-oidc-group-mapping-empty',
       'aiadmin-status-oidc-group-preview',
+      'aiadmin-status-autofill-webhook-ready',
+      'aiadmin-status-autofill-webhook-loopback',
+      'aiadmin-status-autofill-webhook-mismatch',
       'aiadmin-status-mediawiki-webhook-match',
       'aiadmin-status-mediawiki-webhook-mismatch',
       'aiadmin-status-chat-profile-effective',
@@ -645,6 +665,8 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-section-indexing-automation',
       'aiadmin-section-indexing-profile-editor',
       'aiadmin-section-indexing-manual-run',
+      'aiadmin-section-index-status',
+      'aiadmin-help-index-status',
       'aiadmin-section-trust-entities',
       'aiadmin-section-trust-preview',
       'aiadmin-section-trust-recalc',
@@ -653,7 +675,6 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-trust-source-legacy-rule',
       'aiadmin-trust-source-rule',
       'aiadmin-tab-audit',
-      'aiadmin-tab-autofill',
       'aiadmin-tab-bm25',
       'aiadmin-tab-chat-retention',
       'aiadmin-tab-colbert',
@@ -662,6 +683,7 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-tab-documents',
       'aiadmin-tab-embeddings',
       'aiadmin-tab-external-api',
+      'aiadmin-tab-index-status',
       'aiadmin-tab-indexing',
       'aiadmin-tab-llm',
       'aiadmin-tab-ontology',
@@ -673,6 +695,21 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-tab-services',
       'aiadmin-tab-trust',
       'aiadmin-tab-webhook',
+      'aiadmin-action-reindex-all-indexes',
+      'aiadmin-action-reindex-dense-colbert',
+      'aiadmin-action-reindex-lexical-indexes',
+      'aiadmin-message-index-status-refreshed',
+      'aiadmin-message-index-status-reindex-all-started',
+      'aiadmin-message-index-status-reindex-dense-colbert-started',
+      'aiadmin-message-index-status-reindex-lexical-started',
+      'aiadmin-message-index-status-trigram-started',
+      'aiadmin-label-index-source',
+      'aiadmin-label-index-recommendations',
+      'aiadmin-label-index-last-reindex',
+      'aiadmin-label-index-current-operation',
+      'aiadmin-index-operation-line',
+      'aiadmin-index-operation-target-writes',
+      'aiadmin-message-index-operation-empty',
       'aiadmin-table-action',
       'aiadmin-table-actions',
       'aiadmin-table-active',
@@ -704,6 +741,7 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-table-filename',
       'aiadmin-table-flags',
       'aiadmin-table-id',
+      'aiadmin-table-index',
       'aiadmin-table-indexed',
       'aiadmin-table-interval',
       'aiadmin-table-last',
@@ -735,6 +773,8 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-table-sensitive',
       'aiadmin-table-staleness-penalty',
       'aiadmin-table-status',
+      'aiadmin-table-stale',
+      'aiadmin-table-missing',
       'aiadmin-table-external-api',
       'aiadmin-table-mcp',
       'aiadmin-table-unauthenticated',
@@ -751,8 +791,16 @@ class SpecialAIAdmin extends SpecialPage
       'aiadmin-table-vector-source',
       'aiadmin-table-weight',
       'aiadmin-value-no',
+      'aiadmin-value-index-status-ok',
+      'aiadmin-value-index-status-warning',
+      'aiadmin-value-index-status-error',
+      'aiadmin-value-index-status-disabled',
       'aiadmin-value-autofill-mode-apply-empty',
       'aiadmin-value-autofill-mode-suggest-only',
+      'aiadmin-value-autofill-target-managed-block',
+      'aiadmin-value-autofill-target-template-params',
+      'aiadmin-value-autofill-insert-end',
+      'aiadmin-help-autofill-write-target',
       'aiadmin-value-conflict-mode-always',
       'aiadmin-value-conflict-mode-manual',
       'aiadmin-value-conflict-mode-risk-only',
@@ -927,6 +975,7 @@ class SpecialAIAdmin extends SpecialPage
         <button type="button" class="ai-admin-tab" data-ai-tab="embeddings">' . $this->msgHtml('aiadmin-tab-embeddings') . '</button>
         <button type="button" class="ai-admin-tab" data-ai-tab="rag">' . $this->msgHtml('aiadmin-tab-rag') . '</button>
         <button type="button" class="ai-admin-tab" data-ai-tab="debug-chain">' . $this->msgHtml('aiadmin-tab-debug-chain') . '</button>
+        <button type="button" class="ai-admin-tab" data-ai-tab="index-status">' . $this->msgHtml('aiadmin-tab-index-status') . '</button>
         <button type="button" class="ai-admin-tab" data-ai-tab="bm25">' . $this->msgHtml('aiadmin-tab-bm25') . '</button>
         <button type="button" class="ai-admin-tab" data-ai-tab="opensearch">' . $this->msgHtml('aiadmin-tab-opensearch') . '</button>
         <button type="button" class="ai-admin-tab" data-ai-tab="colbert">' . $this->msgHtml('aiadmin-tab-colbert') . '</button>
@@ -936,7 +985,6 @@ class SpecialAIAdmin extends SpecialPage
         <button type="button" class="ai-admin-tab" data-ai-tab="trust">' . $this->msgHtml('aiadmin-tab-trust') . '</button>
         <button type="button" class="ai-admin-tab" data-ai-tab="webhook">' . $this->msgHtml('aiadmin-tab-webhook') . '</button>
         <button type="button" class="ai-admin-tab" data-ai-tab="ontology">' . $this->msgHtml('aiadmin-tab-ontology') . '</button>
-        <button type="button" class="ai-admin-tab" data-ai-tab="autofill">' . $this->msgHtml('aiadmin-tab-autofill') . '</button>
         <button type="button" class="ai-admin-tab" data-ai-tab="sensitive">' . $this->msgHtml('aiadmin-tab-sensitive') . '</button>
         <button type="button" class="ai-admin-tab" data-ai-tab="indexing">' . $this->msgHtml('aiadmin-tab-indexing') . '</button>
         <button type="button" class="ai-admin-tab" data-ai-tab="audit">' . $this->msgHtml('aiadmin-tab-audit') . '</button>
@@ -971,6 +1019,14 @@ class SpecialAIAdmin extends SpecialPage
         <button type="button" class="ai-admin-btn" id="aiadmin-reset-settings">' . $this->msgHtml('aiadmin-action-reset') . '</button>
         <button type="button" class="ai-admin-btn" id="aiadmin-test-llm-config">' . $this->msgHtml('aiadmin-action-test') . '</button>
         <span id="aiadmin-settings-status"></span>
+        <h3>' . htmlspecialchars($this->msg('aiadmin-autofill')->text()) . '</h3>
+        <div class="ai-admin-muted">' . htmlspecialchars($this->msg('aiadmin-autofill-note')->text()) . '</div>
+        <form id="aiadmin-autofill-config"></form>
+        <button type="button" class="ai-admin-btn ai-admin-btn-primary" id="aiadmin-save-autofill-config">' . $this->msgHtml('aiadmin-save') . '</button>
+        <button type="button" class="ai-admin-btn" id="aiadmin-refresh-autofill-status">' . $this->msgHtml('aiadmin-action-refresh-status') . '</button>
+        <span id="aiadmin-autofill-status"></span>
+        <div id="aiadmin-autofill-summary" class="ai-admin-muted"></div>
+        <div id="aiadmin-autofill-fields" class="ai-admin-search-results">' . $this->msgHtml('aiadmin-loading') . '</div>
       </div>
       <div class="ai-admin-card ai-admin-panel" data-ai-panel="embeddings">
         <h2>' . htmlspecialchars($this->msg('aiadmin-embeddings')->text()) . '</h2>
@@ -996,6 +1052,20 @@ class SpecialAIAdmin extends SpecialPage
         <span id="aiadmin-chat-debug-status"></span>
         <div id="aiadmin-chat-debug-result" class="ai-admin-search-results"></div>
       </div>
+      <div class="ai-admin-card ai-admin-panel" data-ai-panel="index-status">
+        <h2>' . $this->msgHtml('aiadmin-section-index-status') . '</h2>
+        <div class="ai-admin-muted">' . $this->msgHtml('aiadmin-help-index-status') . '</div>
+        <div class="ai-admin-row">
+          <button type="button" class="ai-admin-btn" id="aiadmin-refresh-index-status">' . $this->msgHtml('aiadmin-action-refresh-status') . '</button>
+          <button type="button" class="ai-admin-btn ai-admin-btn-primary" id="aiadmin-reindex-all-indexes">' . $this->msgHtml('aiadmin-action-reindex-all-indexes') . '</button>
+          <button type="button" class="ai-admin-btn" id="aiadmin-reindex-dense-colbert">' . $this->msgHtml('aiadmin-action-reindex-dense-colbert') . '</button>
+          <button type="button" class="ai-admin-btn" id="aiadmin-reindex-lexical-indexes">' . $this->msgHtml('aiadmin-action-reindex-lexical-indexes') . '</button>
+          <button type="button" class="ai-admin-btn" id="aiadmin-index-status-backfill-trigram">' . $this->msgHtml('aiadmin-action-backfill-trigram') . '</button>
+          <span id="aiadmin-index-status-action"></span>
+        </div>
+        <div id="aiadmin-index-status-operation" class="ai-admin-muted">' . $this->msgHtml('aiadmin-message-index-operation-empty') . '</div>
+        <div id="aiadmin-index-status-summary" class="ai-admin-search-results">' . $this->msgHtml('aiadmin-loading') . '</div>
+      </div>
       <div class="ai-admin-card ai-admin-panel" data-ai-panel="bm25">
         <h2>' . $this->msgHtml('aiadmin-tab-bm25') . '</h2>
         <form id="aiadmin-bm25-config"></form>
@@ -1014,6 +1084,7 @@ class SpecialAIAdmin extends SpecialPage
         <div id="aiadmin-colbert-indexes">' . $this->msgHtml('aiadmin-loading') . '</div>
         <button type="button" class="ai-admin-btn ai-admin-btn-primary" id="aiadmin-save-colbert-config">' . $this->msgHtml('aiadmin-save') . '</button>
         <span id="aiadmin-colbert-status"></span>
+        <div id="aiadmin-colbert-reindex-status" class="ai-admin-muted"></div>
       </div>
       <div class="ai-admin-card ai-admin-panel" data-ai-panel="composition">
         <h2>' . $this->msgHtml('aiadmin-tab-composition') . '</h2>
@@ -1373,16 +1444,6 @@ class SpecialAIAdmin extends SpecialPage
         </div>
         <div class="ai-admin-muted">' . htmlspecialchars($this->msg('aiadmin-semantics-note')->text()) . '</div>
         <div id="aiadmin-semantic-search" class="ai-admin-search-results"></div>
-      </div>
-      <div class="ai-admin-card ai-admin-panel" data-ai-panel="autofill">
-        <h2>' . htmlspecialchars($this->msg('aiadmin-autofill')->text()) . '</h2>
-        <form id="aiadmin-autofill-config"></form>
-        <button type="button" class="ai-admin-btn ai-admin-btn-primary" id="aiadmin-save-autofill-config">' . $this->msgHtml('aiadmin-save') . '</button>
-        <button type="button" class="ai-admin-btn" id="aiadmin-refresh-autofill-status">' . $this->msgHtml('aiadmin-action-refresh-status') . '</button>
-        <span id="aiadmin-autofill-status"></span>
-        <div id="aiadmin-autofill-summary" class="ai-admin-muted"></div>
-        <div id="aiadmin-autofill-fields" class="ai-admin-search-results">' . $this->msgHtml('aiadmin-loading') . '</div>
-        <div class="ai-admin-muted">' . htmlspecialchars($this->msg('aiadmin-autofill-note')->text()) . '</div>
       </div>
       <div class="ai-admin-card ai-admin-panel" data-ai-panel="sensitive">
         <h2>' . $this->msgHtml('aiadmin-tab-sensitive') . '</h2>

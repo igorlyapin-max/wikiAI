@@ -111,6 +111,18 @@ docker restart mediawiki
 docker exec wikiai-gateway-1 node -e "fetch('http://colbert:8080/health').then(async r => console.log(r.status, await r.text()))"
 ```
 
+Проверка MediaWiki webhook URL для Syncer:
+
+```bash
+docker exec mediawiki sh -lc 'curl -sS -m 3 http://syncer:3001/health'
+docker exec mediawiki sh -lc 'curl -sS -m 3 http://localhost:3001/health || true'
+```
+
+На Docker/LAN стенде `$wgAIAssistantSyncerUrl` в `LocalSettings.php` должен
+указывать на `http://syncer:3001`. Если там `http://localhost:3001`, edit
+webhook уходит в сам контейнер MediaWiki, Syncer не получает событие, а
+managed block `WikiAI Semantic` не появляется после сохранения страницы.
+
 Если `collectionStatus.exists=false`, это значит, что ColBERT collection еще не
 создана. Запустите `Переиндексировать ColBERT` во вкладке `ColBERT` или bounded
 ColBERT-only dry run:
@@ -145,6 +157,10 @@ user allowed to read `WikiAIAdmin:`. Direct protected env/config values and
 configured, Qdrant will correctly have no public admin-doc payload, but admins
 also will not get those docs in search. `MW_SYNC_COOKIE` is deprecated fallback
 only.
+
+For a trusted LAN demo wiki where anonymous edit is intentionally enabled,
+`MW_ALLOW_ANON_EDIT=true` allows Syncer to write managed WikiAI semantic blocks
+without service credentials. Keep it `false` outside the demo stand.
 
 Syncer blocks protected reindex before page fetch when selected namespaces have
 `allowed_groups` other than exactly `["*"]` and MediaWiki service auth source is
